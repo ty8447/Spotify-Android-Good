@@ -151,6 +151,8 @@ class MainNavigator internal constructor(
         val link = SpotifyLinks.parse(uri) ?: return false
         if (link is SpotifyLink.Media && link.type == MediaType.TRACK) {
             playTrack(link.uri)
+            // Track links have no detail route. Show their playback details instead.
+            openNowPlaying()
             return true
         }
         val route = SpotifyLinks.routeFor(link) ?: return false

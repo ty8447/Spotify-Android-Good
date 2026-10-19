@@ -94,6 +94,7 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "player.setRepeat" => control(Ctl::Repeat(parse_args::<RepeatArgs>(args)?.mode)).await,
         "player.setVolume" => set_volume(parse_args(args)?),
         "player.setAudioOutput" => set_audio_output(parse_args(args)?),
+        "player.setPrivateSession" => set_private_session(parse_args::<EnabledArgs>(args)?.enabled),
         "player.setSpeed" => set_speed(parse_args::<SpeedArgs>(args)?.validate()?),
         "player.applySettings" => engine::apply_player_settings(args),
         "queue.add" => control(Ctl::QueueAdd(parse_args::<UriArgs>(args)?.uri)).await,
@@ -576,6 +577,16 @@ fn set_speed(speed: f64) -> AppResult<Value> {
     }
     offline::set_speed(speed);
     crate::engine::player_host::set_playback_speed(speed);
+    ok()
+}
+
+/// `player.setPrivateSession`: Spotify's private session (incognito mode), announced in this
+/// device's Connect info (`DeviceInfo.is_private_session`, also every later Spirc).
+fn set_private_session(on: bool) -> AppResult<Value> {
+    hub::HUB.lock().private_session = on;
+    if let Some(spirc) = hub::spirc() {
+        local::sent(spirc.set_private_session(on))?;
+    }
     ok()
 }
 

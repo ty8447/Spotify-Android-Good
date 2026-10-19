@@ -100,6 +100,11 @@ pub(super) fn url_is_dead(code: StatusCode) -> bool {
 /// status that isn't the URL's end, or a transport error)
 pub(super) const URL_FAILURES_MAX: u32 = 3;
 
+/// SPOTIFYGOOD: seconds of audio to keep buffered ahead while streaming. Large enough that a brief
+/// connection drop or a weak link is covered by already-downloaded data (the official client
+/// behaves this way); bounded so we do not eagerly pull an entire long track on cellular.
+const STREAM_LOOK_AHEAD_SECONDS: usize = 60;
+
 async fn receive_data(
     shared: Arc<AudioFileShared>,
     file_data_tx: mpsc::UnboundedSender<ReceivedData>,
@@ -293,12 +298,14 @@ impl AudioFileFetch {
             length = self.params.minimum_download_size;
         }
 
-        // If we are in streaming mode (so not seeking) then start downloading as large
-        // of chunks as possible for better throughput and improved CPU usage, while
-        // still being reasonably responsive (~1 second) in case we want to seek.
+        // SPOTIFYGOOD: in streaming mode buffer far ahead (a large fixed look-ahead of audio, not
+        // just a ping-sized window) so playback survives weak links and brief drops without
+        // stalling — the way the official client does. Still a bounded chunk, clamped to the file
+        // end below, so a seek stays responsive.
         if self.shared.is_download_streaming() {
             let throughput = self.shared.throughput();
-            length = max(length, throughput);
+            let look_ahead = self.shared.bytes_per_second.saturating_mul(STREAM_LOOK_AHEAD_SECONDS);
+            length = max(length, max(throughput, look_ahead));
         }
 
         if offset + length > self.shared.file_size {
@@ -727,14 +734,28 @@ pub(super) async fn audio_file_fetch(
             let ping_time_seconds = fetch.shared.ping_time().as_secs_f32();
             let throughput = fetch.shared.throughput();
 
+            // SPOTIFYGOOD: keep a large buffer pending so a weak or briefly-dropped link never
+            // starves playback; max() with the original ping-based target preserves fast links.
             let desired_pending_bytes = max(
-                (params.prefetch_threshold_factor
-                    * ping_time_seconds
-                    * fetch.shared.bytes_per_second as f32) as usize,
-                (ping_time_seconds * throughput as f32) as usize,
+                fetch.shared.bytes_per_second.saturating_mul(STREAM_LOOK_AHEAD_SECONDS),
+                max(
+                    (params.prefetch_threshold_factor
+                        * ping_time_seconds
+                        * fetch.shared.bytes_per_second as f32) as usize,
+                    (ping_time_seconds * throughput as f32) as usize,
+                ),
             );
 
             if bytes_pending < desired_pending_bytes {
+                // SPOTIFYGOOD DIAG: buffer is below target — this is where a weak link starves playback.
+                log::debug!(
+                    "[buffer-diag] refill pending={}KB target={}KB ping={}ms throughput={}KB/s bitrate={}KB/s",
+                    bytes_pending / 1024,
+                    desired_pending_bytes / 1024,
+                    (ping_time_seconds * 1000.0) as u32,
+                    throughput / 1024,
+                    fetch.shared.bytes_per_second / 1024,
+                );
                 fetch.pre_fetch_more_data(desired_pending_bytes - bytes_pending)?;
             }
         }

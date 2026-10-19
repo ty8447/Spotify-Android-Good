@@ -61,6 +61,8 @@ data class LibraryUiState(
     val query: String = "",
     /** Open folder chain, outermost first. */
     val folders: List<LibraryItem> = emptyList(),
+    /** All playlists and folders as nested in the library (folder pickers). */
+    val tree: List<LibraryItem> = emptyList(),
     val showEpisodes: Boolean = false,
     val pinned: List<PinnedEntry> = emptyList(),
     val items: List<LibraryItem> = emptyList(),
@@ -245,6 +247,7 @@ class LibraryViewModel(private val graph: AppGraph) : ViewModel() {
             searchActive = presentation.searchActive,
             query = presentation.query.text,
             folders = listing.folders,
+            tree = data.playlists,
             showEpisodes = presentation.showEpisodes,
             pinned = if (presentation.showEpisodes) {
                 emptyList()

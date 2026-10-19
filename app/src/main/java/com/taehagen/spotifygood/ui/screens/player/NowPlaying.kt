@@ -226,6 +226,7 @@ internal fun NowPlayingBody(
     }
     val restrictions = snapshot.restrictions
     val isRemote = snapshot.source == PlaybackSource.REMOTE
+    val cinematic = remember(track.uri, track.album?.name, track.name) { cinematicTheme(track) }
 
     val topBar: @Composable () -> Unit = {
         NowPlayingTopBar(
@@ -286,6 +287,7 @@ internal fun NowPlayingBody(
                 enabled = restrictions.canSeek,
                 onSeek = commands::seekTo,
                 trackKey = track.uri,
+                cinematicTheme = cinematic,
                 modifier = Modifier.keepDragsLocal(),
             )
             TransportControls(
@@ -346,6 +348,7 @@ internal fun NowPlayingBody(
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
+        CinematicAtmosphere(cinematic)
         val wide = maxWidth > maxHeight && maxWidth >= 600.dp
         // Too short to give the artwork a useful share of one screen (split screen, huge fonts:
         // the details grow with the font scale and would squeeze the art to nothing).

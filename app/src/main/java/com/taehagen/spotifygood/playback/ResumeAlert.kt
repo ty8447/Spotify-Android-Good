@@ -27,14 +27,7 @@ internal object ResumeAlert {
     fun post(context: Context, title: String?) {
         val app = context.applicationContext
         val notifications = NotificationManagerCompat.from(app)
-        if (!notifications.areNotificationsEnabled()) return
-        if (notifications.getNotificationChannelCompat(Notifications.CHANNEL_ALERTS) == null) {
-            notifications.createNotificationChannel(
-                NotificationChannelCompat.Builder(Notifications.CHANNEL_ALERTS, NotificationManagerCompat.IMPORTANCE_DEFAULT)
-                    .setName(app.getString(R.string.playback_alerts_channel_name))
-                    .build(),
-            )
-        }
+        if (!alertsChannel(app, notifications)) return
         // Through the non-exported receiver: it may outlive the process (and its token).
         val resume = PendingIntent.getBroadcast(
             app,
@@ -57,6 +50,40 @@ internal object ResumeAlert {
             isPosted = true
         } catch (e: SecurityException) {
             Log.w(TAG, "Cannot post the resume notification", e)
+        }
+    }
+
+    /** Creates the alerts channel when missing; false when notifications are off. */
+    internal fun alertsChannel(app: Context, notifications: NotificationManagerCompat): Boolean {
+        if (!notifications.areNotificationsEnabled()) return false
+        if (notifications.getNotificationChannelCompat(Notifications.CHANNEL_ALERTS) == null) {
+            notifications.createNotificationChannel(
+                NotificationChannelCompat.Builder(Notifications.CHANNEL_ALERTS, NotificationManagerCompat.IMPORTANCE_DEFAULT)
+                    .setName(app.getString(R.string.playback_alerts_channel_name))
+                    .build(),
+            )
+        }
+        return true
+    }
+
+    /** Spotify's "incognito mode disabled" notification: the private session timed out. */
+    fun postPrivateSessionEnded(context: Context) {
+        val app = context.applicationContext
+        val notifications = NotificationManagerCompat.from(app)
+        if (!alertsChannel(app, notifications)) return
+        val open = app.packageManager.getLaunchIntentForPackage(app.packageName)
+            ?.let { PendingIntent.getActivity(app, 0, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT) }
+        val notification = NotificationCompat.Builder(app, Notifications.CHANNEL_ALERTS)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Private session ended")
+            .setContentText("Ended due to inactivity.")
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        try {
+            notifications.notify(Notifications.ID_PRIVATE_SESSION_ENDED, notification)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Cannot post the private session notification", e)
         }
     }
 

@@ -15,7 +15,7 @@ use super::util::{decode_plus, encode_component, file_id_hex, now_ms, parse_kind
 use crate::engine;
 use crate::error::{AppError, AppResult, ErrorCode};
 use crate::models::{
-    Episode, Image, Playlist, PlaylistItem, PlaylistOwner, PlaylistRef, RootlistEntry, RootlistEntryType, Track,
+    Episode, Image, Playlist, PlaylistItem, PlaylistOwner, PlaylistRef, RootlistEntry, RootlistEntryType, Track, User,
 };
 use crate::rpc::{parse_args, to_value};
 use base64::Engine as _;
@@ -91,8 +91,19 @@ pub(crate) fn list_images(attrs: &p4::ListAttributes) -> Vec<Image> {
 fn owner(username: &str) -> Option<PlaylistOwner> {
     (!username.is_empty()).then(|| PlaylistOwner {
         username: username.to_string(),
-        display_name: (username == "spotify").then(|| "Spotify".to_string()),
+        display_name: if username == "spotify" { Some("Spotify".to_string()) } else { super::user::cached_name(username) },
     })
+}
+
+/// The owner, then everyone else who added items in this window, most items first (the header's faces).
+fn contributors(items: &[p4::Item], owner: &str) -> Vec<String> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for by in items.iter().filter_map(|i| i.attributes.added_by.as_deref()).filter(|b| !b.is_empty() && *b != owner) {
+        *counts.entry(by).or_default() += 1;
+    }
+    let mut rest: Vec<(&str, usize)> = counts.into_iter().collect();
+    rest.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    std::iter::once(owner).filter(|o| !o.is_empty()).chain(rest.into_iter().map(|(u, _)| u)).map(str::to_string).collect()
 }
 
 fn description(attrs: &p4::ListAttributes) -> Option<String> {
@@ -354,6 +365,8 @@ pub(crate) async fn playlist(args: Value) -> AppResult<Value> {
     let limit = a.limit.clamp(1, MAX_PAGE);
     let session = engine::session()?;
     let mut list = fetch_list(&session, &p.id, Some((a.offset, limit))).await?;
+    let people = contributors(&list.contents.items, list.owner_username());
+    super::user::resolve_names(&session, people.iter().map(String::as_str)).await;
     let mut page = window(&list.contents.items, list.contents.pos() as u32, a.offset, limit);
     if page.is_none() {
         // The server answered with a window starting after `offset`: fetch everything.
@@ -394,6 +407,7 @@ pub(crate) async fn playlist(args: Value) -> AppResult<Value> {
         description: header.description,
         images: header.images,
         owner: header.owner,
+        contributors: people.iter().map(|u| User { display_name: owner(u).and_then(|o| o.display_name), ..super::user::cached_user(u) }).collect(),
         total_tracks: Some(total),
         collaborative,
         is_owned_by_me: owned,
@@ -746,6 +760,7 @@ pub(crate) fn build_tree(items: &[RootItem], username: &str, extra: &HashMap<Str
 /// Rootlist playlists (folders flattened) as references, resolving missing decorations.
 pub(crate) async fn rootlist_refs(session: &Session, max_age: Duration) -> AppResult<Vec<PlaylistRef>> {
     let r = rootlist(session, max_age).await?;
+    super::user::resolve_names(session, r.playlists().map(|it| it.owner.as_str())).await;
     let extra = resolve_undecorated(session, &r).await.refs;
     Ok(r.playlists()
         .filter_map(|it| {
@@ -778,6 +793,7 @@ async fn resolve_undecorated(session: &Session, r: &Rootlist) -> Headers {
 pub(crate) async fn library_playlists(_args: Value) -> AppResult<Value> {
     let session = engine::session()?;
     let r = rootlist(&session, Duration::from_secs(30)).await?;
+    super::user::resolve_names(&session, r.playlists().map(|it| it.owner.as_str())).await;
     let extra = resolve_undecorated(&session, &r).await;
     let user = engine::username().unwrap_or_else(|| session.username());
     let mut out = json!({ "items": build_tree(&r.items, &user, &extra.refs) });
@@ -1012,6 +1028,9 @@ struct CreateArgs {
     /// Optional initial items (extension of the contract).
     #[serde(default)]
     uris: Vec<String>,
+    /// `playlist.createFolder`: the folder to create it in.
+    #[serde(default)]
+    parent: Option<String>,
 }
 
 pub(crate) async fn create(args: Value) -> AppResult<Value> {
@@ -1185,6 +1204,139 @@ pub(crate) async fn follow_uri(session: &Session, uri: &str) -> AppResult<()> {
     // A failed lookup remembered from before must not hide the newly followed playlist.
     forget_header(&uri);
     result
+}
+
+/// The `spotify:start-group:<id>:<name>` item of a folder (the name form-encoded, as Spotify writes it).
+fn group_start(id: &str, name: &str) -> String {
+    let encoded: String = name.bytes().map(|b| match b {
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        b' ' => "+".to_string(),
+        _ => format!("%{b:02X}"),
+    }).collect();
+    format!("spotify:start-group:{id}:{encoded}")
+}
+
+/// Group id of a library folder URI (`spotify:user:<u>:folder:<id>`) or a bare id.
+fn folder_id(uri: &str) -> &str {
+    uri.rsplit_once(":folder:").map_or(uri, |(_, id)| id)
+}
+
+/// Rootlist indices of a folder's start and end items.
+fn group_range(r: &Rootlist, gid: &str) -> Option<(usize, usize)> {
+    let start = r.items.iter().position(|i| {
+        i.uri.strip_prefix("spotify:start-group:").is_some_and(|rest| rest.split(':').next() == Some(gid))
+    })?;
+    let end = r.items.iter().position(|i| i.uri == format!("spotify:end-group:{gid}"))?;
+    (end > start).then_some((start, end))
+}
+
+/// Rootlist indices a playlist or a whole folder occupies.
+fn item_range(r: &Rootlist, uri: &str) -> Option<(usize, usize)> {
+    if uri.contains(":folder:") {
+        group_range(r, folder_id(uri))
+    } else {
+        r.find(&playlist_id(uri).ok()?).map(|(i, _)| (i, i))
+    }
+}
+
+/// Where new items go: the top of the library, or the top of folder `parent`.
+fn insert_at(r: &Rootlist, parent: Option<&str>) -> AppResult<usize> {
+    match parent {
+        None => Ok(0),
+        Some(p) => group_range(r, folder_id(p)).map(|(s, _)| s + 1).ok_or_else(not_in_library),
+    }
+}
+
+fn not_in_library() -> AppError {
+    AppError::new(ErrorCode::NotFound, "not in your library")
+}
+
+/// Applies the ops `build` makes from a fresh rootlist (none: nothing to do); retries once on a
+/// revision conflict.
+async fn edit_rootlist(session: &Session, build: impl Fn(&Rootlist) -> AppResult<Vec<p4::Op>>) -> AppResult<()> {
+    for attempt in 0..2 {
+        let r = rootlist(session, Duration::ZERO).await?;
+        let ops = build(&r)?;
+        if ops.is_empty() {
+            return Ok(());
+        }
+        match apply_rootlist_changes(session, &list_changes(Some(r.revision.clone()), ops)).await {
+            Err(e) if attempt == 0 && e.message == CONFLICT_MESSAGE => continue,
+            other => return other,
+        }
+    }
+    Ok(())
+}
+
+/// `playlist.createFolder`: an empty folder at the top of the library or of folder `parent`.
+/// Returns `{uri}` (`spotify:user:<u>:folder:<id>`, as the library lists it).
+pub(crate) async fn create_folder(args: Value) -> AppResult<Value> {
+    use std::hash::{BuildHasher, Hasher};
+    let a: CreateArgs = parse_args(args)?;
+    let name = a.name.trim();
+    if name.is_empty() {
+        return Err(AppError::invalid("folder name must not be empty"));
+    }
+    let session = engine::session()?;
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    let id = format!("{:016x}", h.finish());
+    let items = [group_start(&id, name), format!("spotify:end-group:{id}")];
+    edit_rootlist(&session, |r| Ok(vec![add_op(&items, Some(insert_at(r, a.parent.as_deref())? as u32), now_ms(), None)])).await?;
+    Ok(json!({ "uri": format!("spotify:user:{}:folder:{id}", session.username()) }))
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+enum FolderEdit {
+    /// Playlists / folders (library URIs) to the top of `folder`, or of the library when absent.
+    Move { items: Vec<String>, #[serde(default)] folder: Option<String> },
+    Rename { folder: String, name: String },
+    /// Removes the folder; its playlists and folders move up a level unless `everything`.
+    Delete { folder: String, #[serde(default)] everything: bool },
+}
+
+/// `playlist.editFolders`: library folder edits (see [`FolderEdit`]).
+pub(crate) async fn edit_folders(args: Value) -> AppResult<Value> {
+    let session = engine::session()?;
+    match parse_args::<FolderEdit>(args)? {
+        FolderEdit::Move { items, folder } => {
+            for uri in &items {
+                edit_rootlist(&session, |r| {
+                    let (s, e) = item_range(r, uri).ok_or_else(not_in_library)?;
+                    let to = insert_at(r, folder.as_deref())?;
+                    if to > s && to <= e {
+                        return Err(AppError::invalid("a folder cannot go inside itself"));
+                    }
+                    Ok(if to == s || to == e + 1 { Vec::new() } else { vec![mov_op(s as u32, (e - s + 1) as u32, to as u32)] })
+                })
+                .await?;
+            }
+        }
+        FolderEdit::Rename { folder, name } => {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(AppError::invalid("folder name must not be empty"));
+            }
+            let id = folder_id(&folder);
+            edit_rootlist(&session, |r| {
+                let (s, _) = group_range(r, id).ok_or_else(not_in_library)?;
+                let mut ops = rem_ops(&[(r.items[s].uri.clone(), s as u32)]);
+                ops.push(add_op(&[group_start(id, name)], Some(s as u32), now_ms(), None));
+                Ok(ops)
+            })
+            .await?;
+        }
+        FolderEdit::Delete { folder, everything } => {
+            edit_rootlist(&session, |r| {
+                let (s, e) = group_range(r, folder_id(&folder)).ok_or_else(not_in_library)?;
+                let picked: Vec<usize> = if everything { (s..=e).collect() } else { vec![s, e] };
+                Ok(rem_ops(&picked.iter().map(|&i| (r.items[i].uri.clone(), i as u32)).collect::<Vec<_>>()))
+            })
+            .await?;
+        }
+    }
+    Ok(json!({}))
 }
 
 /// Removes a playlist from the rootlist (no-op if absent). Retries once on a revision conflict.

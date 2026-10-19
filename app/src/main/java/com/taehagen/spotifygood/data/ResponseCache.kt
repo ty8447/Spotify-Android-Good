@@ -253,7 +253,8 @@ internal object CacheKeys {
     const val LIBRARY_ARTISTS = "library.artists"
     const val LIBRARY_SHOWS = "library.shows"
 
-    fun album(uri: String) = "catalog.album:$uri"
+    // v2: album artists carry portraits (pages cached before that have none).
+    fun album(uri: String) = "catalog.album.v2:$uri"
     fun artist(uri: String) = "catalog.artist:$uri"
     fun show(uri: String) = "catalog.show:$uri"
     /** Prefix of every cached page size of a playlist. */

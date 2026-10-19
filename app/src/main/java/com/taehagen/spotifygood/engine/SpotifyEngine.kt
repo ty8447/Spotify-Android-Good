@@ -849,11 +849,12 @@ class SpotifyEngine(
         updateState { s ->
             s.copy(
                 session = event.state,
-                user = event.user ?: s.user,
+                user = withProfile(event.user, s.user) ?: s.user,
                 nextRetryMs = event.nextRetryMs,
                 error = accountError ?: event.error.takeIf { event.state != SessionState.ONLINE },
             )
         }
+        if (event.state == SessionState.ONLINE) loadProfile()
         if (event.state == SessionState.ERROR) {
             val error = event.error ?: return
             when (error.code) {
@@ -862,6 +863,25 @@ class SpotifyEngine(
             }
         }
     }
+
+    @Volatile private var profileLoading = false
+
+    /** The session reports no display name or picture: the profile has them (tried each time online until it did). */
+    private fun loadProfile() {
+        val user = _user.value ?: return
+        if (profileLoading || user.displayName != null || user.images.isNotEmpty()) return
+        profileLoading = true
+        launchSafe("profile") {
+            try {
+                adoptProfile(rpc.call<User>("catalog.user"))
+            } finally {
+                profileLoading = false
+            }
+        }
+    }
+
+    /** Takes the display name and picture of a fresh profile of the logged-in user. */
+    fun adoptProfile(profile: User) = updateState { it.copy(user = withProfile(it.user, profile)) }
 
     private fun onErrorEvent(error: NativeErrorInfo) {
         when (error.code) {
@@ -1086,6 +1106,11 @@ internal fun knownUser(current: User?, credentials: StoredCredentials?): User? {
     val username = credentials?.username?.takeIf { it.isNotBlank() } ?: return current
     return current?.takeIf { it.username == username } ?: User(username = username)
 }
+
+/** [user] with [profile]'s display name and images where it has them (the same account only). */
+internal fun withProfile(user: User?, profile: User?): User? =
+    if (user == null || profile == null || !user.username.equals(profile.username, ignoreCase = true)) user
+    else user.copy(displayName = profile.displayName ?: user.displayName, images = profile.images.ifEmpty { user.images })
 
 /** The network flag after a refresh: a running engine's own value, else what the system reports. */
 internal fun refreshedNetwork(running: Boolean, current: Boolean, read: () -> Boolean): Boolean = if (running) current else read()

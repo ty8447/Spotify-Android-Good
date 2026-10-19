@@ -14,6 +14,8 @@ pub const ERROR: &str = "error";
 pub const PLAYLIST_CHANGED: &str = "playlistChanged";
 pub const ROOTLIST_CHANGED: &str = "rootlistChanged";
 pub const COLLECTION_CHANGED: &str = "collectionChanged";
+/// The global listening-activity flag (publish-activity) changed, pushed from another client.
+pub const LISTENING_GLOBAL: &str = "listeningGlobal";
 
 /// Serialises and posts an event to Kotlin. Cheap; never blocks on the Kotlin side.
 pub fn emit<T: Serialize>(kind: &str, payload: &T) {

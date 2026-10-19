@@ -84,7 +84,7 @@ import com.taehagen.spotifygood.model.Episode
 import com.taehagen.spotifygood.model.MediaType
 import com.taehagen.spotifygood.model.User
 import com.taehagen.spotifygood.ui.appViewModel
-import com.taehagen.spotifygood.ui.components.CreatePlaylistDialog
+import com.taehagen.spotifygood.ui.components.CreateSheet
 import com.taehagen.spotifygood.ui.components.DownloadIndicator
 import com.taehagen.spotifygood.ui.components.EmptyState
 import com.taehagen.spotifygood.ui.components.EpisodeRow
@@ -99,6 +99,7 @@ import com.taehagen.spotifygood.ui.navigation.LocalAppNavigator
 import com.taehagen.spotifygood.ui.navigation.MediaActionTarget
 import com.taehagen.spotifygood.ui.navigation.PageBackHandler
 import com.taehagen.spotifygood.ui.navigation.Route
+import com.taehagen.spotifygood.ui.screens.menu.LocalProfileMenu
 import kotlinx.coroutines.flow.Flow
 import com.taehagen.spotifygood.ui.components.FastScroller
 import com.taehagen.spotifygood.ui.components.fastScrollDate
@@ -121,7 +122,7 @@ fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) 
         LibraryHeader(
             user = state.user,
             searchActive = state.searchActive,
-            onProfile = { navigator.navigate(Route.Profile()) },
+            onProfile = LocalProfileMenu.current,
             onToggleSearch = { viewModel.setSearchActive(!state.searchActive) },
             onCreate = { showCreate = true },
         )
@@ -192,9 +193,9 @@ fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) 
     }
 
     if (showCreate) {
-        CreatePlaylistDialog(
+        CreateSheet(
             onDismiss = { showCreate = false },
-            onCreated = { uri ->
+            onPlaylistCreated = { uri ->
                 showCreate = false
                 navigator.navigate(Route.Playlist(uri))
             },
@@ -395,7 +396,11 @@ private fun LibraryList(
     Box(Modifier.fillMaxSize()) {
         LazyColumn(state = listState, contentPadding = contentPaddingWith(contentPadding), modifier = Modifier.fillMaxSize()) {
             state.folders.lastOrNull()?.let { folder ->
-                item(key = "back", contentType = "back") { BackRow(title = folder.name, onClick = onBack) }
+                item(key = "back", contentType = "back") {
+                    BackRow(title = folder.name, onClick = onBack) {
+                        FolderHeaderActions(folder, state.tree, onGone = onBack, onOpenPlaylist = { navigator.navigate(Route.Playlist(it)) })
+                    }
+                }
             }
             items(state.pinned, key = { it.key }, contentType = { "pinned" }) { entry ->
                 PinnedRow(entry = entry, onClick = { onPinnedClick(entry, navigator, onOpenEpisodes) })
@@ -462,7 +467,9 @@ private fun LibraryGrid(
         ) {
             state.folders.lastOrNull()?.let { folder ->
                 item(key = "back", span = { GridItemSpan(maxLineSpan) }, contentType = "back") {
-                    BackRow(title = folder.name, onClick = onBack)
+                    BackRow(title = folder.name, onClick = onBack) {
+                        FolderHeaderActions(folder, state.tree, onGone = onBack, onOpenPlaylist = { navigator.navigate(Route.Playlist(it)) })
+                    }
                 }
             }
             items(state.pinned, key = { it.key }, contentType = { "pinned" }) { entry ->
@@ -652,7 +659,7 @@ private fun GridTileLayout(onClick: () -> Unit, artwork: @Composable () -> Unit,
 }
 
 @Composable
-private fun BackRow(title: String, onClick: () -> Unit) {
+private fun BackRow(title: String, onClick: () -> Unit, actions: @Composable () -> Unit = {}) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -668,8 +675,9 @@ private fun BackRow(title: String, onClick: () -> Unit) {
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 16.dp),
+            modifier = Modifier.padding(start = 16.dp).weight(1f),
         )
+        actions()
     }
 }
 

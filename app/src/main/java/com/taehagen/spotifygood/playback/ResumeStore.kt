@@ -255,6 +255,13 @@ internal object ResumeModes {
 
     /** [request] as the stored session's load when [extras] are a resume item's. */
     fun applyTo(request: PlayRequest, extras: Bundle?): PlayRequest = read(extras)?.applyTo(request) ?: request
+
+    /** Load extras that start a context from the top, optionally shuffled (Auto's Play / Shuffle rows). */
+    fun contextLoad(shuffle: Boolean): Bundle = Bundle().apply {
+        putBoolean(SHUFFLE, shuffle)
+        putBoolean(SMART_SHUFFLE, false)
+        putString(REPEAT, PlaybackModes.wire(RepeatMode.OFF))
+    }
 }
 
 /**

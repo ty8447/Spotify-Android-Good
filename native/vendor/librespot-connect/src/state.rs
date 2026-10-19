@@ -369,6 +369,15 @@ impl ConnectState {
         true
     }
 
+    // SPOTIFYGOOD: private session, Spotify's `DeviceInfo.is_private_session` (incognito mode)
+    /// Updates the private session flag, returns whether it changed
+    pub fn set_private_session(&mut self, on: bool) -> bool {
+        let info = self.device_mut().device_info.as_mut().expect("the device_info has to be always given");
+        let changed = info.is_private_session != on;
+        info.is_private_session = on;
+        changed
+    }
+
     pub fn set_last_command(&mut self, command: Request) {
         self.request.last_command_message_id = command.message_id;
         self.request.last_command_sent_by_device_id = command.sent_by_device_id;

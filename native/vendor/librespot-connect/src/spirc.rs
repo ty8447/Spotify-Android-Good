@@ -410,6 +410,8 @@ enum SpircCommand {
     SmartShuffle(bool),
     // SPOTIFYGOOD: allowed while inactive
     SetAudioOutput(AudioOutputKind, Option<String>),
+    // SPOTIFYGOOD: allowed while inactive
+    SetPrivateSession(bool),
     SetAutoplay(bool),
     RefreshCluster,
     SetPlaybackSpeed(f64),
@@ -444,6 +446,7 @@ impl SpircCommand {
             SkipTo(_) => "skip_to",
             SmartShuffle(_) => "smart_shuffle",
             SetAudioOutput(..) => "set_audio_output",
+            SetPrivateSession(_) => "set_private_session",
             SetAutoplay(_) => "set_autoplay",
             RefreshCluster => "refresh_cluster",
             SetPlaybackSpeed(_) => "set_playback_speed",
@@ -1094,6 +1097,11 @@ impl Spirc {
             .send(SpircCommand::SetAudioOutput(kind, name))?)
     }
 
+    // SPOTIFYGOOD: private session (DeviceInfo.is_private_session); also while inactive, sent if changed
+    pub fn set_private_session(&self, on: bool) -> Result<(), Error> {
+        Ok(self.commands.send(SpircCommand::SetPrivateSession(on))?)
+    }
+
     /// Enables or disables autoplay (continuing with similar tracks after the context ended)
     ///
     /// This sets the local `autoplay` user attribute, it isn't synced to the account. From then
@@ -1637,6 +1645,13 @@ impl SpircTask {
                 self.handle_set_audio_output(kind, name);
                 return Ok(());
             }
+            // SPOTIFYGOOD: allowed while not active; a device-info change like the audio output
+            SpircCommand::SetPrivateSession(on) => {
+                if self.connect_state.set_private_session(on) {
+                    self.put_state(StatePut::AudioOutput);
+                }
+                return Ok(());
+            }
             // SPOTIFYGOOD: allowed while not active
             SpircCommand::SetAutoplay(autoplay) => self.handle_set_autoplay(autoplay)?,
             // SPOTIFYGOOD: allowed while not active
@@ -2030,7 +2045,8 @@ impl SpircTask {
     }
 
     fn handle_user_attributes_update(&mut self, update: UserAttributesUpdate) {
-        trace!("Received attributes update: {update:#?}");
+        // SPOTIFYGOOD: diagnostic for the listening activity setting (product state keys)
+        info!("[attributes] update: {:?}", update.pairs);
         let attributes: UserAttributes = update
             .pairs
             .iter()
@@ -2042,6 +2058,8 @@ impl SpircTask {
     }
 
     fn handle_user_attributes_mutation(&mut self, mutation: UserAttributesMutation) {
+        // SPOTIFYGOOD: diagnostic for the listening activity setting
+        info!("[attributes] mutated: {:?}", mutation.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>());
         for attribute in mutation.fields.iter() {
             let key = &attribute.name;
 

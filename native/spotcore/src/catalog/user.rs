@@ -8,11 +8,25 @@ use crate::engine;
 use crate::error::{AppError, AppResult};
 use crate::models::{Image, PlaylistOwner, PlaylistRef, User};
 use crate::rpc::{parse_args, to_value};
+use futures_util::stream::{self, StreamExt};
+use bytes::Bytes;
+use base64::Engine as _;
+use ::http::{Method, Request};
+use librespot_core::Session;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 /// Public playlists requested for another user's profile.
 const PUBLIC_PLAYLISTS: u32 = 50;
+/// Most profiles [`resolve_names`] fetches in one call (the rest follow on later calls).
+const NAME_LOOKUPS: usize = 30;
+
+/// Display names by username, for the process (`None`: the profile has none). playlist4 names
+/// owners by bare username, which for newer accounts is a random id.
+static NAMES: LazyLock<Mutex<HashMap<String, User>>> = LazyLock::new(Default::default);
 
 #[derive(Deserialize, Default)]
 struct Args {
@@ -32,7 +46,7 @@ pub(crate) struct Profile {
 
 /// An image reference of the profile API: an https URL, `spotify:image:<hex>` or
 /// `spotify:mosaic:<hex>:<hex>…` (the generated cover of a playlist).
-fn image_url(s: &str) -> Option<String> {
+pub(super) fn image_url(s: &str) -> Option<String> {
     if s.starts_with("https://") {
         return Some(s.to_string());
     }
@@ -92,8 +106,317 @@ pub(crate) fn parse_profile(body: &[u8], username: &str) -> AppResult<Profile> {
         .and_then(|u| u.strip_prefix("spotify:user:"))
         .map(str::to_string)
         .unwrap_or_else(|| username.to_string());
-    let user = User { username, display_name, images: normalize_images(images), product: None, country: None, explicit_filter: false };
+    let user = User {
+        username, display_name, images: normalize_images(images),
+        followers_count: v.get("followers_count").or_else(|| v.get("followersCount")).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
+        following_count: v.get("following_count").or_else(|| v.get("followingCount")).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
+        ..Default::default()
+    };
     Ok(Profile { user, public_playlists: parse_public_playlists(&v) })
+}
+
+/// The cached display name of `username` (see [`resolve_names`]).
+pub(crate) fn cached_name(username: &str) -> Option<String> {
+    NAMES.lock().get(username).and_then(|u| u.display_name.clone())
+}
+
+/// The cached profile of `username` (name and avatar), or a bare user (see [`resolve_names`]).
+pub(crate) fn cached_user(username: &str) -> User {
+    NAMES.lock().get(username).cloned().unwrap_or_else(|| User { username: username.to_string(), ..Default::default() })
+}
+
+/// Fetches the profiles of the `usernames` not cached yet, so [`cached_name`] knows them.
+pub(crate) async fn resolve_names<'a>(session: &Session, usernames: impl IntoIterator<Item = &'a str>) {
+    let missing: HashSet<String> = {
+        let names = NAMES.lock();
+        usernames.into_iter().filter(|u| !u.is_empty() && *u != "spotify" && !names.contains_key(*u)).map(str::to_string).collect()
+    };
+    let _: Vec<_> = stream::iter(missing.into_iter().take(NAME_LOOKUPS))
+        .map(|u| async move { profile(session, &u, 0).await })
+        .buffer_unordered(6)
+        .collect()
+        .await;
+}
+
+/// A profile from `user-profile-view/v3`; its display name is cached for [`cached_name`].
+async fn profile(session: &Session, username: &str, playlist_limit: u32) -> AppResult<Profile> {
+    let endpoint = format!(
+        "/user-profile-view/v3/profile/{}?playlist_limit={playlist_limit}&artist_limit=0",
+        encode_component(username)
+    );
+    let p = parse_profile(&http::spc_get(session, &endpoint, Some(JSON)).await?, username)?;
+    NAMES.lock().insert(username.to_string(), p.user.clone());
+    Ok(p)
+}
+
+// Minimal, independent protobuf field decoder for the Premium account-management response.
+// Never infer the plan from generic account product or from the available-plan list.
+fn proto_varint(data: &[u8], at: &mut usize) -> Option<u64> {
+    let mut out = 0_u64;
+    for shift in (0..=63).step_by(7) {
+        let byte = *data.get(*at)?;
+        *at += 1;
+        if shift == 63 && byte > 1 { return None; }
+        out |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 { return Some(out); }
+    }
+    None
+}
+
+fn proto_field<'a>(data: &'a [u8], wanted: u64) -> Option<&'a [u8]> {
+    let mut at = 0;
+    while at < data.len() {
+        let key = proto_varint(data, &mut at)?;
+        let number = key >> 3;
+        if number == 0 { return None; }
+        match key & 7 {
+            0 => { proto_varint(data, &mut at)?; }
+            1 => { at = at.checked_add(8)?; if at > data.len() { return None; } }
+            2 => {
+                let len = usize::try_from(proto_varint(data, &mut at)?).ok()?;
+                let end = at.checked_add(len)?;
+                let bytes = data.get(at..end)?;
+                if number == wanted { return Some(bytes); }
+                at = end;
+            }
+            5 => { at = at.checked_add(4)?; if at > data.len() { return None; } }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The tier of Spotify's own menu badge (`GetYourPremiumBadgeResponse`): field 1 is the short plan
+/// name, field 3 the badge style (`Premium`, `PremiumDuo`, `PremiumStudent`, `PremiumFamily`, each
+/// also `...Alternate` / `...Experimental`). The style decides; plain `Premium` is Individual.
+/// The premium plan from the account's own attributes: `multiuserplan-member-type` (FAMILY_MEMBER,
+/// ...; absent on single-user plans) and the rate plan in `financial-product`
+/// (`pr:premium,...,rt:v2_US_default_new-family-sub-1m_...`). Other premium plans are Individual.
+pub(crate) fn plan_of(session: &Session) -> Option<String> {
+    let hint = ["multiuserplan-member-type", "financial-product"]
+        .iter()
+        .filter_map(|key| session.get_user_attribute(key))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    ["family", "duo", "student"].into_iter().find(|t| hint.contains(t)).map(str::to_owned)
+        .or_else(|| hint.contains("pr:premium").then(|| "individual".to_owned()))
+}
+
+fn premium_plan_from_response(data: &[u8]) -> Option<String> {
+    // Field numbers are not confirmed, so every text in the response (nested too) is considered.
+    let mut texts = Vec::new();
+    proto_strings(data, &mut texts, 0);
+    //log::info!("[premium-plan] badge texts={texts:?}");
+    let lower: Vec<String> = texts.iter().map(|t| t.to_ascii_lowercase()).collect();
+    let tier = ["family", "duo", "student", "individual"].into_iter().find(|t| lower.iter().any(|s| s.contains(t)));
+    tier.map(str::to_owned).or_else(|| lower.iter().any(|s| s.starts_with("premium")).then(|| "individual".to_owned()))
+}
+
+/// Every length-delimited field that is readable text, descending into nested messages.
+fn proto_strings(data: &[u8], out: &mut Vec<String>, depth: u8) -> bool {
+    let mut at = 0;
+    while at < data.len() {
+        let Some(key) = proto_varint(data, &mut at) else { return false };
+        match key & 7 {
+            0 => if proto_varint(data, &mut at).is_none() { return false },
+            1 => at += 8,
+            5 => at += 4,
+            2 => {
+                let Some(len) = proto_varint(data, &mut at).and_then(|l| usize::try_from(l).ok()) else { return false };
+                let Some(bytes) = at.checked_add(len).and_then(|end| data.get(at..end)) else { return false };
+                at += len;
+                let mut nested = Vec::new();
+                if depth < 4 && !bytes.is_empty() && proto_strings(bytes, &mut nested, depth + 1) && !nested.is_empty() {
+                    out.extend(nested);
+                } else if let Ok(s) = std::str::from_utf8(bytes) {
+                    if !s.is_empty() && s.chars().all(|c| !c.is_control()) { out.push(s.to_owned()); }
+                }
+            }
+            _ => return false,
+        }
+    }
+    at == data.len()
+}
+
+/// POST to a Webgate (spclient.wg) endpoint with the session's tokens; None when it fails (logged).
+async fn webgate_post(session: &Session, url: &str, body: Bytes) -> Option<Bytes> {
+    let token = session.login5().auth_token().await.map_err(|e| log::info!("[webgate] token unavailable: {e:?}")).ok()?;
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(url)
+        .header("Content-Type", "application/protobuf")
+        .header("Accept", "application/json, application/protobuf")
+        .header("Authorization", format!("{} {}", token.token_type, token.access_token));
+    if let Ok(client_token) = session.spclient().client_token().await {
+        builder = builder.header("client-token", client_token);
+    }
+    let request = builder.body(body).map_err(|e| log::warn!("[webgate] request: {e}")).ok()?;
+    http::send(Some(session), request, http::TIMEOUT)
+        .await
+        .map_err(|e| log::info!("[webgate] {url}: status={:?} error={:?}", e.status, e.error))
+        .ok()
+}
+
+async fn premium_plan_lookup(session: &Session) -> Option<String> {
+    // The endpoint Spotify's app reads its "Your Premium" badge from (an empty request).
+    let body = webgate_post(session, "https://spclient.wg.spotify.com/pam-view-service/v2/yourpremiumbadge", Bytes::new()).await?;
+    premium_plan_from_response(&body)
+}
+
+/// Encode a protobuf length-delimited field without an additional protobuf dependency.
+fn profile_proto_field(out: &mut Vec<u8>, field: u64, value: &[u8]) {
+    fn varint(out: &mut Vec<u8>, mut n: u64) {
+        while n >= 0x80 { out.push((n as u8) | 0x80); n >>= 7; }
+        out.push(n as u8);
+    }
+    varint(out, field << 3 | 2);
+    varint(out, value.len() as u64);
+    out.extend_from_slice(value);
+}
+
+/// Account mutation backed by Spotify's identity/v3 update API. No local-only changes.
+/// Identity$UserProfileUpdateRequest: mask=1, user_profile=2.
+/// Identity$UserProfile: name=2 (google.protobuf.StringValue).
+pub(crate) async fn update_name(args: Value) -> AppResult<Value> {
+    #[derive(Deserialize)]
+    struct Rename { name: String }
+    let Rename { name } = parse_args(args)?;
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 || name.chars().any(char::is_control) {
+        return Err(AppError::invalid("Display name must contain 1–100 printable characters"));
+    }
+    let session = engine::session()?;
+    let username = engine::username().unwrap_or_else(|| session.username());
+    if username.is_empty() { return Err(AppError::invalid("Not signed in")); }
+
+    // google.protobuf.FieldMask { paths: ["name"] }
+    let mut mask = Vec::new();
+    profile_proto_field(&mut mask, 1, b"name");
+    // google.protobuf.StringValue { value: name }
+    let mut wrapped_name = Vec::new();
+    profile_proto_field(&mut wrapped_name, 1, name.as_bytes());
+    let mut updated_profile = Vec::new();
+    profile_proto_field(&mut updated_profile, 2, &wrapped_name);
+    let mut body = Vec::new();
+    profile_proto_field(&mut body, 1, &mask);
+    profile_proto_field(&mut body, 2, &updated_profile);
+
+    // Identity interface p.cv50.i() uses the Webgate service android-profile-identity.
+    // Do NOT retry this POST: an account write is not idempotent by definition.
+    let token = session.login5().auth_token().await?;
+    let url = format!("https://spclient.wg.spotify.com/identity/v3/user/username/{}", encode_component(&username));
+    let mut builder = Request::builder().method(Method::POST).uri(url)
+        .header("Content-Type", http::PROTOBUF)
+        .header("Accept", http::PROTOBUF)
+        .header("Authorization", format!("{} {}", token.token_type, token.access_token));
+    if let Ok(ct) = session.spclient().client_token().await { builder = builder.header("client-token", ct); }
+    let request = builder.body(Bytes::from(body)).map_err(|e| AppError::invalid(format!("Invalid profile update request: {e}")))?;
+    http::send(Some(&session), request, http::TIMEOUT).await.map_err(AppError::from)?;
+
+    // A successful HTTP status alone is not proof of persisted account state.
+    let confirmed = profile(&session, &username, 0).await?;
+    if confirmed.user.display_name.as_deref() != Some(name) {
+        return Err(AppError::invalid("Spotify accepted the request but did not return the updated display name; please refresh and verify"));
+    }
+    NAMES.lock().insert(username, confirmed.user.clone());
+    to_value(&confirmed.user)
+}
+
+/// Upload a cropped JPEG to Spotify's image-upload host, then associate its upload token
+/// through the identity service. Never claim success until a fresh profile confirms the avatar.
+pub(crate) async fn update_photo(args: Value) -> AppResult<Value> {
+    #[derive(Deserialize)] struct Photo { #[serde(rename = "jpegBase64")] jpeg_base64: String }
+    let Photo { jpeg_base64 } = parse_args(args)?;
+    if jpeg_base64.len() > 8_000_000 { return Err(AppError::invalid("Profile photo too large")); }
+    let jpeg = base64::engine::general_purpose::STANDARD.decode(&jpeg_base64)
+        .map_err(|_| AppError::invalid("Invalid profile photo encoding"))?;
+    if jpeg.len() < 4 || !jpeg.starts_with(&[0xff, 0xd8, 0xff]) || jpeg.len() > 6_000_000 {
+        return Err(AppError::invalid("Expected a JPEG under 6 MB"));
+    }
+    let session = engine::session()?;
+    let username = engine::username().unwrap_or_else(|| session.username());
+    if username.is_empty() { return Err(AppError::invalid("Not signed in")); }
+    let previous = profile(&session, &username, 0).await?.user.images;
+    let token = session.login5().auth_token().await?;
+    let mut request = Request::builder().method(Method::POST)
+        .uri("https://image-upload.spotify.com/v4/user-profile")
+        .header("Content-Type", "image/jpeg")
+        .header("Accept", "application/json")
+        .header("Authorization", format!("{} {}", token.token_type, token.access_token));
+    if let Ok(ct) = session.spclient().client_token().await { request = request.header("client-token", ct); }
+    let request = request.body(Bytes::from(jpeg))
+        .map_err(|e| AppError::invalid(format!("Invalid image upload: {e}")))?;
+    let response = http::send(Some(&session), request, http::TIMEOUT).await.map_err(AppError::from)?;
+    let json: Value = http::json(&response)?;
+    let upload_token = json.get("uploadToken").and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::invalid("Spotify image upload returned no uploadToken"))?;
+    let url = format!("https://spclient.wg.spotify.com/identity/v2/profile-image/{}/{}",
+        encode_component(&username), encode_component(upload_token));
+    let mut request = Request::builder().method(Method::POST).uri(url)
+        .header("Authorization", format!("{} {}", token.token_type, token.access_token));
+    if let Ok(ct) = session.spclient().client_token().await { request = request.header("client-token", ct); }
+    let request = request.body(Bytes::new())
+        .map_err(|e| AppError::invalid(format!("Invalid image registration: {e}")))?;
+    http::send(Some(&session), request, http::TIMEOUT).await.map_err(AppError::from)?;
+    let fresh = profile(&session, &username, 0).await?;
+    if fresh.user.images.is_empty() || fresh.user.images == previous {
+        return Err(AppError::invalid("Spotify accepted the image but the account avatar has not yet changed; refresh your profile"));
+    }
+    to_value(&fresh.user)
+}
+
+pub(crate) async fn remove_photo(_args: Value) -> AppResult<Value> {
+    let session = engine::session()?;
+    let username = engine::username().unwrap_or_else(|| session.username());
+    if username.is_empty() { return Err(AppError::invalid("Not signed in")); }
+    let token = session.login5().auth_token().await?;
+    let url = format!("https://spclient.wg.spotify.com/identity/v2/profile-image/{}", encode_component(&username));
+    let mut request = Request::builder().method(Method::DELETE).uri(url)
+        .header("Authorization", format!("{} {}", token.token_type, token.access_token));
+    if let Ok(ct) = session.spclient().client_token().await { request = request.header("client-token", ct); }
+    let request = request.body(Bytes::new())
+        .map_err(|e| AppError::invalid(format!("Invalid image deletion: {e}")))?;
+    http::send(Some(&session), request, http::TIMEOUT).await.map_err(AppError::from)?;
+    let fresh = profile(&session, &username, 0).await?;
+    if !fresh.user.images.is_empty() {
+        return Err(AppError::invalid("Spotify has not yet confirmed the profile photo removal; refresh your profile"));
+    }
+    to_value(&fresh.user)
+}
+
+/// Every text in a JSON or protobuf response.
+fn response_texts(body: &[u8]) -> Vec<String> {
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::String(s) => out.push(s.clone()),
+            Value::Array(a) => a.iter().for_each(|v| walk(v, out)),
+            Value::Object(o) => o.values().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    match serde_json::from_slice::<Value>(body) {
+        Ok(v) => walk(&v, &mut out),
+        Err(_) => { proto_strings(body, &mut out, 0); }
+    }
+    out
+}
+
+/// `blend.invite`: a new Blend invitation (`blend-invitation/v1/generate`, as Spotify's app); `{link}`.
+pub(crate) async fn blend_invite(_args: Value) -> AppResult<Value> {
+    let session = engine::session()?;
+    let body = webgate_post(&session, "https://spclient.wg.spotify.com/blend-invitation/v1/generate", Bytes::new())
+        .await
+        .ok_or_else(|| AppError::invalid("could not create a Blend invite"))?;
+    let texts = response_texts(&body);
+    //log::info!("[blend] invite texts={texts:?}");
+    let link = texts.iter().find(|t| t.starts_with("https://") && t.contains("blend")).cloned()
+        .or_else(|| texts.iter().find(|t| t.len() >= 8 && t.chars().all(|c| c.is_ascii_alphanumeric()))
+            .map(|token| format!("https://open.spotify.com/blend/taste-match/{token}")))
+        .ok_or_else(|| AppError::invalid("unexpected Blend invite response"))?;
+    Ok(serde_json::json!({ "link": link }))
 }
 
 pub(crate) async fn rpc(args: Value) -> AppResult<Value> {
@@ -107,15 +430,7 @@ pub(crate) async fn rpc(args: Value) -> AppResult<Value> {
     let is_me = username.eq_ignore_ascii_case(&me);
     // My own playlists come from the rootlist; other users' public ones only from here.
     let playlist_limit = if is_me { 0 } else { PUBLIC_PLAYLISTS };
-    let endpoint = format!(
-        "/user-profile-view/v3/profile/{}?playlist_limit={playlist_limit}&artist_limit=0",
-        encode_component(&username)
-    );
-    let profile = match http::spc_get(&session, &endpoint, Some(JSON)).await {
-        Ok(body) => parse_profile(&body, &username),
-        Err(e) => Err(e.into()),
-    };
-    let mut profile = match profile {
+    let mut profile = match profile(&session, &username, playlist_limit).await {
         Ok(p) => p,
         Err(e) if is_me => {
             log::info!("own profile lookup failed: {e}");
@@ -126,7 +441,20 @@ pub(crate) async fn rpc(args: Value) -> AppResult<Value> {
     if is_me {
         let user = &mut profile.user;
         user.product = session.get_user_attribute("type");
+        // Diagnostic: every product state value (listening activity lives in one of them).
+        //let mut attrs: Vec<_> = session.user_data().attributes.into_iter().collect();
+        //attrs.sort();
+        //log::info!("[attributes] all: {attrs:?}");
+        user.plan_type = plan_of(&session);
+        //log::info!(
+        //    "[premium-plan] product={:?} plan_type={:?}",
+        //    user.product,
+        //    user.plan_type
+        //);
         user.country = Some(session.country()).filter(|c| !c.is_empty());
+        if user.plan_type.is_none() && user.product.as_deref() == Some("premium") {
+            user.plan_type = premium_plan_lookup(&session).await;
+        }
         user.explicit_filter = session.filter_explicit_content();
         profile.public_playlists.clear();
     }

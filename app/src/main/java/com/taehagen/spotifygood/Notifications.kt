@@ -18,4 +18,6 @@ object Notifications {
     const val ID_RESUME_ALERT = 1005
     /** Connect presence could not be restored after a reboot / update: open the app. */
     const val ID_PRESENCE_RESTORE = 1006
+    /** Private session ended after 6 hours (Spotify's "incognito mode disabled"). */
+    const val ID_PRIVATE_SESSION_ENDED = 1007
 }

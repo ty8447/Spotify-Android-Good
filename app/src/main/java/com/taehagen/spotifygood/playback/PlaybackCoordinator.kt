@@ -3,7 +3,9 @@ package com.taehagen.spotifygood.playback
 import android.content.Context
 import android.content.Intent
 import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.audiofx.AudioEffect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -23,15 +25,19 @@ import com.taehagen.spotifygood.nativebridge.AudioSinkBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Process-wide glue between the native audio sink and the Android audio policy
@@ -61,9 +67,56 @@ import kotlinx.coroutines.launch
  * Installed once ([install]) by the playback service, the UI connector or — as a last resort — the
  * audio sink itself. Holds only the application context.
  */
+/** Spotify ends a private session after 6 hours. */
+private const val PRIVATE_SESSION_MS = 6 * 60 * 60 * 1000L
+
 class PlaybackCoordinator private constructor(private val app: App) : AudioSinkBridge.Listener {
     private val graph: AppGraph = app.graph
     private val main = Handler(Looper.getMainLooper())
+    private val audioManager = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    // VoIP apps (including Discord) can change the device audio mode without taking focus.
+    // Keep this independent of the focus callback so calls of any duration are supported.
+    private var callModeActive = false
+    private var resumeAfterCall = false
+    private val resumeCall = Runnable {
+        if (!callModeActive && resumeAfterCall &&
+            audioManager.mode == AudioManager.MODE_NORMAL &&
+            graph.playback.snapshot.value.source == PlaybackSource.LOCAL
+        ) {
+            resumeAfterCall = false
+            Log.i(TAG, "Call finished: restoring interrupted local playback")
+            graph.player.resume(user = false)
+        }
+    }
+    private val modeListener = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        AudioManager.OnModeChangedListener { mode -> onAudioModeChanged(mode) }
+    } else null
+
+    private fun onAudioModeChanged(mode: Int) {
+        val inCall = mode == AudioManager.MODE_IN_COMMUNICATION ||
+            mode == AudioManager.MODE_IN_CALL || mode == AudioManager.MODE_CALL_SCREENING ||
+            mode == AudioManager.MODE_CALL_REDIRECT || mode == AudioManager.MODE_COMMUNICATION_REDIRECT
+        main.removeCallbacks(resumeCall)
+        if (inCall) {
+            if (!callModeActive) {
+                val snapshot = graph.playback.snapshot.value
+                resumeAfterCall = snapshot.source == PlaybackSource.LOCAL &&
+                    snapshot.track != null &&
+                    (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.LOADING)
+                Log.i(TAG, "Call mode entered: resumeAfterCall=$resumeAfterCall")
+                if (resumeAfterCall) graph.player.pause(user = false)
+            }
+            callModeActive = true
+        } else if (mode == AudioManager.MODE_NORMAL) {
+            val wasInCall = callModeActive
+            callModeActive = false
+            if (wasInCall && resumeAfterCall) {
+                // VoIP may briefly switch NORMAL → IN_COMMUNICATION mid-call.
+                main.postDelayed(resumeCall, CALL_ROUTE_SETTLE_MS)
+            }
+        }
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /** Connect volume ↔ STREAM_MUSIC. */
@@ -81,7 +134,11 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
         app,
         object : AudioFocusController.Callbacks {
             override fun pauseForFocus() = graph.player.pause(user = false)
-            override fun resumeAfterFocus() = graph.player.resume(user = false)
+            override fun resumeAfterFocus() {
+                if (!callModeActive && audioManager.mode == AudioManager.MODE_NORMAL) {
+                    graph.player.resume(user = false)
+                }
+            }
             override fun setDuck(ducked: Boolean) =
                 graph.audioSink.setDuckVolume(if (ducked) AudioFocusController.DUCK_VOLUME else 1f)
             override fun isSpeech(): Boolean = graph.playback.snapshot.value.track?.isEpisode == true
@@ -91,6 +148,8 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
     private val noisy = BecomingNoisyReceiver(app) {
         // The output went away: pause, and a pending focus resume must not undo it later.
         focus.cancelPendingResume()
+        resumeAfterCall = false
+        main.removeCallbacks(resumeCall)
         graph.player.pause(user = false)
     }
     private val wakeLock = WakeLockManager(app, Looper.getMainLooper(), Clock.DEFAULT).apply { setEnabled(true) }
@@ -134,6 +193,12 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
     }
 
     private fun initOnMain() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            modeListener?.let { listener ->
+                audioManager.addOnModeChangedListener(app.mainExecutor, listener)
+                onAudioModeChanged(audioManager.mode)
+            }
+        }
         graph.player.onPlaybackRequested = ::ensureServiceStarted
         // Applies the podcast speed to the sink and the engine from now on.
         graph.podcastSpeed
@@ -142,6 +207,8 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
         graph.player.onDeliberatePause = {
             main.post {
                 focus.cancelPendingResume()
+                resumeAfterCall = false
+                main.removeCallbacks(resumeCall)
                 updateNoisy()
             }
         }
@@ -178,6 +245,23 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
         scope.launch {
             // Logging out cancels a pending sleep timer.
             graph.engine.isLoggedIn.drop(1).filter { !it }.collect { graph.sleepTimer.cancel() }
+        }
+        scope.launch {
+            // Private session (Settings and the listening activity tile): announced on Connect, ends
+            // 6 hours after it started like Spotify's (incognito_mode_timeout), also across restarts.
+            graph.settings.settings.map { it.privateSession to it.privateSessionStartedAt }.distinctUntilChanged()
+                .collectLatest { (on, startedAt) ->
+                    graph.rpc.fire("player.setPrivateSession", buildJsonObject { put("enabled", on) })
+                    when {
+                        on && startedAt == 0L -> graph.settings.update { it.copy(privateSessionStartedAt = System.currentTimeMillis()) }
+                        !on && startedAt != 0L -> graph.settings.update { it.copy(privateSessionStartedAt = 0L) }
+                        on -> {
+                            delay(startedAt + PRIVATE_SESSION_MS - System.currentTimeMillis())
+                            graph.settings.update { it.copy(privateSession = false, privateSessionStartedAt = 0L) }
+                            ResumeAlert.postPrivateSessionEnded(app)
+                        }
+                    }
+                }
         }
         scope.launch {
             // Opt-in Connect presence must be started while the app is visible (FGS start rules).
@@ -310,6 +394,13 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
 
     private fun onLocalAudioStarted() {
         if (!sinkActive) return
+        if (callModeActive || audioManager.mode == AudioManager.MODE_IN_COMMUNICATION ||
+            audioManager.mode == AudioManager.MODE_IN_CALL
+        ) {
+            if (!callModeActive) onAudioModeChanged(audioManager.mode)
+            if (!resumeAfterCall) graph.player.pause(user = false)
+            return
+        }
         main.removeCallbacks(abandonFocus)
         if (!ensureServiceForLocalAudio()) {
             updateLocks()
@@ -340,6 +431,8 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
         val stopped = s.source == PlaybackSource.REMOTE ||
             (s.status == PlaybackStatus.STOPPED && !sinkActive && !focus.isWaitingForGain)
         if (stopped) {
+            resumeAfterCall = false
+            main.removeCallbacks(resumeCall)
             // Nothing will play locally soon: give focus back right away.
             main.removeCallbacks(abandonFocus)
             focus.abandon()
@@ -355,6 +448,8 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
     }
 
     private fun onEngineStopped() {
+        resumeAfterCall = false
+        main.removeCallbacks(resumeCall)
         focusAfterForeground = false
         main.removeCallbacks(abandonFocus)
         focus.abandon()
@@ -420,6 +515,7 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
         private const val TAG = "PlaybackCoordinator"
         /** Time for the service to reach the media foreground once local audio started in the background. */
         private const val FOREGROUND_TIMEOUT_MS = 5_000L
+        private const val CALL_ROUTE_SETTLE_MS = 800L
 
         @Volatile private var instance: PlaybackCoordinator? = null
 

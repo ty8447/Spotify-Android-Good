@@ -16,10 +16,16 @@ import kotlinx.serialization.Serializable
 sealed interface Route {
     @Serializable data object Home : Route
     @Serializable data object Search : Route
+    @Serializable data object SpotifyCodeScanner : Route
     @Serializable data object Library : Route
     @Serializable data object LikedSongs : Route
     @Serializable data object Downloads : Route
     @Serializable data object Settings : Route
+    @Serializable data object Recents : Route
+    @Serializable data object Updates : Route
+    @Serializable data object WhatsNew : Route
+    @Serializable data object Messages : Route
+    @Serializable data object Activity : Route
     @Serializable data class Album(val uri: String) : Route
     @Serializable data class Artist(val uri: String) : Route
     /** All releases of an artist; [group] = "albums" | "singles" | "compilations" | "appears_on". */
@@ -28,6 +34,9 @@ sealed interface Route {
     @Serializable data class Show(val uri: String) : Route
     @Serializable data class Episode(val uri: String) : Route
     @Serializable data class Profile(val username: String? = null) : Route
+    @Serializable data object ProfilePlaylists : Route
+    @Serializable data class SpotifyCode(val uri: String, val artworkUrl: String? = null) : Route
+    @Serializable data class SocialPeople(val kind: String, val username: String? = null) : Route
     /** Full result list for one search type ("track", "artist", ...). */
     @Serializable data class SearchResults(val query: String, val type: String) : Route
 }

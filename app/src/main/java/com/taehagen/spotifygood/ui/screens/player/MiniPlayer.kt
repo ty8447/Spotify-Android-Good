@@ -174,6 +174,7 @@ internal fun MiniPlayerBar(
             position = position,
             initialPositionMs = initialPositionMs,
             durationMs = snapshot.effectiveDurationMs(),
+            saber = cinematicTheme(track) == CinematicTheme.STAR_WARS,
             modifier = Modifier.padding(horizontal = 8.dp),
         )
     }
@@ -240,6 +241,7 @@ private fun MiniProgressLine(
     position: Flow<Long>,
     initialPositionMs: () -> Long,
     durationMs: Long,
+    saber: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val positionState = position.collectAsStateWithLifecycle(initialValue = remember(position) { initialPositionMs() })
@@ -254,7 +256,7 @@ private fun MiniProgressLine(
             val fraction = (positionState.value.toFloat() / durationMs).coerceIn(0f, 1f)
             val width = size.width * fraction
             val left = if (layoutDirection == LayoutDirection.Rtl) size.width - width else 0f
-            drawRect(Color.White, topLeft = Offset(left, 0f), size = Size(width, size.height))
+            drawRect(if (saber) Color(0xFF63C9FF) else Color.White, topLeft = Offset(left, 0f), size = Size(width, size.height))
         }
     }
 }

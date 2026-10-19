@@ -232,6 +232,9 @@ pub struct Playlist {
     pub images: Vec<Image>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner: Option<PlaylistOwner>,
+    /// The owner, then everyone else who added items: the header's faces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributors: Vec<User>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_tracks: Option<u32>,
     #[serde(default)]
@@ -425,6 +428,13 @@ pub struct User {
     pub images: Vec<Image>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub product: Option<String>,
+    /// Only set when the session explicitly identifies an exact subscription tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followers_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub following_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
     #[serde(default)]

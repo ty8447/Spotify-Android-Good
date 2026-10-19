@@ -60,6 +60,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -145,6 +146,8 @@ class PlaybackService : MediaLibraryService() {
     private val searchCache = ConcurrentHashMap<String, List<MediaItem>>()
     /** uri → downloaded cover path of completed downloads (offline artwork). */
     @Volatile private var downloadedImages: Map<String, String> = emptyMap()
+    /** Resolved title of the playback context, kept separate from the track title. */
+    @Volatile private var currentContextName: Pair<String, String>? = null
     /** The downloaded collections ([downloadedQueue]: what is downloaded on its own). */
     @Volatile private var downloadedCollections: List<DownloadedCollection> = emptyList()
     /** The stored credentials were read: "logged out" is real from then on. */
@@ -170,6 +173,7 @@ class PlaybackService : MediaLibraryService() {
             audioSessionId = graph.audioSink.audioSessionId,
             downloadedQueue = ::downloadedQueue,
             downloadedImage = { uri -> downloadedImages[uri] },
+            contextName = { uri -> currentContextName?.takeIf { it.first == uri }?.second },
             playerError = ::currentPlayerError,
             onRetry = ::retryAfterError,
             onCommand = ::ensurePlaybackHolder,
@@ -467,6 +471,31 @@ class PlaybackService : MediaLibraryService() {
     private fun observeState() {
         val playback = graph.playback
         lifecycleScope.launch {
+            // Keep Android Auto's context header up to date when the current playlist,
+            // album, or station changes. Never resolve on each position/track update.
+            playback.snapshot.map { it.context?.uri?.takeIf(String::isNotBlank) }
+                .distinctUntilChanged()
+                .collectLatest { uri ->
+                    currentContextName = null
+                    player.refresh()
+                    if (uri == null) return@collectLatest
+                    val name = try {
+                        withContext(Dispatchers.IO) {
+                            tree.item(uri)?.mediaMetadata?.title?.toString()?.takeIf(String::isNotBlank)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Android Auto context title unavailable: $uri", e)
+                        null
+                    }
+                    if (name != null) {
+                        currentContextName = uri to name
+                        player.refresh()
+                    }
+                }
+        }
+        lifecycleScope.launch {
             // Android Auto orders its tabs by the network (Downloads first offline): re-read the
             // root when that flips (also when a stopped engine's flag is refreshed on a read).
             combine(graph.engine.isNetworkAvailable, graph.settings.settings.map { it.offlineMode }) { network, offline -> network && !offline }
@@ -503,7 +532,14 @@ class PlaybackService : MediaLibraryService() {
             // Paused (or stopped) here or on the mirrored device: bound the paused lifetime.
             playback.snapshot.map { it.status == PlaybackStatus.PLAYING || it.status == PlaybackStatus.LOADING }
                 .distinctUntilChanged()
-                .collect { updatePausedIdle() }
+                .collect { playing ->
+                    // Hold the engine whenever playback is actually running, however it started —
+                    // including an engine-driven resume after a reconnect, which does not go through
+                    // onSetMediaItems and so would otherwise leave only a timing-based holder that
+                    // expires mid-song (the "stopped on its own after reconnect" bug).
+                    if (playing) ensurePlaybackHolder()
+                    updatePausedIdle()
+                }
         }
         lifecycleScope.launch {
             graph.engine.awaitReady()
@@ -720,6 +756,30 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /**
+     * Stages the stored session into the session player (paused) so a car controller auto-selects us
+     * on connect, without starting playback. No-op if the player already has items or nothing is
+     * stored. Prepared paused, so it does not take the media foreground.
+     */
+    private fun stageResumeForAutoSelect() {
+        main.post {
+            if (player.mediaItemCount > 0) return@post
+            lifecycleScope.launch {
+                val last = resumeStore.read() ?: return@launch
+                // Only stage once the account is known: a staged item with no running engine behind
+                // it plays as "not available" when the user presses play. Wait for login like
+                // onPlaybackResumption does, then hold the engine so a later play resumes for real.
+                val loggedIn = graph.engine.isLoggedIn.value ||
+                    (withTimeoutOrNull(LOGIN_WAIT_MS) { graph.engine.awaitReady() } != null && graph.engine.isLoggedIn.value)
+                if (!loggedIn || player.mediaItemCount > 0) return@launch
+                ensurePlaybackHolder()
+                player.playWhenReady = false
+                player.setMediaItem(tree.resumeItem(last, downloadedImages[last.trackUri]), last.positionMs)
+                player.prepare()
+            }
+        }
+    }
+
     /** Media3 could not start the foreground service from the background (API 31+). */
     private fun onForegroundStartNotAllowed() {
         val s = graph.playback.snapshot.value
@@ -865,6 +925,12 @@ class PlaybackService : MediaLibraryService() {
                 // Songs and recent searches are not for any installed app to read).
                 builder.setAvailableSessionCommands(ConnectionResult.DEFAULT_UNTRUSTED_SESSION_COMMANDS)
                     .setAvailablePlayerCommands(ConnectionResult.DEFAULT_UNTRUSTED_PLAYER_COMMANDS)
+            }
+            // A car controller (Auto / Automotive) selects the last-used media source on connect by
+            // its session's current item; with an empty player it skips us until the user taps. Stage
+            // the stored session (paused: setMediaItem + prepare, never play) so we are auto-selected.
+            if (session.isAutomotiveController(controller) || session.isAutoCompanionController(controller)) {
+                stageResumeForAutoSelect()
             }
             return Futures.immediateFuture(builder.build())
         }
@@ -1018,9 +1084,13 @@ class PlaybackService : MediaLibraryService() {
             startIndex: Int,
             startPositionMs: Long,
         ): ListenableFuture<MediaItemsWithStartPosition> = lifecycleScope.future(Dispatchers.Default) {
+            val first = mediaItems.firstOrNull()
+            // Android Auto "Add to playlist" picker: a row adds the current track; nothing plays.
+            if (first != null && tree.addCurrentTrackTo(first.mediaId, graph.playback.snapshot.value.track?.uri)) {
+                return@future MediaItemsWithStartPosition(emptyList(), 0, C.TIME_UNSET)
+            }
             // A playback request (voice search needs the session too).
             ensurePlaybackHolder()
-            val first = mediaItems.firstOrNull()
             val query = first?.requestMetadata?.searchQuery
             if (mediaItems.size == 1 && query != null) {
                 // Voice: "play X" (empty query = "play something": resume the last context). The

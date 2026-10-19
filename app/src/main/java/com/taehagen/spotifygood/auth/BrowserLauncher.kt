@@ -17,8 +17,12 @@ import androidx.browser.customtabs.CustomTabsIntent
 internal object BrowserLauncher {
     private const val TAG = "BrowserLauncher"
 
-    /** Custom Tab of the default Custom-Tabs browser, else a plain browser intent. False if none exists. */
-    fun open(activity: Activity, url: String): Boolean {
+    /**
+     * Custom Tab of the default Custom-Tabs browser, else a plain browser intent. False if none exists.
+     * With [requestCode] the Custom Tab is started for a result, so `finishActivity(requestCode)` closes it.
+     */
+    @Suppress("DEPRECATION")
+    fun open(activity: Activity, url: String, requestCode: Int? = null): Boolean {
         val uri = Uri.parse(url)
         val customTabsPackage = try {
             CustomTabsClient.getPackageName(activity, null)
@@ -32,7 +36,8 @@ internal object BrowserLauncher {
                 .build()
             tab.intent.setPackage(customTabsPackage)
             try {
-                tab.launchUrl(activity, uri)
+                if (requestCode == null) tab.launchUrl(activity, uri)
+                else activity.startActivityForResult(tab.intent.setData(uri), requestCode, tab.startAnimationBundle)
                 return true
             } catch (e: ActivityNotFoundException) {
                 Log.w(TAG, "Custom Tab browser $customTabsPackage vanished")

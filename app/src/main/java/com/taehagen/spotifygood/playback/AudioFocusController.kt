@@ -127,15 +127,22 @@ internal class AudioFocusState(
     var isDucked: Boolean = false
         private set
     private var resumeOnGainUntil = 0L
+    // A call can stop the audio sink before Android delivers LOSS_TRANSIENT. Remember that
+    // this focus ownership was acquired for audible local playback; a deliberate pause clears it.
+    private var wasPlayingWithFocus = false
 
     val isWaitingForGain: Boolean get() = resumeOnGainUntil > platform.now()
 
     fun request(): Boolean {
-        if (hasFocus) return true
+        if (hasFocus) {
+            if (callbacks.isPlayingLocally()) wasPlayingWithFocus = true
+            return true
+        }
         return when (platform.requestFocus()) {
             AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
                 isRequested = true
                 hasFocus = true
+                wasPlayingWithFocus = callbacks.isPlayingLocally()
                 resumeOnGainUntil = 0L
                 // Granted = top of the focus stack: no GAIN callback follows, so un-duck ourselves.
                 setDucked(false)
@@ -145,6 +152,7 @@ internal class AudioFocusState(
                 // E.g. during a phone call: wait for GAIN before making noise.
                 isRequested = true
                 hasFocus = false
+                wasPlayingWithFocus = wasPlayingWithFocus || callbacks.isPlayingLocally()
                 resumeOnGainUntil = platform.now() + RESUME_WINDOW_MS
                 callbacks.pauseForFocus()
                 false
@@ -152,6 +160,7 @@ internal class AudioFocusState(
             else -> {
                 isRequested = false
                 hasFocus = false
+                wasPlayingWithFocus = false
                 callbacks.pauseForFocus()
                 false
             }
@@ -161,6 +170,7 @@ internal class AudioFocusState(
     /** Drops the auto-resume of a transient loss (the output went away meanwhile). */
     fun cancelPendingResume() {
         resumeOnGainUntil = 0L
+        wasPlayingWithFocus = false
     }
 
     fun abandon() {
@@ -169,6 +179,7 @@ internal class AudioFocusState(
         isRequested = false
         hasFocus = false
         resumeOnGainUntil = 0L
+        wasPlayingWithFocus = false
         setDucked(false)
     }
 
@@ -180,6 +191,7 @@ internal class AudioFocusState(
                 setDucked(false)
                 val resume = resumeOnGainUntil > platform.now()
                 resumeOnGainUntil = 0L
+                wasPlayingWithFocus = false
                 if (resume) callbacks.resumeAfterFocus()
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
@@ -203,7 +215,8 @@ internal class AudioFocusState(
     private fun transientLoss() {
         hasFocus = false
         // Only auto-resume what we interrupted, never something the user had paused.
-        if (!callbacks.isPlayingLocally()) return
+        if (!callbacks.isPlayingLocally() && !wasPlayingWithFocus) return
+        wasPlayingWithFocus = false
         resumeOnGainUntil = platform.now() + RESUME_WINDOW_MS
         callbacks.pauseForFocus()
     }

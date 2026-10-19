@@ -16,9 +16,11 @@
 //! | `catalog.lyrics` | `color-lyrics/v2` (+ cover image variant) | – |
 //! | `catalog.radio` | `inspiredby-mix/v2` | `radio-apollo/v3/stations` |
 //! | `catalog.recentlyPlayed` / `catalog.user` | `recently-played/v3` / `user-profile-view/v3` | session attributes for me |
+//! | `catalog.whatsNew` / `catalog.friendActivity` | pathfinder `queryWhatsNewFeed` / `presence-view/v1/buddylist` | – |
 
 mod collection;
 mod context;
+mod feeds;
 mod home;
 mod http;
 mod inflate;
@@ -29,13 +31,16 @@ mod pathfinder;
 mod pfparse;
 mod played;
 mod playlist;
+mod profile_privacy;
 mod proto;
 pub(crate) mod push;
 mod radio;
 mod recent;
 mod refs;
 mod search;
-mod user;
+mod scannable;
+mod social;
+pub(crate) mod user;
 mod util;
 
 use crate::engine;
@@ -94,11 +99,31 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "catalog.playlist" => playlist::playlist(args).await,
         "catalog.playlistUris" => playlist::playlist_uris(args).await,
         "catalog.search" => search::rpc(args).await,
+        "catalog.resolveScannable" => scannable::resolve(args).await,
         "catalog.home" => home::rpc(args).await,
         "catalog.lyrics" => lyrics::lyrics(args).await,
         "catalog.radio" => radio::rpc(args).await,
         "catalog.recentlyPlayed" => recent::rpc(args).await,
+        "catalog.recentHistory" => recent::history_rpc(args).await,
+        "catalog.playHistory" => recent::play_history(args).await,
         "catalog.user" => user::rpc(args).await,
+        "catalog.updateProfileName" => user::update_name(args).await,
+        "catalog.updateProfilePhoto" => user::update_photo(args).await,
+        "catalog.removeProfilePhoto" => user::remove_photo(args).await,
+        "catalog.socialList" => social::list(args).await,
+        "catalog.socialFollow" => social::follow(args).await,
+        "catalog.profileVisibility" => profile_privacy::read().await,
+        "catalog.setProfileVisibility" => profile_privacy::set(args).await,
+        "catalog.listeningGlobal" => social::listening_global(args).await,
+        "catalog.listeningSetGlobal" => social::set_listening_global(args).await,
+        "catalog.listeningAudience" => social::listening_audience(args).await,
+        "catalog.restrictListeningAudience" => social::restrict_audience(args).await,
+        "catalog.whatsNew" => feeds::whats_new(args).await,
+        "catalog.notifications" => feeds::notifications(args).await,
+        "catalog.markNotificationRead" => feeds::mark_notification_read(args).await,
+        "catalog.deleteNotification" => feeds::delete_notification(args).await,
+        "catalog.deleteNotifications" => feeds::delete_notifications(args).await,
+        "catalog.friendActivity" => feeds::friend_activity(args).await,
         "library.playlists" => playlist::library_playlists(args).await,
         "library.tracks" => collection::tracks(args).await,
         "library.albums" => collection::albums(args).await,
@@ -110,6 +135,9 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "library.save" => collection::save_rpc(args, false).await,
         "library.remove" => collection::save_rpc(args, true).await,
         "playlist.create" => playlist::create(args).await,
+        "playlist.createFolder" => playlist::create_folder(args).await,
+        "playlist.editFolders" => playlist::edit_folders(args).await,
+        "blend.invite" => user::blend_invite(args).await,
         "playlist.addItems" => playlist::add_items(args).await,
         "playlist.removeItems" => playlist::remove_items(args).await,
         "playlist.moveItems" => playlist::move_items(args).await,

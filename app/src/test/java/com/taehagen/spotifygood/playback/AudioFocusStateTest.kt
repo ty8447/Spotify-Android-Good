@@ -145,6 +145,28 @@ class AudioFocusStateTest {
     }
 
     @Test
+    fun phoneCallResumesEvenIfSinkStoppedJustBeforeFocusLossCallback() {
+        assertTrue(state.request())
+        // AudioTrack may be stopped by Telecom before AudioManager delivers LOSS_TRANSIENT.
+        f.playing = false
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        assertEquals(listOf("pause"), f.events)
+        assertTrue(state.isWaitingForGain)
+        state.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf("pause", "resume"), f.events)
+    }
+
+    @Test
+    fun deliberatePauseWhileSinkIsStoppedPreventsCallResume() {
+        assertTrue(state.request())
+        f.playing = false
+        state.cancelPendingResume() // User tapped Pause while the call was active.
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        state.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertTrue(f.events.isEmpty())
+    }
+
+    @Test
     fun withoutAUserPauseTheGainStillResumes() {
         assertTrue(state.request())
         state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)

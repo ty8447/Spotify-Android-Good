@@ -210,13 +210,16 @@ impl HttpClient {
                         continue;
                     }
                 }
-
-                if !code.is_success() {
-                    return Err(HttpClientError::StatusCode(code).into());
-                }
             }
 
             let response = response?;
+            if !response.status().is_success() {
+                // Log which request failed and the server's own explanation; callers only see the code.
+                let code = response.status();
+                let body = response.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();
+                warn!("HTTP {code} {}: {}", parts.uri, String::from_utf8_lossy(&body[..body.len().min(400)]));
+                return Err(HttpClientError::StatusCode(code).into());
+            }
             return Ok(response);
         }
     }

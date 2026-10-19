@@ -87,6 +87,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.compose.rememberNavController
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.nativebridge.NativeErrorCode
@@ -100,10 +101,13 @@ import com.taehagen.spotifygood.ui.navigation.LocalOptionalAppNavigator
 import com.taehagen.spotifygood.ui.navigation.LocalPageCovered
 import com.taehagen.spotifygood.ui.navigation.MainNavigator
 import com.taehagen.spotifygood.ui.navigation.MainTab
+import com.taehagen.spotifygood.ui.navigation.Route
 import com.taehagen.spotifygood.ui.navigation.rememberMainNavigator
 import com.taehagen.spotifygood.ui.components.AddToPlaylistSheet
 import com.taehagen.spotifygood.ui.components.AlreadyAddedDialog
 import com.taehagen.spotifygood.ui.components.MediaActionsSheet
+import com.taehagen.spotifygood.ui.screens.menu.LocalProfileMenu
+import com.taehagen.spotifygood.ui.screens.menu.ProfileMenu
 import com.taehagen.spotifygood.ui.screens.player.DevicePicks
 import com.taehagen.spotifygood.ui.screens.player.DevicesSheet
 import com.taehagen.spotifygood.ui.screens.player.ExpandingPlayer
@@ -146,6 +150,7 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
 
     val backStack by navController.currentBackStack.collectAsStateWithLifecycle()
     val currentTab = remember(backStack) { MainNavigator.tabOf(backStack) }
+    val scannerOpen = backStack.lastOrNull()?.destination?.hasRoute(Route.SpotifyCodeScanner::class) == true
     // A loaded item, or the last session (cold start) that the mini player offers to resume.
     val hasTrackState = rememberPlayerHasContent()
     val hasTrack by hasTrackState
@@ -171,6 +176,7 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
             if (open != sheet.isExpanded) sheet.animateTo(open)
         }
     }
+    var profileMenuOpen by remember { mutableStateOf(false) }
     // The player covers the page: keep accessibility services off what is underneath.
     val playerCoversPage by remember(sheet) { derivedStateOf { sheet.progress >= 1f } }
 
@@ -234,6 +240,7 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
         LocalAppNavigator provides navigator,
         LocalOptionalAppNavigator provides navigator,
         LocalPageCovered provides overlayOpen,
+        LocalProfileMenu provides { profileMenuOpen = true },
     ) {
         Box(modifier.fillMaxSize()) {
             val suiteType = NavigationSuiteScaffoldDefaults.navigationSuiteType(currentWindowAdaptiveInfoV2())
@@ -246,7 +253,7 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
                 unselectedTextColor = colors.onSurfaceVariant,
             )
             NavigationScaffold(
-                navigationSuiteType = suiteType,
+                navigationSuiteType = if (scannerOpen) NavigationSuiteType.None else suiteType,
                 navigationSuiteColors = NavigationSuiteDefaults.colors(
                     shortNavigationBarContainerColor = colors.surfaceContainerLowest,
                     shortNavigationBarContentColor = colors.onSurface,
@@ -280,6 +287,7 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
                     snackbarHostState = snackbarHostState,
                     showSnackbars = !overlayOpen,
                     hasTrack = hasTrack,
+                    fullScreenScanner = scannerOpen,
                     showOffline = !networkAvailable || offlineMode,
                     refusal = refusal,
                     onRefusalDetails = shell::showRefusalDetails,
@@ -293,7 +301,7 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
                 )
             }
 
-            PlayerOverlay(
+            if (!scannerOpen) PlayerOverlay(
                 navigator = navigator,
                 sheet = sheet,
                 hasTrack = hasTrack,
@@ -314,6 +322,7 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
                     onContinue = shell::dismissRefusal,
                 )
             }
+            if (profileMenuOpen) ProfileMenu(onClosed = { profileMenuOpen = false })
             // While a full-screen overlay covers the content, snackbars show above it instead.
             if (overlayOpen) {
                 AppSnackbarHost(
@@ -350,6 +359,7 @@ private fun MainContent(
     snackbarHostState: SnackbarHostState,
     showSnackbars: Boolean,
     hasTrack: Boolean,
+    fullScreenScanner: Boolean,
     showOffline: Boolean,
     refusal: PlaybackRefusal,
     onRefusalDetails: () -> Unit,
@@ -372,7 +382,7 @@ private fun MainContent(
 
         // Docked bottom stack. Navigation-bar insets are consumed by the bottom bar; with a rail they
         // remain and are applied here so the mini player clears the gesture area.
-        Column(
+        if (!fullScreenScanner) Column(
             Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()

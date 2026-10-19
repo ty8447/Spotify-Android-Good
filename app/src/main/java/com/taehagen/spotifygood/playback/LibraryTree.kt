@@ -122,7 +122,43 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             return null
         }
         val moreAt = BrowsePaging.moreAt(request, rows.total)
-        return if (moreAt == null) rows.items else rows.items + moreItem(listId, moreAt)
+        val items = if (moreAt == null) rows.items else rows.items + moreItem(listId, moreAt)
+        // "Play" and "Shuffle play" at the top of a playlist / Liked Songs (first page only).
+        return if (more == null && page == 0) actionRows(listId) + items else items
+    }
+
+    /** The context a list plays as a whole, or null for lists that are not one playable context. */
+    private fun listContextUri(listId: String): String? = when {
+        listId == LIKED || OfflineLoads.kindOf(listId) == OfflineLoads.ContextKind.LIKED_SONGS -> likedContextUri()
+        listId.startsWith("spotify:playlist:") -> listId
+        else -> null
+    }
+
+    /**
+     * "Play" / "Shuffle play" rows for a playable list (empty for any other). Each row's media id is
+     * the list's context uri (a [MediaIds.Parsed.Plain], so the player loads the whole context);
+     * Shuffle carries the shuffle load extras [SpotifyPlayer] applies ([ResumeModes.contextLoad]).
+     */
+    private fun actionRows(listId: String): List<MediaItem> {
+        val uri = listContextUri(listId) ?: return emptyList()
+        fun row(@StringRes title: Int, @DrawableRes icon: Int, shuffle: Boolean) = MediaItem.Builder()
+            .setMediaId(uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(context.getString(title))
+                    .setArtworkUri(resourceUri(icon))
+                    .setIsBrowsable(false)
+                    .setIsPlayable(true)
+                    .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
+                    .setExtras(ResumeModes.contextLoad(shuffle))
+                    .build(),
+            )
+            .setRequestMetadata(MediaItem.RequestMetadata.Builder().setExtras(ResumeModes.contextLoad(shuffle)).build())
+            .build()
+        return listOf(
+            row(R.string.playback_play, R.drawable.pb_ic_play, shuffle = false),
+            row(R.string.playback_shuffle_play, R.drawable.pb_ic_auto_shuffle, shuffle = true),
+        )
     }
 
     /** Children of a composite parent (bounded: the tabs, Home, Browse, an artist's page). */
@@ -134,12 +170,15 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             HOME -> home()
             LIBRARY -> listOf(
                 likedFolder(),
+                // "Add to playlist" at the top of the Library tab adds the currently playing track.
+                folder(ADD_TO_PLAYLIST, R.string.playback_add_to_playlist, R.drawable.pb_ic_auto_add, listStyle = true),
                 folder(PLAYLISTS, R.string.playback_playlists, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
                 folder(ALBUMS, R.string.playback_albums, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS),
                 folder(ARTISTS, R.string.playback_artists, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS),
                 folder(PODCASTS, R.string.playback_podcasts, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_PODCASTS),
             )
             BROWSE -> browse()
+            ADD_TO_PLAYLIST -> addToPlaylistTargets()
             else -> artistChildren(parentId)
         }?.take(MAX_ITEMS)
     } catch (e: CancellationException) {
@@ -451,6 +490,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             DOWNLOADS -> folder(DOWNLOADS, R.string.playback_tab_downloads, R.drawable.pb_ic_auto_downloads)
             BROWSE -> folder(BROWSE, R.string.playback_tab_browse, R.drawable.pb_ic_auto_browse)
             LIKED -> likedFolder()
+            ADD_TO_PLAYLIST -> folder(ADD_TO_PLAYLIST, R.string.playback_add_to_playlist, listStyle = true)
             PLAYLISTS -> folder(PLAYLISTS, R.string.playback_playlists, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS)
             ALBUMS -> folder(ALBUMS, R.string.playback_albums, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS)
             ARTISTS -> folder(ARTISTS, R.string.playback_artists, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS)
@@ -743,6 +783,30 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         else -> true
     }
 
+    /** Editable playlists as "add the current track" rows (Android Auto's Add to playlist picker). */
+    private suspend fun addToPlaylistTargets(): List<MediaItem> =
+        graph.library.playlists().settle()?.flatPlaylists().orEmpty()
+            .filter { it.canEdit && it.uri != null }
+            .mapNotNull { entry ->
+                val uri = entry.uri ?: return@mapNotNull null
+                playable(
+                    mediaId = ADD_TO_PREFIX + uri,
+                    title = entry.name,
+                    subtitle = entry.owner?.displayName ?: entry.owner?.username,
+                    artwork = if (entry.images.isEmpty()) playlistArtwork(uri) else artwork(entry.images),
+                    mediaType = MediaMetadata.MEDIA_TYPE_PLAYLIST,
+                )
+            }
+
+    /** Adds [trackUri] to the playlist in an `aa:add:` picker media id; returns whether it was handled. */
+    suspend fun addCurrentTrackTo(mediaId: String, trackUri: String?): Boolean {
+        val playlistUri = mediaId.removePrefix(ADD_TO_PREFIX).takeIf { it != mediaId } ?: return false
+        if (trackUri == null) return true
+        runCatching { graph.playlists.addItems(playlistUri, listOf(trackUri)) }
+            .onFailure { Log.w(TAG, "add to $playlistUri failed", it) }
+        return true
+    }
+
     // ---- builders -------------------------------------------------------------------------------
 
     private fun likedFolder(): MediaItem {
@@ -757,7 +821,8 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
                     .setTitle(context.getString(R.string.playback_liked_songs))
                     .setArtworkUri(resourceUri(R.drawable.pb_ic_auto_liked))
                     .setIsBrowsable(true)
-                    .setIsPlayable(uri != null)
+                    // Tap opens the track list; the Play/Shuffle rows at the top start playback.
+                    .setIsPlayable(false)
                     .setMediaType(MediaMetadata.MEDIA_TYPE_PLAYLIST)
                     .build(),
             )
@@ -842,7 +907,9 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
                 .setArtist(subtitle)
                 .setArtworkUri(if (mediaType == MediaMetadata.MEDIA_TYPE_PLAYLIST && images.isEmpty()) playlistArtwork(uri) else artwork(images))
                 .setIsBrowsable(true)
-                .setIsPlayable(true)
+                // Auto treats a playable item as tap-to-play. Albums and playlists should open their
+                // track list instead; their Play/Shuffle rows (actionRows) start playback.
+                .setIsPlayable(mediaType != MediaMetadata.MEDIA_TYPE_ALBUM && mediaType != MediaMetadata.MEDIA_TYPE_PLAYLIST)
                 .setMediaType(mediaType)
                 .setExtras(group?.let { groupExtras(it) })
                 .build(),
@@ -999,6 +1066,10 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         const val BROWSE = "tab:browse"
         const val LIKED = "library:liked"
         const val PLAYLISTS = "library:playlists"
+        /** The "Add to playlist" picker node (Android Auto); its children add the current track. */
+        const val ADD_TO_PLAYLIST = "aa:add-to-playlist"
+        /** Media id prefix of a picker row: adds the current track to the playlist whose uri follows. */
+        const val ADD_TO_PREFIX = "aa:add:"
         const val ALBUMS = "library:albums"
         const val ARTISTS = "library:artists"
         const val PODCASTS = "library:podcasts"

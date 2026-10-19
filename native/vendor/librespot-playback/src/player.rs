@@ -1847,6 +1847,8 @@ impl PlayerTrackLoader {
             .offline_source
             .as_ref()
             .and_then(|source| source.lookup(&track_uri));
+        // SPOTIFYGOOD DIAG: whether this track plays from a downloaded file (no network) or streams.
+        info!("[buffer-diag] load {track_uri} offline={}", if offline.is_some() { "HIT (downloaded)" } else { "MISS (streaming)" });
 
         let audio_item = if let Some(ref offline) = offline {
             // SPOTIFYGOOD: only local checks: availability as supplied by the engine, and the

@@ -64,6 +64,8 @@ internal class SpotifyPlayer(
     private val downloadedQueue: (startUri: String) -> List<String>,
     /** Absolute path of the downloaded cover of a track / episode uri (offline artwork), if any. */
     private val downloadedImage: (String) -> String? = { null },
+    /** Cached display name of the playlist/album/station for Android Auto. */
+    private val contextName: (String) -> String? = { null },
     /** The error to publish while nothing plays (logged out, Premium, failed start), see [PlayerErrors]. */
     private val playerError: () -> PlaybackException? = { null },
     /** A controller retries (`prepare()`, e.g. Android Auto's retry): drop sticky errors. */
@@ -119,6 +121,7 @@ internal class SpotifyPlayer(
     private data class ItemKey(
         val track: PlaybackTrack,
         val contextUri: String?,
+        val contextTitle: String?,
         val remoteDevice: String?,
         val durationMs: Long,
         val seekable: Boolean,
@@ -306,6 +309,7 @@ internal class SpotifyPlayer(
             val key = ItemKey(
                 track = entry.track,
                 contextUri = contextUri,
+                contextTitle = contextUri?.let(contextName) ?: s.context?.name,
                 remoteDevice = remoteName.takeIf { isCurrent },
                 durationMs = durationMs,
                 seekable = s.restrictions.canSeek,
@@ -339,7 +343,7 @@ internal class SpotifyPlayer(
             // The downloaded cover works offline (notification, lock screen, Auto) and is the one
             // the download stored; the CDN url (best(300)) usually names a different image file.
             .setArtworkUri(artworkUri(context, key.imagePath) ?: artworkUri(context, t.imageUrl))
-            .setSubtitle(deviceLine)
+            .setSubtitle(key.contextTitle ?: deviceLine)
             .setDurationMs(key.durationMs.takeIf { it > 0 })
             .setIsBrowsable(false)
             .setIsPlayable(true)

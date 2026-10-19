@@ -1,6 +1,7 @@
 package com.taehagen.spotifygood.ui.screens.player
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -80,6 +81,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerInputChange
@@ -361,6 +363,7 @@ internal fun PlayerSeekBar(
     modifier: Modifier = Modifier,
     trackKey: String? = null,
     showTimes: Boolean = true,
+    cinematicTheme: CinematicTheme? = null,
 ) {
     val positionMs by position
     var dragFraction by remember { mutableStateOf<Float?>(null) }
@@ -405,8 +408,8 @@ internal fun PlayerSeekBar(
                     contentDescription = label
                     stateDescription = state
                 },
-            thumb = { SeekThumb(seekEnabled, dragging = dragFraction != null) },
-            track = { sliderState -> ThinTrack(sliderState, seekEnabled) },
+            thumb = { SeekThumb(seekEnabled, dragging = dragFraction != null, saber = cinematicTheme == CinematicTheme.STAR_WARS) },
+            track = { sliderState -> ThinTrack(sliderState, seekEnabled, cinematicTheme) },
         )
         if (showTimes) {
             Row(
@@ -425,42 +428,116 @@ internal fun PlayerSeekBar(
 }
 
 @Composable
-private fun SeekThumb(enabled: Boolean, dragging: Boolean) {
+private fun SeekThumb(enabled: Boolean, dragging: Boolean, saber: Boolean = false) {
     val size = if (dragging) 16.dp else 12.dp
     Box(
         Modifier
             .size(16.dp),
         contentAlignment = Alignment.Center,
     ) {
-        if (enabled) {
-            Box(
-                Modifier
-                    .size(size)
-                    .background(LocalContentColor.current, CircleShape),
-            )
+        // Keep the thumb's 16 dp layout/hit target for Slider positioning and seeking,
+        // but do not draw a dot on top of the lightsaber blade.
+        if (enabled && !saber) {
+            Box(Modifier.size(size).background(LocalContentColor.current, CircleShape))
         }
     }
 }
 
 @Composable
-private fun ThinTrack(state: SliderState, enabled: Boolean) {
+private fun ThinTrack(state: SliderState, enabled: Boolean, theme: CinematicTheme? = null) {
     val content = LocalContentColor.current
-    val active = if (enabled) content else content.copy(alpha = 0.5f)
-    val inactive = content.copy(alpha = 0.24f)
-    Canvas(
-        Modifier
-            .fillMaxWidth()
-            .height(4.dp),
-    ) {
-        val y = size.height / 2
-        val stroke = size.height
-        val activeWidth = size.width * state.coercedValueAsFraction
-        drawLine(inactive, Offset(0f, y), Offset(size.width, y), strokeWidth = stroke, cap = StrokeCap.Round)
-        if (activeWidth > 0f) {
-            if (layoutDirection == LayoutDirection.Rtl) {
-                drawLine(active, Offset(size.width, y), Offset(size.width - activeWidth, y), strokeWidth = stroke, cap = StrokeCap.Round)
-            } else {
-                drawLine(active, Offset(0f, y), Offset(activeWidth, y), strokeWidth = stroke, cap = StrokeCap.Round)
+    val saber = theme == CinematicTheme.STAR_WARS
+    val jaws = theme == CinematicTheme.JAWS
+    val phase = if (saber) {
+        val motion = androidx.compose.animation.core.rememberInfiniteTransition(label = "cinematic seek track")
+        motion.animateFloat(0f, 1f,
+            androidx.compose.animation.core.infiniteRepeatable(
+                androidx.compose.animation.core.tween(2000, easing = androidx.compose.animation.core.LinearEasing)),
+            label = "seek effect loop").value
+    } else 0f
+    Canvas(Modifier.fillMaxWidth().height(when {
+        jaws -> 44.dp
+        saber -> 30.dp
+        else -> 4.dp
+    })) {
+        // The track must stay at the Slider thumb's vertical center for every theme.
+        val y = size.height / 2f
+        val rtl = layoutDirection == LayoutDirection.Rtl
+        val f = state.coercedValueAsFraction
+        if (saber) {
+            val hilt = 44f * density
+            val bladeStart = if (rtl) size.width - hilt else hilt
+            // The visible blade tip must use exactly the Slider fraction; reserving
+            // hilt width here used to shift it ahead of the thumb.
+            val tipX = if (rtl) size.width * (1f - f) else size.width * f
+            val bladeLength = if (rtl) bladeStart - tipX else tipX - bladeStart
+            drawLine(Color(0xFF43515C).copy(alpha = .42f), Offset(bladeStart, y),
+                Offset(if (rtl) 0f else size.width, y),
+                strokeWidth = 7f * density, cap = StrokeCap.Round)
+            if (bladeLength > 0f) {
+                val glow = .7f + .25f * kotlin.math.sin(phase * kotlin.math.PI.toFloat() * 2f)
+                drawLine(Color(0xFF288BFF).copy(alpha = .13f * glow), Offset(bladeStart, y), Offset(tipX, y),
+                    strokeWidth = 26f * density, cap = StrokeCap.Round)
+                drawLine(Color(0xFF50BFFF).copy(alpha = .32f * glow), Offset(bladeStart, y), Offset(tipX, y),
+                    strokeWidth = 15f * density, cap = StrokeCap.Round)
+                drawLine(brush = Brush.horizontalGradient(listOf(Color(0xFF4CA8FF), Color(0xFFBAEDFF))),
+                    start = Offset(bladeStart, y), end = Offset(tipX, y), strokeWidth = 9f * density,
+                    cap = StrokeCap.Round)
+                drawLine(Color.White.copy(alpha = .88f), Offset(bladeStart, y), Offset(tipX, y),
+                    strokeWidth = 3f * density, cap = StrokeCap.Round)
+            }
+            // Larger, machined hilt. It masks the first part of the progress range
+            // rather than shifting the endpoint of the blade.
+            val hiltLeft = if (rtl) size.width - hilt else 0f
+            drawRoundRect(Color(0xFF333D4A), Offset(hiltLeft, y - 7f * density),
+                androidx.compose.ui.geometry.Size(hilt, 14f * density),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(3.2f * density))
+            drawRoundRect(Color(0xFF818D9A).copy(alpha = .45f), Offset(hiltLeft + 2f * density, y - 5f * density),
+                androidx.compose.ui.geometry.Size(hilt - 4f * density, 3f * density),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f * density))
+            repeat(7) { i ->
+                val x = hiltLeft + (5f + i * 5.3f) * density
+                drawLine(Color(0xFFAAB8C3).copy(alpha = .75f), Offset(x, y - 6f * density),
+                    Offset(x, y + 6f * density), strokeWidth = 1.25f * density)
+            }
+            val bandX = if (rtl) hiltLeft + 5f * density else hiltLeft + hilt - 6f * density
+            drawLine(Color(0xFFE5C26A), Offset(bandX, y - 7f * density),
+                Offset(bandX, y + 7f * density), strokeWidth = 3.5f * density)
+        } else {
+            val active = if (enabled) content else content.copy(alpha = .5f)
+            val activeWidth = size.width * f
+            drawLine(content.copy(alpha = .24f), Offset(0f, y), Offset(size.width, y),
+                strokeWidth = 4f * density, cap = StrokeCap.Round)
+            if (activeWidth > 0f) {
+                val start = if (rtl) Offset(size.width, y) else Offset(0f, y)
+                val end = if (rtl) Offset(size.width - activeWidth, y) else Offset(activeWidth, y)
+                drawLine(active, start, end, strokeWidth = 4f * density, cap = StrokeCap.Round)
+            }
+            if (jaws) {
+                // Follow the seek thumb horizontally, without vertical bobbing.
+                // The flat base rests exactly on the upper edge of the 4dp track.
+                val finWidth = 30f * density
+                val finHeight = 17f * density
+                val progressX = if (rtl) size.width * (1f - f) else size.width * f
+                val x = progressX - finWidth / 2f
+                val surface = y - 2f * density
+                val fin = androidx.compose.ui.graphics.Path().apply {
+                    // Mirror the original fin profile so its pointed edge faces the other way.
+                    moveTo(x + finWidth, surface)
+                    cubicTo(x + finWidth * .65f, surface - finHeight * .15f,
+                        x + finWidth * .52f, surface - finHeight * .93f,
+                        x + finWidth * .34f, surface - finHeight)
+                    quadraticTo(x + finWidth * .44f, surface - finHeight * .35f,
+                        x, surface)
+                    close()
+                }
+                drawPath(fin, Color(0xFF009DFF))
+                drawLine(Color(0xFFB2ECFF).copy(alpha = .95f),
+                    Offset(x + finWidth * .64f, surface - finHeight * .25f),
+                    Offset(x + finWidth * .34f, surface - finHeight * .93f),
+                    strokeWidth = 1.8f * density, cap = StrokeCap.Round)
+                drawLine(Color(0xFF4DCBFF).copy(alpha = .72f), Offset(x - 5f * density, surface),
+                    Offset(x + finWidth + 5f * density, surface), strokeWidth = 1f * density)
             }
         }
     }

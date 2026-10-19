@@ -3,7 +3,9 @@ package com.taehagen.spotifygood.data
 import com.taehagen.spotifygood.model.Album
 import com.taehagen.spotifygood.model.Artist
 import com.taehagen.spotifygood.model.Episode
+import com.taehagen.spotifygood.model.FriendActivity
 import com.taehagen.spotifygood.model.MediaRef
+import com.taehagen.spotifygood.model.SpotifyNotification
 import com.taehagen.spotifygood.model.Playlist
 import com.taehagen.spotifygood.model.Show
 import com.taehagen.spotifygood.model.Track
@@ -119,8 +121,88 @@ class CatalogRepository(
     suspend fun recentlyPlayed(limit: Int = 50): List<MediaRef> =
         rpc.callOffMain<MediaRefs>("catalog.recentlyPlayed", rpcArgs { put("limit", limit) }).items
 
+    /** Timestamped playback contexts; no guessed song counts. */
+    suspend fun recentHistory(limit: Int = 50): List<RecentHistoryEntry> =
+        rpc.callOffMain<RecentHistoryResult>("catalog.recentHistory", rpcArgs { put("limit", limit) }).items
+
+    /** The last (up to 50) songs played, newest first, each with when and where it played. */
+    suspend fun playHistory(): List<PlayedTrack> = rpc.callOffMain<PlayHistoryResult>("catalog.playHistory").items
+
+    /** New releases of followed artists and new episodes of followed shows ("What's new"). */
+    suspend fun whatsNew(): List<MediaRef> = rpc.callOffMain<MediaRefs>("catalog.whatsNew").items
+
+    /** Concerts, live events, save-the-dates and other account notifications. */
+    suspend fun notifications(): List<SpotifyNotification> = rpc.callOffMain<NotificationsResult>("catalog.notifications").items
+
+    /** Cursor-based read operation. Also marks notifications older than this one read. */
+    suspend fun markNotificationRead(cursorMs: String) {
+        rpc.callOffMain<kotlinx.serialization.json.JsonObject>("catalog.markNotificationRead", rpcArgs { put("cursor", cursorMs) })
+    }
+
+    /** Send repeated Gander storage IDs in one atomic request. */
+    suspend fun deleteNotifications(storageIds: List<String>) {
+        rpc.callOffMain<kotlinx.serialization.json.JsonObject>("catalog.deleteNotifications", rpcArgs {
+            put("storageIds", kotlinx.serialization.json.JsonArray(storageIds.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+        })
+    }
+
+    /** Server-side Gander notification deletion; never local-only. */
+    suspend fun deleteNotification(storageId: String) {
+        rpc.callOffMain<kotlinx.serialization.json.JsonObject>("catalog.deleteNotification", rpcArgs { put("storageId", storageId) })
+    }
+
+    /** What friends listen to, newest first. */
+    suspend fun friendActivity(): List<FriendActivity> = rpc.callOffMain<FriendActivities>("catalog.friendActivity").items
+
     suspend fun user(username: String? = null): User =
         rpc.callOffMain("catalog.user", rpcArgs { if (username != null) put("username", username) })
+
+    /** Writes the Spotify account profile and requires a fresh server read to confirm. */
+    suspend fun updateProfilePhoto(jpeg: ByteArray): User =
+        rpc.callOffMain("catalog.updateProfilePhoto", rpcArgs {
+            put("jpegBase64", android.util.Base64.encodeToString(jpeg, android.util.Base64.NO_WRAP))
+        })
+
+    suspend fun removeProfilePhoto(): User =
+        rpc.callOffMain("catalog.removeProfilePhoto", rpcArgs { })
+
+    suspend fun updateProfileName(name: String): User =
+        rpc.callOffMain("catalog.updateProfileName", rpcArgs { put("name", name) })
+
+    /** Human users, not followed artists. */
+    suspend fun socialList(kind: String, username: String? = null): List<SocialPerson> =
+        rpc.callOffMain<SocialPeople>("catalog.socialList", rpcArgs {
+            put("kind", kind)
+            if (username != null) put("username", username)
+        }).items
+
+    /** Read Spotify's session ProductState publish-activity value. Null = not available. */
+    suspend fun listeningGlobal(): Boolean? =
+        rpc.callOffMain<ListeningGlobalResult>("catalog.listeningGlobal", rpcArgs { }).enabled
+
+    /** Write Spotify's global "all followers" listening-activity flag; returns the stored value. */
+    suspend fun setListeningGlobal(enabled: Boolean): Boolean =
+        rpc.callOffMain<ListeningGlobalResult>("catalog.listeningSetGlobal", rpcArgs { put("enabled", enabled) }).enabled ?: enabled
+
+    /** Server-authoritative audience for listening activity sharing. */
+    suspend fun listeningAudience(): List<ListeningAudienceUser> =
+        rpc.callOffMain<ListeningAudienceResult>("catalog.listeningAudience", rpcArgs { }).users
+
+    /** Restrict or allow a username using Spotify's listening activity audience service. */
+    suspend fun restrictListeningAudience(username: String, restricted: Boolean) {
+        rpc.callOffMain<ListeningAudienceMutation>("catalog.restrictListeningAudience", rpcArgs {
+            put("username", username)
+            put("restrict", restricted)
+        })
+    }
+
+    /** Updates the Spotify account only after the service accepts the mutation. */
+    suspend fun followUser(username: String, following: Boolean) {
+        rpc.callOffMain<SocialFollowResult>("catalog.socialFollow", rpcArgs {
+            put("username", username)
+            put("following", following)
+        })
+    }
 
     internal companion object {
         /** `catalog.tracks` accepts at most 200 URIs per call (docs §6.3). */
@@ -143,3 +225,54 @@ internal data class EpisodesResult(val episodes: List<Episode> = emptyList())
 
 @Serializable
 internal data class MediaRefs(val items: List<MediaRef> = emptyList())
+
+@Serializable
+internal data class FriendActivities(val items: List<FriendActivity> = emptyList())
+
+@Serializable
+internal data class NotificationsResult(val items: List<SpotifyNotification> = emptyList(), val latestCursor: String? = null)
+
+@Serializable
+data class PlayedTrack(val track: MediaRef, val playedAt: String = "", val contextUri: String? = null) {
+    val playedAtMs: Long get() = runCatching { java.time.Instant.parse(playedAt).toEpochMilli() }.getOrDefault(0L)
+}
+
+@Serializable
+internal data class PlayHistoryResult(val items: List<PlayedTrack> = emptyList())
+
+@Serializable
+data class RecentHistoryEntry(val context: MediaRef, val timestampMs: Long = 0, val lastTrackUri: String? = null)
+
+@Serializable
+internal data class RecentHistoryResult(val items: List<RecentHistoryEntry> = emptyList())
+
+@Serializable
+data class SocialPerson(
+    val username: String,
+    val displayName: String = "",
+    val imageUrl: String? = null,
+    val followersCount: Int? = null,
+    val isFollowing: Boolean = false,
+)
+
+@Serializable
+internal data class SocialPeople(val items: List<SocialPerson> = emptyList())
+
+@Serializable
+internal data class SocialFollowResult(val success: Boolean = false)
+
+@Serializable
+data class ListeningAudienceUser(
+    val username: String,
+    val restricted: Boolean = false,
+    val hidden: Boolean = false,
+)
+
+@Serializable
+private data class ListeningAudienceResult(val users: List<ListeningAudienceUser> = emptyList())
+
+@Serializable
+private data class ListeningAudienceMutation(val success: Boolean = false)
+
+@Serializable
+data class ListeningGlobalResult(val enabled: Boolean? = null)

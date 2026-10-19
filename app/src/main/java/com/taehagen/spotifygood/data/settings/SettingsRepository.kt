@@ -37,6 +37,9 @@ enum class LibraryView { LIST, GRID }
 enum class LibrarySort { RECENT, RECENTLY_ADDED, ALPHABETICAL, CREATOR }
 
 @Serializable
+enum class DataSaver { AUTO, ON, OFF }
+
+@Serializable
 data class Settings(
     val streamingQuality: Bitrate = Bitrate.HIGH,
     /** Quality used on metered networks (data saver). */
@@ -46,6 +49,9 @@ data class Settings(
     val normalizePregain: NormalizePregain = NormalizePregain.NORMAL,
     val autoplay: Boolean = true,
     val gapless: Boolean = true,
+    val automix: Boolean = false,
+    val crossfadeSeconds: Int = 0,
+    val monoAudio: Boolean = false,
     val hideExplicit: Boolean = false,
     val downloadOverCellular: Boolean = false,
     /**
@@ -59,6 +65,12 @@ data class Settings(
     /** Keep the phone visible to Spotify Connect while idle (connectedDevice FGS; battery cost). */
     val connectPresence: Boolean = false,
     val offlineMode: Boolean = false,
+    val dataSaver: DataSaver = DataSaver.AUTO,
+    /** Spotify's private session (Connect `is_private_session`); ends 6 hours after [privateSessionStartedAt]. */
+    val privateSession: Boolean = false,
+    val privateSessionStartedAt: Long = 0L,
+    /** Spotify's "Listening activity" (share what you play with followers); locked off in a private session. */
+    val listeningActivity: Boolean = true,
     val streamingCacheMb: Int = 1024,
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val dynamicColor: Boolean = false,
@@ -79,7 +91,7 @@ data class Settings(
  * [metered] (data saver quality), a blank device name falls back to [defaultDeviceName].
  */
 fun Settings.toEngineSettings(metered: Boolean, defaultDeviceName: String): EngineSettings = EngineSettings(
-    bitrate = (if (metered) cellularQuality else streamingQuality).kbps,
+    bitrate = (if (dataSaver == DataSaver.ON || (dataSaver == DataSaver.AUTO && metered)) cellularQuality else streamingQuality).kbps,
     normalize = normalize,
     normalizePregain = normalizePregain,
     autoplay = autoplay,

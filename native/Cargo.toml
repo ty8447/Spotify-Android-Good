@@ -24,3 +24,4 @@ strip = "debuginfo"
 [profile.dev]
 # Audio decoding is far too slow unoptimised.
 opt-level = 2
+incremental = false

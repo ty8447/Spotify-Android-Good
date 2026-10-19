@@ -127,4 +127,6 @@
     <string name="detail_remove_episode_download">Remove downloaded episode</string>
     <string name="detail_downloading_episode">Downloading episode</string>
     <string name="detail_episode_download_failed">Download failed. Tap to retry.</string>
+    <string name="detail_artists">Artists</string>
+    <string name="detail_contributors">Contributors</string>
 </resources>

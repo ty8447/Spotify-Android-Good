@@ -113,6 +113,8 @@ class AuthRepository(
     private var flowJob: Job? = null
     private var loopback: LoopbackServer? = null
     private var zeroconf: ZeroconfLogin? = null
+    /** The activity that opened the login Custom Tab, which [closeApprovalPage] closes. */
+    private var approvalPage: WeakReference<Activity>? = null
     /** The flow got a token: its engine login finishes even without the screen. */
     private var tokenObtained = false
     /** The device flow was paused by [onLoginScreenHidden]; [onLoginScreenShown] resumes it. */
@@ -167,7 +169,7 @@ class AuthRepository(
         val awaiting = _state.value as? LoginState.AwaitingApproval ?: return
         val url = awaiting.verificationUriComplete ?: awaiting.verificationUri
         // Without a browser the code can still be approved from another device; keep polling.
-        if (!BrowserLauncher.open(activity, url)) Log.w(TAG, "No browser to open the approval page")
+        if (!openPage(activity, url)) Log.w(TAG, "No browser to open the approval page")
     }
 
     /** Fallback: PKCE in a Custom Tab with a 127.0.0.1 loopback redirect. */
@@ -214,6 +216,7 @@ class AuthRepository(
         synchronized(lock) {
             screenVisible = true
             screenGone = false
+            approvalPage = null
         }
         scope.launch {
             val idle = synchronized(lock) {
@@ -247,7 +250,8 @@ class AuthRepository(
                     stopFlowLocked()
                     _state.value = LoginState.Idle
                 }
-                FlowKind.DEVICE -> if (!tokenObtained && flowJob?.isActive == true) {
+                // Polling goes on while our approval page is in front: it closes once approved.
+                FlowKind.DEVICE -> if (!tokenObtained && approvalPage == null && flowJob?.isActive == true) {
                     Log.i(TAG, "Login screen hidden: pausing the device login")
                     stopFlowLocked()
                     devicePaused = true
@@ -411,6 +415,7 @@ class AuthRepository(
         }
         withContext(Dispatchers.IO) { pendingStore.clear() }
         markTokenObtained(id)
+        closeApprovalPage()
         completeLogin(id, token)
     }
 
@@ -466,12 +471,13 @@ class AuthRepository(
             setState(id, LoginState.WaitingForBrowser)
             val opened = withContext(Dispatchers.Main) {
                 val activity = activityRef.get()?.takeUnless { it.isFinishing || it.isDestroyed }
-                activity != null && BrowserLauncher.open(activity, authorizeUrl)
+                activity != null && openPage(activity, authorizeUrl)
             }
             if (!opened) throw BrowserUnavailableException()
             Log.i(TAG, "Browser login started on port ${server.port}")
             when (val result = server.awaitResult(pkce.state, LOOPBACK_TIMEOUT_MS, loopbackPage())) {
                 is LoopbackServer.Result.Code -> {
+                    closeApprovalPage()
                     setState(id, LoginState.Connecting)
                     val token = accounts.exchangeAuthorizationCode(result.code, redirectUri, pkce.verifier)
                     markTokenObtained(id)
@@ -480,6 +486,16 @@ class AuthRepository(
                 is LoopbackServer.Result.Error -> throw OAuthException(result.error)
             }
         }
+    }
+
+    /** Opens a login page in a Custom Tab that [closeApprovalPage] can close. */
+    private fun openPage(activity: Activity, url: String): Boolean =
+        BrowserLauncher.open(activity, url, APPROVAL_REQUEST).also { if (it) synchronized(lock) { approvalPage = WeakReference(activity) } }
+
+    /** Closes the approval Custom Tab above the app (opened for a result, so the app may finish it). */
+    private suspend fun closeApprovalPage() {
+        val activity = synchronized(lock) { approvalPage?.get().also { approvalPage = null } } ?: return
+        withContext(Dispatchers.Main) { if (!activity.isDestroyed) activity.finishActivity(APPROVAL_REQUEST) }
     }
 
     private fun loopbackPage() = LoopbackServer.Page(
@@ -551,6 +567,7 @@ class AuthRepository(
         const val REDIRECT_SCHEME = "spotifygood"
         const val REDIRECT_HOST = "auth"
         const val PENDING_DEVICE_LOGIN_FILE = "device_login.bin"
+        const val APPROVAL_REQUEST = 0x5600
         /** A persisted code with less time left than this is not worth resuming. */
         const val MIN_REMAINING_MS = 30_000L
         const val LOOPBACK_TIMEOUT_MS = 5 * 60_000L

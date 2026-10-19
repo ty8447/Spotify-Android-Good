@@ -152,6 +152,7 @@ data class Playlist(
     val description: String? = null,
     val images: List<Image> = emptyList(),
     val owner: PlaylistOwner? = null,
+    val contributors: List<User> = emptyList(),
     val totalTracks: Int? = null,
     val collaborative: Boolean = false,
     val isOwnedByMe: Boolean = false,
@@ -205,6 +206,19 @@ data class MediaRef(
     val name: String,
     val subtitle: String? = null,
     val images: List<Image> = emptyList(),
+)
+
+/** What a friend listens to (or last listened to): `catalog.friendActivity`. */
+@Serializable
+data class FriendActivity(
+    val username: String,
+    val name: String,
+    val image: String? = null,
+    val track: MediaRef,
+    val contextUri: String? = null,
+    val contextName: String? = null,
+    val timestampMs: Long = 0,
+    val isActive: Boolean? = null,
 )
 
 @Serializable
@@ -320,6 +334,9 @@ data class User(
     val displayName: String? = null,
     val images: List<Image> = emptyList(),
     val product: String? = null,
+    val planType: String? = null,
+    val followersCount: Int? = null,
+    val followingCount: Int? = null,
     val country: String? = null,
     val explicitFilter: Boolean = false,
     /** Another user's public playlists (`catalog.user {username}`); empty for me (use the rootlist). */

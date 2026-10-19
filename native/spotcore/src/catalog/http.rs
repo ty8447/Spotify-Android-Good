@@ -120,6 +120,22 @@ pub(crate) async fn spc_get_plain(
 }
 
 /// Idempotent POST through librespot's pipeline (e.g. collection paging/contains).
+/// Plain GET that also sends `Content-Type: application/json`: gRPC-transcoded services
+/// (gander, the Your Updates feed) answer 400 to a GET without it.
+pub(crate) async fn spc_get_grpc(session: &Session, endpoint: &str) -> Result<Bytes, HttpError> {
+    // Match the official Android client's locale header for the Your Updates request.
+    let mut headers = header_map(Some(JSON), Some(JSON));
+    headers.insert(HeaderName::from_static("accept-language"), HeaderValue::from_static("en-US;q=1.00"));
+    timed(session.spclient().request_with_options(
+        &Method::GET,
+        endpoint,
+        Some(headers),
+        None,
+        &RequestOptions::new(false, false, None),
+    ))
+    .await
+}
+
 pub(crate) async fn spc_post_idempotent(
     session: &Session,
     endpoint: &str,

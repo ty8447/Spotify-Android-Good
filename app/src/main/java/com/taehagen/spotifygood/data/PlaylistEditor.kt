@@ -9,7 +9,11 @@ import kotlinx.coroutines.async
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /**
  * Playlist mutations (native `playlist.*`). Throws NativeException on failure.
@@ -38,6 +42,28 @@ class PlaylistEditor(
     /** Creates a playlist (added to the library) and returns its URI. */
     suspend fun create(name: String, description: String? = null, public: Boolean = false, initialUris: List<String> = emptyList()): String =
         detached { rootlistEdit { createNow(name, description, public, initialUris) } }
+
+    /** Creates an empty folder at the top of the library or of folder [parent]; returns its URI. */
+    suspend fun createFolder(name: String, parent: String? = null): String = detached {
+        rootlistEdit {
+            rpc.callOffMain<CreatedPlaylist>("playlist.createFolder", rpcArgs { put("name", name); parent?.let { put("parent", it) } }).uri
+        }.also { library.refresh() }
+    }
+
+    /** Moves playlists / folders (library URIs) to the top of [folder], or of the library when null. */
+    suspend fun moveToFolder(items: List<String>, folder: String?) =
+        editFolders("move") { putJsonArray("items") { items.forEach { add(it) } }; folder?.let { put("folder", it) } }
+
+    suspend fun renameFolder(folder: String, name: String) = editFolders("rename") { put("folder", folder); put("name", name) }
+
+    /** Deletes the folder; its contents move up a level unless [everything]. */
+    suspend fun deleteFolder(folder: String, everything: Boolean) =
+        editFolders("delete") { put("folder", folder); put("everything", everything) }
+
+    private suspend fun editFolders(op: String, build: JsonObjectBuilder.() -> Unit) = detached {
+        rootlistEdit { rpc.callOffMain<JsonObject>("playlist.editFolders", rpcArgs { put("op", op); build() }) }
+        library.refresh()
+    }
 
     private suspend fun createNow(name: String, description: String?, public: Boolean, initialUris: List<String>): String {
         val uri = rpc.callOffMain<CreatedPlaylist>(

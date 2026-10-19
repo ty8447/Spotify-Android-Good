@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -105,12 +106,20 @@ fun SearchScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) {
 
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Column(Modifier.statusBarsPadding().padding(horizontal = 16.dp)) {
-            Text(
-                text = stringResource(R.string.browse_search_title),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(top = 12.dp, bottom = 12.dp),
-            )
+            androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.browse_search_title),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f).padding(top = 12.dp, bottom = 12.dp),
+                )
+                IconButton(onClick = {
+                    hideKeyboard()
+                    navigator.navigate(Route.SpotifyCodeScanner)
+                }) {
+                    Icon(Icons.Rounded.CameraAlt, contentDescription = "Scan Spotify Code")
+                }
+            }
             SearchField(
                 value = queryText,
                 onValueChange = viewModel::onQueryChange,

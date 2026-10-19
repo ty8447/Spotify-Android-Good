@@ -41,6 +41,8 @@ use tokio::task::JoinHandle;
 pub(crate) const PLAYLIST_PREFIX: &str = "hm://playlist/v2/playlist/";
 pub(crate) const USER_PREFIX: &str = "hm://playlist/v2/user/";
 pub(crate) const COLLECTION_PREFIX: &str = "hm://collection/";
+/// Product-state (user attribute) pushes from other clients — e.g. the "all followers" flag.
+pub(crate) const ATTRIBUTES_PREFIX: &str = "spotify:user:attributes:";
 
 /// Items named by one collection push that are reported (a bigger change says "reload").
 const MAX_ITEMS: usize = 500;
@@ -245,12 +247,32 @@ where
     log::debug!("library pushes ended");
 }
 
+/// Emits the current `publish-activity` value whenever an attribute push arrives (another client
+/// changed a setting). Spirc's own listener updates the session cache; we only read and forward it.
+async fn run_attributes<S>(mut stream: S, session: Session)
+where
+    S: futures_util::Stream<Item = Message> + Unpin,
+{
+    while stream.next().await.is_some() {
+        let enabled = match session.get_user_attribute("publish-activity").as_deref() {
+            Some("1") => Some(true),
+            Some("0") => Some(false),
+            _ => None,
+        };
+        events::emit(events::LISTENING_GLOBAL, &serde_json::json!({ "enabled": enabled }));
+    }
+    log::debug!("attribute pushes ended");
+}
+
 /// The push listener of one session; dropping it stops the listener.
-pub(crate) struct PushTask(JoinHandle<()>);
+pub(crate) struct PushTask(JoinHandle<()>, Option<JoinHandle<()>>);
 
 impl Drop for PushTask {
     fn drop(&mut self) {
         self.0.abort();
+        if let Some(h) = &self.1 {
+            h.abort();
+        }
     }
 }
 
@@ -272,7 +294,19 @@ pub(crate) fn listen(session: &Session) -> Option<PushTask> {
         }
     }
     let task = crate::runtime::handle().spawn(run(select_all(streams), |kind, payload| events::emit(kind, &payload)));
-    Some(PushTask(task))
+    // Spirc applies attribute updates to the session cache; we watch the same pushes only to emit
+    // the current "all followers" value to the app. No new connection — the dealer is already open.
+    let attr_task = match dealer.add_listen_for(ATTRIBUTES_PREFIX) {
+        Ok(sub) => {
+            let session = session.clone();
+            Some(crate::runtime::handle().spawn(run_attributes(sub, session)))
+        }
+        Err(e) => {
+            log::warn!("attribute pushes not followed: {e}");
+            None
+        }
+    };
+    Some(PushTask(task, attr_task))
 }
 
 #[cfg(test)]

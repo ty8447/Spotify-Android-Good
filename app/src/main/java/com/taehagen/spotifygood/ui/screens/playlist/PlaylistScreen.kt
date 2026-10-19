@@ -93,6 +93,8 @@ import com.taehagen.spotifygood.ui.screens.library.sortKey
 import com.taehagen.spotifygood.ui.screens.library.LoadingAllProgress
 import com.taehagen.spotifygood.ui.screens.album.LoadStateContent
 import com.taehagen.spotifygood.ui.screens.album.MoreButton
+import com.taehagen.spotifygood.ui.screens.album.PeopleLine
+import com.taehagen.spotifygood.ui.screens.album.Person
 import com.taehagen.spotifygood.ui.screens.album.PagingFooter
 import com.taehagen.spotifygood.ui.screens.album.ShuffleButton
 import com.taehagen.spotifygood.ui.screens.album.SmartShuffleButton
@@ -499,7 +501,13 @@ private fun PlaylistHeader(
                 if (!playlist.description.isEmpty) {
                     ExpandableText(text = description, collapsedLines = 2)
                 }
-                meta.owner?.let { owner ->
+                if (meta.contributors.isNotEmpty()) {
+                    PeopleLine(
+                        meta.contributors.map { Person(it.displayName?.takeIf(String::isNotBlank) ?: it.username, it.images.best(64)) },
+                        stringResource(R.string.detail_contributors),
+                        { navigator.navigate(Route.Profile(meta.contributors[it].username)) },
+                    )
+                } else meta.owner?.let { owner ->
                     OwnerLine(
                         owner = owner,
                         collaborative = meta.collaborative,

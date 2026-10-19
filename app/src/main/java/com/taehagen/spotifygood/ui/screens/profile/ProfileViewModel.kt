@@ -77,7 +77,10 @@ class ProfileViewModel(private val graph: AppGraph, private val username: String
             if (skip) return@transformLatest
             graph.awaitConnectingSession()
             attempt { graph.catalog.user(if (isMe) null else username) }
-                .onSuccess { emit(Fetched(it, null, loading = false)) }
+                .onSuccess {
+                    if (isMe) graph.engine.adoptProfile(it)
+                    emit(Fetched(it, null, loading = false))
+                }
                 .onFailure { emit(Fetched(cached, it, loading = false)) }
         }
         .onEach { lastFetched.value = it }
@@ -87,7 +90,17 @@ class ProfileViewModel(private val graph: AppGraph, private val username: String
         if (!isMe || user == null) {
             flowOf(emptyList())
         } else {
-            graph.library.playlists().map { resource -> resource.dataOrNull?.ownedBy(user.username).orEmpty() }
+            graph.library.playlists().map { resource ->
+                resource.dataOrNull
+                    ?.flatPlaylists()
+                    ?.filter { it.isPublic == true && !it.uri.isNullOrBlank() }
+                    ?.mapNotNull { entry ->
+                        val uri = entry.uri ?: return@mapNotNull null
+                        PlaylistRef(uri = uri, name = entry.name, images = entry.images, owner = entry.owner)
+                    }
+                    ?.distinctBy { it.uri }
+                    .orEmpty()
+            }
         }
     }.catch { emit(emptyList()) }.onStart { emit(emptyList()) }.distinctUntilChanged()
 
@@ -125,6 +138,25 @@ class ProfileViewModel(private val graph: AppGraph, private val username: String
                 retry = { retry() },
             )
         }
+    }
+
+    /** Suspends until the backend confirms that Spotify returns the new name. */
+    suspend fun saveName(name: String) {
+        val updated = graph.catalog.updateProfileName(name)
+        graph.engine.adoptProfile(updated)
+        retry()
+    }
+
+    suspend fun savePhoto(jpeg: ByteArray) {
+        val updated = graph.catalog.updateProfilePhoto(jpeg)
+        graph.engine.adoptProfile(updated)
+        retry()
+    }
+
+    suspend fun removePhoto() {
+        val updated = graph.catalog.removeProfilePhoto()
+        graph.engine.adoptProfile(updated)
+        retry()
     }
 
     fun retry() = retry.update { it + 1 }

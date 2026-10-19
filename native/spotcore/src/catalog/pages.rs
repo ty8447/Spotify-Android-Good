@@ -70,9 +70,22 @@ pub(crate) async fn album(args: Value) -> AppResult<Value> {
     let uri = parse_kind(&a.uri, UriKind::Album).ok_or_else(|| AppError::invalid("not an album uri"))?.uri();
     let session = engine::session()?;
     let meta = metadata::album(&session, &uri).await?;
+    let faceless: Vec<String> = meta.album.artists.iter().filter(|a| a.images.is_empty()).map(|a| a.uri.clone()).collect();
+    let (fetched, faces) =
+        tokio::join!(metadata::track_lookup(&session, &meta.track_uris), metadata::artist_lookup(&session, &faceless));
     // No track metadata at all is an error (never an album without tracks).
-    let fetched = metadata::track_lookup(&session, &meta.track_uris).await.map_err(metadata::page_error)?;
-    to_value(&album_page(&meta, &fetched))
+    let mut page = album_page(&meta, &fetched.map_err(metadata::page_error)?);
+    let faces = faces.map(|f| f.map).unwrap_or_default();
+    page.artists = page.artists.iter().map(|a| with_images(a, &faces)).collect();
+    to_value(&page)
+}
+
+/// `a` with its portrait from `found` when it has none (extended metadata often leaves them out).
+fn with_images(a: &ArtistRef, found: &HashMap<String, Arc<metadata::ArtistMeta>>) -> ArtistRef {
+    match found.get(&a.uri) {
+        Some(m) if a.images.is_empty() => ArtistRef { images: m.artist.images.clone(), ..a.clone() },
+        _ => a.clone(),
+    }
 }
 
 /// The album with its tracks in disc order. A track whose metadata request failed keeps its slot
@@ -152,10 +165,7 @@ pub(crate) async fn artist(args: Value) -> AppResult<Value> {
         .related
         .iter()
         .take(RELATED_CAP)
-        .map(|r| match related_meta.get(&r.uri) {
-            Some(m) if r.images.is_empty() => ArtistRef { images: m.artist.images.clone(), ..r.clone() },
-            _ => r.clone(),
-        })
+        .map(|r| with_images(r, &related_meta))
         .collect();
     let [g_albums, g_singles, g_compilations, g_appears] = groups;
     to_value(&Artist {

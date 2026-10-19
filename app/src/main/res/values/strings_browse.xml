@@ -225,5 +225,14 @@
         <item quantity="one">%d artist followed</item>
         <item quantity="other">%d artists followed</item>
     </plurals>
+    <string name="browse_menu_view_profile">View profile</string>
+    <string name="browse_menu_premium">Your Premium</string>
+    <string name="browse_menu_recents">Recents</string>
+    <string name="browse_menu_updates">Your Updates</string>
+    <string name="browse_menu_activity">Activity</string>
+    <string name="browse_menu_settings">Settings and privacy</string>
+    <string name="browse_recents_empty">Nothing played yet</string>
+    <string name="browse_updates_empty">No new releases or episodes from what you follow</string>
+    <string name="browse_activity_empty">No friend activity yet. It shows what people you follow listen to, if they share it.</string>
     <string name="browse_track_start_waiting">Connecting to Spotify… Your song starts in a moment.</string>
 </resources>

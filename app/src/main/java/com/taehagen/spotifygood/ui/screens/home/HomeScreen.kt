@@ -70,6 +70,7 @@ import com.taehagen.spotifygood.ui.screens.library.contentPaddingWith
 import com.taehagen.spotifygood.ui.screens.library.isLikedSongsUri
 import com.taehagen.spotifygood.ui.screens.library.messageRes
 import com.taehagen.spotifygood.ui.screens.library.toActionTarget
+import com.taehagen.spotifygood.ui.screens.menu.LocalProfileMenu
 
 @Composable
 fun HomeScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) {
@@ -81,7 +82,7 @@ fun HomeScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) {
         HomeTopBar(
             greeting = state.greeting,
             user = state.user,
-            onProfile = { navigator.navigate(Route.Profile()) },
+            onProfile = LocalProfileMenu.current,
             onSettings = { navigator.navigate(Route.Settings) },
         )
         ChipRow(

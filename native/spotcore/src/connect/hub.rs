@@ -48,6 +48,8 @@ pub(crate) struct HubState {
     pub audio_output: Option<AudioOutputInfo>,
     /// Last `player.setSpeed` (re-applied to every new Spirc).
     pub playback_speed: Option<f64>,
+    /// Last `player.setPrivateSession` (re-applied to every new Spirc).
+    pub private_session: bool,
     /// Last snapshot while this device was active (reconnect restore point).
     pub last_active: Option<LastActive>,
     /// A reconnect with a pending restore is in progress (frozen playback state).
@@ -369,17 +371,22 @@ pub(crate) fn active_device_id() -> Option<String> {
 /// Called by the engine for every new Spirc (before the session is declared online).
 pub(crate) fn attach(a: Attachment) {
     let Attachment { generation, spirc, session, state, cluster, errors } = a;
-    let (audio_output, playback_speed) = {
+    let (audio_output, playback_speed, private_session) = {
         let mut hub = HUB.lock();
         forget_previous_link(&mut hub);
         hub.link = Some(Link { generation, spirc: spirc.clone() });
-        (hub.audio_output.clone(), hub.playback_speed)
+        (hub.audio_output.clone(), hub.playback_speed, hub.private_session)
     };
     changed();
     if let Some(out) = audio_output {
         let kind = super::local::audio_output_kind(&out.kind);
         if let Err(e) = spirc.set_audio_output(kind, out.name) {
             log::debug!("audio output not reported: {e}");
+        }
+    }
+    if private_session {
+        if let Err(e) = spirc.set_private_session(true) {
+            log::debug!("private session not reported: {e}");
         }
     }
     if let Some(speed) = playback_speed.filter(|s| *s != 1.0) {

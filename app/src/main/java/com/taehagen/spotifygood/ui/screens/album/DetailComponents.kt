@@ -4,7 +4,9 @@ import androidx.annotation.StringRes
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -30,6 +32,7 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.AddCircleOutline
 import androidx.compose.material.icons.rounded.ArrowCircleDown
 import androidx.compose.material.icons.rounded.ArrowDownward
@@ -44,15 +47,18 @@ import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -86,6 +92,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -477,39 +484,68 @@ internal fun RemoveDownloadDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) 
     )
 }
 
-/** Tappable artist names (with the first artist's avatar) under a header title. */
+/** A face and name for [PeopleLine] (artists of an album, people behind a playlist). */
+internal data class Person(val name: String, val image: String?)
+
+/** The album's artists: face pile + names; several open an "Artists" sheet. */
 @Composable
 internal fun ArtistLinks(artists: List<ArtistRef>, onArtistClick: (ArtistRef) -> Unit, modifier: Modifier = Modifier) {
-    if (artists.isEmpty()) return
-    FlowRow(modifier = modifier, itemVerticalAlignment = Alignment.CenterVertically) {
-        val avatar = artists.first().images.best(64)
-        if (avatar != null) {
-            Artwork(
-                url = avatar,
-                contentDescription = null,
-                modifier = Modifier
-                    .padding(end = 8.dp)
-                    .size(24.dp),
-                shape = CircleShape,
-                placeholderIcon = Icons.Rounded.Person,
-            )
+    PeopleLine(artists.map { Person(it.name, it.images.best(64)) }, stringResource(R.string.detail_artists), { onArtistClick(artists[it]) }, modifier)
+}
+
+/** Overlapping avatars (at most [max]). */
+@Composable
+internal fun FacePile(images: List<String?>, size: Dp = 24.dp, max: Int = 3) {
+    Row(horizontalArrangement = Arrangement.spacedBy(-size / 3)) {
+        images.take(max).forEach {
+            Artwork(it, null, Modifier.size(size).border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape), CircleShape, Icons.Rounded.Person)
         }
-        artists.forEachIndexed { index, artist ->
-            Box(
-                Modifier
-                    .clickable(role = Role.Button) { onArtistClick(artist) }
-                    .height(48.dp)
-                    .padding(end = 4.dp),
-                contentAlignment = Alignment.CenterStart,
+    }
+}
+
+/** Faces and names under a header title. One person opens directly; several open [PeopleSheet]. */
+@Composable
+internal fun PeopleLine(people: List<Person>, sheetTitle: String, onPersonClick: (Int) -> Unit, modifier: Modifier = Modifier) {
+    if (people.isEmpty()) return
+    var sheet by rememberSaveable { mutableStateOf(false) }
+    Row(
+        modifier.heightIn(min = 48.dp).clickable(role = Role.Button) { if (people.size == 1) onPersonClick(0) else sheet = true },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FacePile(people.map { it.image })
+        Spacer(Modifier.width(8.dp))
+        Text(
+            people.joinToString(" \u2022 ") { it.name }, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface, maxLines = 2, overflow = TextOverflow.Ellipsis,
+        )
+    }
+    if (sheet) PeopleSheet(sheetTitle, people, onDismiss = { sheet = false }) { sheet = false; onPersonClick(it) }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PeopleSheet(title: String, people: List<Person>, onDismiss: () -> Unit, onClick: (Int) -> Unit) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Text(
+            title, Modifier.fillMaxWidth().padding(bottom = 12.dp), style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
+        )
+        people.forEachIndexed { i, p ->
+            Row(
+                Modifier.fillMaxWidth().clickable(role = Role.Button) { onClick(i) }.heightIn(min = 64.dp).padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = if (index < artists.lastIndex) artist.name + "," else artist.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                Artwork(p.image, null, Modifier.size(48.dp), CircleShape, Icons.Rounded.Person)
+                Spacer(Modifier.width(16.dp))
+                Text(p.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        Spacer(Modifier.height(16.dp))
     }
 }
 

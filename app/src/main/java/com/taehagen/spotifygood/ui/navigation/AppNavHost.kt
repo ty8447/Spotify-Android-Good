@@ -25,10 +25,19 @@ import com.taehagen.spotifygood.ui.screens.home.HomeScreen
 import com.taehagen.spotifygood.ui.screens.library.DownloadsScreen
 import com.taehagen.spotifygood.ui.screens.library.LibraryScreen
 import com.taehagen.spotifygood.ui.screens.library.LikedSongsScreen
+import com.taehagen.spotifygood.ui.screens.menu.MessagesScreen
+import com.taehagen.spotifygood.ui.screens.menu.ActivityScreen
+import com.taehagen.spotifygood.ui.screens.menu.RecentsScreen
+import com.taehagen.spotifygood.ui.screens.menu.UpdatesScreen
+import com.taehagen.spotifygood.ui.screens.menu.WhatsNewScreen
 import com.taehagen.spotifygood.ui.screens.playlist.PlaylistScreen
+import com.taehagen.spotifygood.ui.screens.profile.ProfilePlaylistManagementScreen
 import com.taehagen.spotifygood.ui.screens.profile.ProfileScreen
+import com.taehagen.spotifygood.ui.screens.profile.SocialPeopleScreen
 import com.taehagen.spotifygood.ui.screens.search.SearchResultsScreen
 import com.taehagen.spotifygood.ui.screens.search.SearchScreen
+import com.taehagen.spotifygood.ui.screens.codes.SpotifyCodeScreen
+import com.taehagen.spotifygood.ui.screens.codes.SpotifyCodeScannerScreen
 import com.taehagen.spotifygood.ui.screens.settings.SettingsScreen
 import com.taehagen.spotifygood.ui.screens.show.EpisodeScreen
 import com.taehagen.spotifygood.ui.screens.show.ShowScreen
@@ -54,10 +63,16 @@ fun AppNavHost(
     ) {
         composable<Route.Home> { HomeScreen(contentPadding) }
         composable<Route.Search> { SearchScreen(contentPadding) }
+        composable<Route.SpotifyCodeScanner> { SpotifyCodeScannerScreen() }
         composable<Route.Library> { LibraryScreen(contentPadding) }
         composable<Route.LikedSongs> { LikedSongsScreen(contentPadding) }
         composable<Route.Downloads> { DownloadsScreen(contentPadding) }
         composable<Route.Settings> { SettingsScreen(contentPadding) }
+        composable<Route.Recents> { RecentsScreen(contentPadding) }
+        composable<Route.Updates> { UpdatesScreen(contentPadding) }
+        composable<Route.WhatsNew> { WhatsNewScreen(contentPadding) }
+        composable<Route.Activity> { ActivityScreen(contentPadding) }
+        composable<Route.Messages> { MessagesScreen(contentPadding) }
         composable<Route.Album> { entry -> AlbumScreen(entry.toRoute<Route.Album>().uri, contentPadding) }
         composable<Route.Artist> { entry -> ArtistScreen(entry.toRoute<Route.Artist>().uri, contentPadding) }
         composable<Route.ArtistDiscography> { entry ->
@@ -68,6 +83,15 @@ fun AppNavHost(
         composable<Route.Show> { entry -> ShowScreen(entry.toRoute<Route.Show>().uri, contentPadding) }
         composable<Route.Episode> { entry -> EpisodeScreen(entry.toRoute<Route.Episode>().uri, contentPadding) }
         composable<Route.Profile> { entry -> ProfileScreen(entry.toRoute<Route.Profile>().username, contentPadding) }
+        composable<Route.ProfilePlaylists> { ProfilePlaylistManagementScreen(contentPadding) }
+        composable<Route.SpotifyCode> { entry ->
+            val route = entry.toRoute<Route.SpotifyCode>()
+            SpotifyCodeScreen(route.uri, route.artworkUrl)
+        }
+        composable<Route.SocialPeople> { entry ->
+            val route = entry.toRoute<Route.SocialPeople>()
+            SocialPeopleScreen(route.kind, route.username, contentPadding)
+        }
         composable<Route.SearchResults> { entry ->
             val route = entry.toRoute<Route.SearchResults>()
             SearchResultsScreen(route.query, route.type, contentPadding)

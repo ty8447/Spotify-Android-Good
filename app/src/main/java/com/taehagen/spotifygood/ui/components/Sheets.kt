@@ -57,6 +57,7 @@ import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.RemoveDone
 import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -292,6 +293,10 @@ private fun TrackActions(t: MediaActionTarget.TrackTarget, s: ActionScope) {
     }
     SheetAction(Icons.Rounded.Radio, stringResource(R.string.shell_action_start_radio)) { s.radio(track.uri) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(track.uri, track.name) }
+    SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {
+        s.dismissNow()
+        s.navigator?.navigate(Route.SpotifyCode(track.uri, track.album?.images?.best(300)))
+    }
 }
 
 @Composable
@@ -338,6 +343,10 @@ private fun EpisodeActions(t: MediaActionTarget.EpisodeTarget, s: ActionScope) {
     }
     SheetAction(Icons.Rounded.Info, stringResource(R.string.shell_action_view_episode)) { s.go(Route.Episode(episode.uri)) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(episode.uri, episode.name) }
+    SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {
+        s.dismissNow()
+        s.navigator?.navigate(Route.SpotifyCode(episode.uri, episode.images.best(300) ?: episode.show?.images?.best(300)))
+    }
 }
 
 @Composable
@@ -387,6 +396,10 @@ private fun AlbumActions(t: MediaActionTarget.AlbumTarget, s: ActionScope) {
     }
     SheetAction(Icons.Rounded.Radio, stringResource(R.string.shell_action_start_radio)) { s.radio(album.uri) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(album.uri, album.name) }
+    SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {
+        s.dismissNow()
+        s.navigator?.navigate(Route.SpotifyCode(album.uri, album.images.best(300)))
+    }
 }
 
 @Composable
@@ -412,6 +425,10 @@ private fun ArtistActions(t: MediaActionTarget.ArtistTarget, s: ActionScope) {
     SheetAction(Icons.Rounded.Person, stringResource(R.string.shell_action_view_artist)) { s.go(Route.Artist(artist.uri)) }
     SheetAction(Icons.Rounded.Radio, stringResource(R.string.shell_action_start_radio)) { s.radio(artist.uri) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(artist.uri, artist.name) }
+    SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {
+        s.dismissNow()
+        s.navigator?.navigate(Route.SpotifyCode(artist.uri, artist.images.best(300)))
+    }
 }
 
 @Composable
@@ -459,6 +476,10 @@ private fun PlaylistActions(t: MediaActionTarget.PlaylistTarget, s: ActionScope)
         CollectionRef(playlist.uri, CollectionType.PLAYLIST, playlist.name, playlist.images.best(300))
     }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(playlist.uri, playlist.name) }
+    SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {
+        s.dismissNow()
+        s.navigator?.navigate(Route.SpotifyCode(playlist.uri, playlist.images.best(300)))
+    }
 }
 
 @Composable
@@ -481,6 +502,10 @@ private fun ShowActions(t: MediaActionTarget.ShowTarget, s: ActionScope) {
     }
     SheetAction(Icons.Rounded.Podcasts, stringResource(R.string.shell_action_go_to_show)) { s.go(Route.Show(show.uri)) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(show.uri, show.name) }
+    SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {
+        s.dismissNow()
+        s.navigator?.navigate(Route.SpotifyCode(show.uri, show.images.best(300)))
+    }
 }
 
 /**

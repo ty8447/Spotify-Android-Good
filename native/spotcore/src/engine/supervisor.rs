@@ -311,6 +311,9 @@ fn user_of(session: &Session) -> Option<User> {
         display_name: None,
         images: Vec::new(),
         product: Some(product),
+        plan_type: crate::catalog::user::plan_of(session),
+        followers_count: None,
+        following_count: None,
         country,
         // The account's own filter; "Hide explicit content" may force the session's on.
         explicit_filter: super::explicit::account_filter(session),

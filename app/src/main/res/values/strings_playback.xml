@@ -83,4 +83,7 @@
     <string name="playback_output_dock">Dock</string>
     <string name="playback_output_car">Car</string>
     <string name="playback_output_other">External speaker</string>
+    <string name="playback_play">Play</string>
+    <string name="playback_shuffle_play">Shuffle play</string>
+    <string name="playback_add_to_playlist">Add to playlist</string>
 </resources>

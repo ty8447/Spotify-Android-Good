@@ -39,6 +39,7 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.CellTower
+import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.CleaningServices
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.Code
@@ -146,6 +147,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import androidx.compose.material.icons.rounded.Link
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.VisibilityOff
+import androidx.compose.material3.Surface
+import androidx.compose.material3.TextField
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.style.TextOverflow
+import com.taehagen.spotifygood.data.settings.DataSaver
 
 /** Settings state and actions. Mutations run in the app scope so they finish after navigation. */
 /** Cache keys of catalog pages (album, artist, show, playlist pages, home) with track `playable` flags. */
@@ -294,6 +312,10 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
     val msgRedownloading = stringResource(R.string.shell_settings_unused_card_started)
     val sleepTimer by vm.sleepTimer.collectAsStateWithLifecycle()
     var dialog by remember { mutableStateOf<SettingsDialog?>(null) }
+    var query by remember { mutableStateOf<String?>(null) } // null: search closed
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    BackHandler(enabled = query != null) { query = null }
     // open.spotify.com links need the user's approval on Android 12+; checked again whenever the
     // screen comes back (from the system's "Open by default" page).
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -343,6 +365,11 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.shell_cd_back))
                     }
                 },
+                actions = {
+                    IconButton(onClick = { query = if (query == null) "" else null }) {
+                        Icon(if (query == null) Icons.Rounded.Search else Icons.Rounded.Close, contentDescription = "Search settings")
+                    }
+                },
                 scrollBehavior = scrollBehavior,
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background,
@@ -351,13 +378,35 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
             )
         },
     ) { inner ->
-        LazyColumn(
+        if (query != null) SettingsSearch(query.orEmpty(), { query = it }, inner) { key ->
+            query = null
+            scope.launch { listState.scrollToKey(key) }
+        } else LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 top = inner.calculateTopPadding(),
                 bottom = contentPadding.calculateBottomPadding() + 24.dp,
             ),
         ) {
+            item(key = "quick") {
+                var explainPrivate by remember { mutableStateOf(false) }
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    QuickTile("Data saver", Icons.Rounded.SignalCellularAlt,
+                        when (settings.dataSaver) { DataSaver.AUTO -> "Automatic"; DataSaver.ON -> "Always on"; DataSaver.OFF -> "Always off" },
+                        settings.dataSaver != DataSaver.OFF) {
+                        vm.update { it.copy(dataSaver = DataSaver.entries[(it.dataSaver.ordinal + 1) % DataSaver.entries.size]) }
+                    }
+                    QuickTile("Offline mode", Icons.Rounded.CloudOff, if (settings.offlineMode) "On" else "Off", settings.offlineMode) {
+                        vm.update { it.copy(offlineMode = !it.offlineMode) }
+                    }
+                    QuickTile("Private session", Icons.Rounded.VisibilityOff, if (settings.privateSession) "On" else "Off", settings.privateSession) {
+                        if (!settings.privateSession) explainPrivate = true
+                        vm.update { it.copy(privateSession = !it.privateSession) }
+                    }
+                }
+                if (explainPrivate) PrivateSessionExplainer { explainPrivate = false }
+            }
             // ---- Account
             item(key = "h_account") { PrefHeader(stringResource(R.string.shell_settings_account)) }
             item(key = "account") {
@@ -379,16 +428,6 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     modifier = Modifier.clickableRow { navigator.navigate(Route.Profile(null)) },
                 )
             }
-            item(key = "logout") {
-                PrefItem(
-                    title = stringResource(R.string.shell_logout),
-                    icon = Icons.AutoMirrored.Rounded.Logout,
-                    summary = stringResource(R.string.shell_settings_logout_summary),
-                    onClick = { dialog = SettingsDialog.Logout },
-                    destructive = true,
-                )
-            }
-
             // ---- Playback
             item(key = "h_playback") { PrefHeader(stringResource(R.string.shell_settings_playback)) }
             item(key = "quality_wifi") {
@@ -407,6 +446,37 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     options = bitrateOptions,
                     selected = settings.cellularQuality,
                     onSelect = { q -> vm.update { it.copy(cellularQuality = q) } },
+                )
+            }
+            item(key = "automix") {
+                SwitchPref(
+                    title = "Automix",
+                    summary = "Saved preference; automatic DJ-style transitions are not yet supported by the playback engine",
+                    icon = Icons.Rounded.GraphicEq,
+                    checked = settings.automix,
+                    onCheckedChange = { enabled -> vm.update { it.copy(automix = enabled) } },
+                )
+            }
+            item(key = "crossfade") {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp)) {
+                    Text("Crossfade: ${settings.crossfadeSeconds}s", style = MaterialTheme.typography.titleMedium)
+                    Text("0–12 seconds · saved preference; audio crossfade is not yet implemented",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Slider(
+                        value = settings.crossfadeSeconds.coerceIn(0, 12).toFloat(),
+                        onValueChange = { seconds -> vm.update { it.copy(crossfadeSeconds = seconds.toInt().coerceIn(0, 12)) } },
+                        valueRange = 0f..12f,
+                        steps = 11,
+                    )
+                }
+            }
+            item(key = "mono_audio") {
+                SwitchPref(
+                    title = "Mono audio",
+                    summary = "Saved preference; stereo-to-mono mixing is not yet implemented in the audio engine",
+                    icon = Icons.Rounded.GraphicEq,
+                    checked = settings.monoAudio,
+                    onCheckedChange = { enabled -> vm.update { it.copy(monoAudio = enabled) } },
                 )
             }
             item(key = "gapless") {
@@ -478,6 +548,7 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     onClick = { dialog = SettingsDialog.DeviceName },
                 )
             }
+            item(key = "privacy") { PrivacySwitches(settings, vm::update) }
             item(key = "presence") {
                 SwitchPref(
                     title = stringResource(R.string.shell_settings_presence),
@@ -741,6 +812,16 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
                 )
             }
+            item(key = "logout") {
+                PrefItem(
+                    title = stringResource(R.string.shell_logout),
+                    icon = Icons.AutoMirrored.Rounded.Logout,
+                    summary = stringResource(R.string.shell_settings_logout_summary),
+                    onClick = { dialog = SettingsDialog.Logout },
+                    destructive = true,
+                )
+            }
+
         }
     }
 
@@ -820,6 +901,118 @@ private fun transparentListItem() = ListItemDefaults.colors(containerColor = and
 
 private fun Modifier.clickableRow(enabled: Boolean = true, onClick: () -> Unit): Modifier =
     clickable(enabled = enabled, role = Role.Button, onClick = onClick).heightIn(min = 56.dp)
+
+@Composable
+private fun RowScope.QuickTile(label: String, icon: ImageVector, value: String, active: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Surface(onClick = onClick, shape = RoundedCornerShape(12.dp), modifier = Modifier.weight(1f),
+        color = if (active) colors.primaryContainer else colors.surfaceContainerHigh) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Icon(icon, contentDescription = null, tint = if (active) colors.onPrimaryContainer else colors.onSurfaceVariant)
+            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(value, style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant, maxLines = 1)
+        }
+    }
+}
+
+/** A searchable setting: its list key, title (string resource or text) and words people might type for it. */
+private class SettingEntry(val key: String, val title: Any, val words: String = "")
+
+private val SEARCH_INDEX = listOf(
+    SettingEntry("quick", "Data saver", "mobile cellular metered bandwidth low quality"),
+    SettingEntry("quick", "Private session", "incognito hide listening activity"),
+    SettingEntry("account", R.string.shell_settings_account, "profile name username"),
+    SettingEntry("logout", R.string.shell_logout, "sign out log off"),
+    SettingEntry("quality_wifi", R.string.shell_settings_quality_wifi, "audio streaming bitrate sound"),
+    SettingEntry("quality_cell", R.string.shell_settings_quality_cellular, "data saver mobile bitrate metered"),
+    SettingEntry("gapless", R.string.shell_settings_gapless, "crossfade transition"),
+    SettingEntry("normalize", R.string.shell_settings_normalize, "volume loudness"),
+    SettingEntry("normalize_level", R.string.shell_settings_volume_level, "loud quiet loudness"),
+    SettingEntry("autoplay", R.string.shell_settings_autoplay, "radio continue similar"),
+    SettingEntry("explicit", R.string.shell_settings_hide_explicit, "clean parental filter kids"),
+    SettingEntry("sleep", R.string.shell_settings_sleep_timer, "stop timer bedtime"),
+    SettingEntry("device_name", R.string.shell_settings_device_name, "connect speaker cast rename"),
+    SettingEntry("presence", R.string.shell_settings_presence, "connect visible background battery"),
+    SettingEntry("download_quality", R.string.shell_settings_download_quality, "offline bitrate"),
+    SettingEntry("download_cellular", R.string.shell_settings_download_cellular, "mobile data metered"),
+    SettingEntry("storage_used", R.string.shell_settings_storage_used, "space disk size downloads"),
+    SettingEntry("remove_downloads", R.string.shell_settings_remove_downloads, "delete clear offline"),
+    SettingEntry("offline_mode", R.string.shell_settings_offline_mode, "airplane no internet"),
+    SettingEntry("download_location", R.string.shell_settings_download_location, "sd card storage"),
+    SettingEntry("cache_size", R.string.shell_settings_cache_size, "storage space streaming"),
+    SettingEntry("clear_cache", R.string.shell_settings_clear_cache, "storage space delete"),
+    SettingEntry("theme", R.string.shell_settings_theme, "dark light mode appearance"),
+    SettingEntry("dynamic_color", R.string.shell_settings_dynamic_color, "material you colors wallpaper"),
+    SettingEntry("lyrics", R.string.shell_settings_lyrics, "words karaoke now playing"),
+    SettingEntry("library_view", R.string.shell_settings_library_view, "grid list layout"),
+    SettingEntry("library_sort", R.string.shell_settings_library_sort, "order alphabetical recent"),
+    SettingEntry("equalizer", R.string.shell_settings_equalizer, "eq bass treble sound"),
+    SettingEntry("open_links", R.string.shell_settings_open_links, "spotify links default app"),
+    SettingEntry("version", R.string.shell_settings_version, "about build"),
+    SettingEntry("licenses", R.string.shell_settings_licenses, "open source legal"),
+)
+
+/** The search field and the best matches, best first; [onPick] gets the chosen setting's list key. */
+@Composable
+private fun SettingsSearch(query: String, onQuery: (String) -> Unit, padding: PaddingValues, onPick: (String) -> Unit) {
+    val context = LocalContext.current
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    val results = remember(query) {
+        SEARCH_INDEX.mapNotNull { e ->
+            val title = (e.title as? Int)?.let(context::getString) ?: e.title.toString()
+            val score = maxOf(fuzzyScore(query, title)?.times(2) ?: -1, fuzzyScore(query, e.words) ?: -1)
+            if (score < 0) null else Triple(e.key, title, score)
+        }.sortedByDescending { it.third }
+    }
+    Column(Modifier.fillMaxSize().padding(padding)) {
+        TextField(query, onQuery, Modifier.fillMaxWidth().padding(horizontal = 16.dp).focusRequester(focus), singleLine = true,
+            placeholder = { Text("Search settings") }, leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) })
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(results, key = { it.second }) { (key, title) ->
+                PrefItem(title = title, icon = Icons.AutoMirrored.Rounded.KeyboardArrowRight, onClick = { onPick(key) })
+            }
+            if (query.isNotBlank() && results.isEmpty()) item { PrefItem(title = "No matching settings", icon = Icons.Rounded.Search) }
+        }
+    }
+}
+
+/** Higher is better, null is no match: whole phrase > every word starts a word (small typos allowed) > letters in order. */
+private fun fuzzyScore(query: String, text: String): Int? {
+    val q = query.trim().lowercase()
+    val t = text.lowercase()
+    if (q.isEmpty()) return null
+    t.indexOf(q).takeIf { it >= 0 }?.let { return 100 - it.coerceAtMost(50) }
+    if (t.replace(" ", "").contains(q.replace(" ", ""))) return 60
+    val words = t.split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+    val typos = { n: Int -> if (n >= 6) 2 else if (n >= 3) 1 else 0 }
+    if (q.split(' ').filter { it.isNotEmpty() }.all { qw -> words.any { w -> editDistance(qw, w.take(qw.length)) <= typos(qw.length) } }) return 40
+    var i = 0
+    for (c in t) if (i < q.length && c == q[i]) i++
+    return if (i == q.length && q.length >= 4) 10 else null
+}
+
+private fun editDistance(a: String, b: String): Int {
+    var prev = IntArray(b.length + 1) { it }
+    for (i in a.indices) {
+        val cur = IntArray(b.length + 1).also { it[0] = i + 1 }
+        for (j in b.indices) cur[j + 1] = minOf(prev[j + 1] + 1, cur[j] + 1, prev[j] + if (a[i] == b[j]) 0 else 1)
+        prev = cur
+    }
+    return prev[b.length]
+}
+
+/** Scrolls until the item with [key] is on screen (a lazy list only knows the keys it has laid out). */
+private suspend fun LazyListState.scrollToKey(key: Any) {
+    repeat(2) { withFrameNanos {} } // the settings list was just put back in place of the search
+    scrollToItem(0)
+    while (true) {
+        layoutInfo.visibleItemsInfo.firstOrNull { it.key == key }?.let { return animateScrollToItem(it.index) }
+        val last = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return
+        if (last >= layoutInfo.totalItemsCount - 1) return
+        scrollToItem(last)
+    }
+}
 
 @Composable
 private fun PrefHeader(title: String) {
@@ -1050,3 +1243,44 @@ private fun LicensesDialog(onDismiss: () -> Unit) {
 }
 
 private const val MAX_DEVICE_NAME = 64
+
+/**
+ * Private session and listening activity, as in Spotify: listening activity is off and locked while
+ * a private session runs. Shown in Settings and in the "Your activity" sheet of the profile menu.
+ */
+@Composable
+internal fun PrivacySwitches(settings: Settings, update: ((Settings) -> Settings) -> Unit) {
+    var explain by remember { mutableStateOf(false) }
+    SwitchPref(
+        "Private session", Icons.Rounded.VisibilityOff, settings.privateSession,
+        { on -> if (on) explain = true; update { it.copy(privateSession = on) } },
+        "Temporarily hides your listening activity everywhere, and ends after 6 hours.",
+    )
+    SwitchPref(
+        "Listening activity", Icons.Rounded.Group, settings.listeningActivity && !settings.privateSession,
+        { on -> update { it.copy(listeningActivity = on) } },
+        if (settings.privateSession) "Unavailable during a private session." else "Share what you listen to with your followers.",
+        enabled = !settings.privateSession,
+    )
+    if (explain) PrivateSessionExplainer { explain = false }
+}
+
+/** Spotify's "How private sessions work" explainer, shown when a private session starts. */
+@Composable
+internal fun PrivateSessionExplainer(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("How private sessions work") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                listOf(
+                    "Your listening activity is hidden on any device you are logged into, and on any connected third-party apps.",
+                    "What you listen to will not appear in your Recents or your profile.",
+                    "What you listen to will not impact your recommendations, listening stats or Wrapped.",
+                    "Private sessions end after 6 hours. You can start another private session right after one ends.",
+                ).forEach { Text("\u2022  $it", style = MaterialTheme.typography.bodyMedium) }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Got it") } },
+    )
+}

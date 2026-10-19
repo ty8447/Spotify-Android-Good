@@ -151,6 +151,10 @@ fun Artwork(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(4.dp),
     placeholderIcon: ImageVector = Icons.Rounded.MusicNote,
+    transparentBackground: Boolean = false,
+    /** When set and there is no image, draw this name's initial on a per-name colour (Spotify's
+     *  default avatar) instead of [placeholderIcon]. */
+    avatarName: String? = null,
 ) {
     val context = LocalPlatformContext.current
     val request = remember(url, context) {
@@ -160,7 +164,13 @@ fun Artwork(
     Box(
         modifier = modifier
             .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .then(
+                when {
+                    transparentBackground -> Modifier
+                    avatarInitial(avatarName) != null -> Modifier.background(avatarColor(avatarName!!))
+                    else -> Modifier.background(MaterialTheme.colorScheme.surfaceVariant)
+                },
+            )
             .then(
                 if (contentDescription != null) {
                     Modifier.semantics {
@@ -174,12 +184,22 @@ fun Artwork(
         contentAlignment = Alignment.Center,
     ) {
         if (!loaded) {
-            Icon(
-                imageVector = placeholderIcon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
-                modifier = Modifier.fillMaxSize(0.42f),
-            )
+            val initial = avatarInitial(avatarName)
+            if (initial != null) {
+                Text(
+                    text = initial,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            } else {
+                Icon(
+                    imageVector = placeholderIcon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxSize(0.42f),
+                )
+            }
         }
         if (request != null) {
             AsyncImage(
@@ -525,6 +545,24 @@ fun EpisodeRow(
 }
 
 /** Placeholder icon and shape for a media type. */
+/** The uppercase first letter of [name] for a default avatar, or null when there's nothing to show. */
+private fun avatarInitial(name: String?): String? =
+    name?.trim()?.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString()
+
+/** Spotify's default-avatar palette; the colour is a stable hash of the name, so it matches elsewhere. */
+private val AVATAR_COLORS = listOf(
+    Color(0xFF509BF5), Color(0xFF1DB954), Color(0xFFAF2896), Color(0xFFE8115B),
+    Color(0xFFF59B23), Color(0xFF8D67AB), Color(0xFFC39358), Color(0xFF777777),
+    Color(0xFF27856A), Color(0xFF503750), Color(0xFFBA5D07), Color(0xFF4B917D),
+)
+
+/** Deterministic colour for [name] (same name -> same colour on every device). */
+private fun avatarColor(name: String): Color {
+    var hash = 0
+    for (c in name.trim()) hash = hash * 31 + c.code
+    return AVATAR_COLORS[Math.floorMod(hash, AVATAR_COLORS.size)]
+}
+
 private fun MediaType.placeholderIcon(): ImageVector = when (this) {
     MediaType.ARTIST -> Icons.Rounded.Person
     MediaType.ALBUM -> Icons.Rounded.Album
