@@ -174,11 +174,17 @@ pub(crate) fn queue_without(next: &[ProvidedTrack], uid: &str) -> Option<Vec<Pro
 }
 
 /// `next_tracks` with `uid` moved to the displayed index `to_visible` (hidden entries are not
-/// counted). Metadata (incl. `is_queued`) is kept as is.
+/// counted). A user-initiated move promotes a context track to the protected manual queue,
+/// matching Jam's Move up behavior. Existing queued entries retain their metadata.
 pub(crate) fn queue_moved(next: &[ProvidedTrack], uid: &str, to_visible: usize) -> Option<Vec<ProvidedTrack>> {
     let mut rest = next.to_vec();
+    if uid.is_empty() { return None; }
     let pos = rest.iter().position(|t| t.uid == uid && !is_hidden_provided(t))?;
-    let item = rest.remove(pos);
+    let mut item = rest.remove(pos);
+    if !is_queued(&item) {
+        item.provider = "queue".to_owned();
+        item.metadata.insert("is_queued".to_owned(), "true".to_owned());
+    }
     // Right after the displayed entry that will precede it.
     let mut insert_at = if to_visible == 0 { 0 } else { rest.len() };
     if to_visible > 0 {
@@ -198,7 +204,105 @@ pub(crate) fn queue_moved(next: &[ProvidedTrack], uid: &str, to_visible: usize) 
     Some(rest)
 }
 
+/// Builds a single set_queue update for multiple selected tracks. All selected UIDs must
+/// be present; otherwise return None without partially modifying the supplied snapshot.
+/// The selected order is exactly the order received from the Jam editor.
+pub(crate) fn queue_promoted(next: &[ProvidedTrack], uids: &[String]) -> Option<Vec<ProvidedTrack>> {
+    if uids.is_empty() || uids.len() > 80 { return None; }
+    let mut rest = next.to_vec();
+    let mut promoted = Vec::with_capacity(uids.len());
+    for uid in uids {
+        if uid.is_empty() { return None; }
+        let pos = rest.iter().position(|t| &t.uid == uid && !is_hidden_provided(t))?;
+        let mut item = rest.remove(pos);
+        if !is_queued(&item) {
+            item.provider = "queue".to_owned();
+            item.metadata.insert("is_queued".to_owned(), "true".to_owned());
+        }
+        promoted.push(item);
+    }
+    promoted.extend(rest);
+    Some(promoted)
+}
+
+/** A recorded pre-promotion position. A track without a verified origin cannot be reset. */
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RestoreMove {
+    pub uid: String,
+    pub context_index: usize,
+    pub provider: String,
+    #[serde(default)]
+    pub before_uid: Option<String>,
+    #[serde(default)]
+    pub after_uid: Option<String>,
+}
+
+/// Restore only known originally-context tracks to their earlier neighborhood.
+/// Other manually queued tracks and all current context tracks are preserved.
+/// Anchors win when still present; otherwise fall back to the original context index.
+pub(crate) fn queue_restored(next: &[ProvidedTrack], moves: &[RestoreMove]) -> Option<Vec<ProvidedTrack>> {
+    if moves.is_empty() || moves.len() > 80 { return None; }
+    let mut rest = next.to_vec();
+    let mut pulled = Vec::with_capacity(moves.len());
+    for (seq, mv) in moves.iter().enumerate() {
+        if mv.uid.is_empty() || mv.uid.len() > 256 || mv.context_index > 10_000 ||
+           !(mv.provider == "context" || mv.provider == "autoplay") ||
+           mv.before_uid.as_ref().is_some_and(|s| s.len() > 256) ||
+           mv.after_uid.as_ref().is_some_and(|s| s.len() > 256) ||
+           moves[..seq].iter().any(|earlier| earlier.uid == mv.uid) { return None; }
+        let pos = rest.iter().position(|t| t.uid == mv.uid && !is_hidden_provided(t) && is_queued(t))?;
+        let mut track = rest.remove(pos);
+        track.provider = mv.provider.clone();
+        track.metadata.remove("is_queued");
+        pulled.push((seq, mv, track));
+    }
+    // Recreate original context order when multiple tracks were promoted together.
+    pulled.sort_by_key(|(seq, mv, _)| (mv.context_index, *seq));
+    for (_, mv, track) in pulled {
+        let after = mv.after_uid.as_ref().and_then(|uid| rest.iter().position(|t|
+            &t.uid == uid && !is_hidden_provided(t) && !is_queued(t)));
+        let before = mv.before_uid.as_ref().and_then(|uid| rest.iter().position(|t|
+            &t.uid == uid && !is_hidden_provided(t) && !is_queued(t)));
+        let fallback = rest.iter().enumerate()
+            .filter(|(_, t)| !is_hidden_provided(t) && !is_queued(t))
+            .nth(mv.context_index).map(|(i, _)| i).unwrap_or(rest.len());
+        let index = after.or_else(|| before.map(|i| i + 1)).unwrap_or(fallback);
+        rest.insert(index, track);
+    }
+    Some(rest)
+}
+
 /// `next_tracks` without the user queue.
+/// Reorder only playback-context tracks. Manually queued and hidden entries keep
+/// their exact slots and metadata; no track is added, dropped, or restarted.
+/// The caller supplies an action-specific seed, so two taps can produce different orders.
+pub(crate) fn queue_reshuffled(next: &[ProvidedTrack], seed: u64) -> Option<Vec<ProvidedTrack>> {
+    let slots: Vec<usize> = next.iter().enumerate().filter_map(|(i, track)| {
+        (!is_hidden_provided(track) && !is_queued(track)).then_some(i)
+    }).collect();
+    if slots.len() < 2 { return None; }
+    let mut songs: Vec<ProvidedTrack> = slots.iter().map(|&i| next[i].clone()).collect();
+    // Xorshift64; randomization is for presentation, not security.
+    let mut value = if seed == 0 { 0x9E3779B97F4A7C15 } else { seed };
+    for i in (1..songs.len()).rev() {
+        value ^= value << 13;
+        value ^= value >> 7;
+        value ^= value << 17;
+        let j = (value % ((i + 1) as u64)) as usize;
+        songs.swap(i, j);
+    }
+    // Never acknowledge a reshuffle that left the context in identical order.
+    if songs.iter().zip(slots.iter()).all(|(track, &i)| track.uid == next[i].uid) {
+        songs.rotate_left(1);
+    }
+    let mut result = next.to_vec();
+    for (position, song) in slots.into_iter().zip(songs) {
+        result[position] = song;
+    }
+    Some(result)
+}
+
 pub(crate) fn queue_cleared(next: &[ProvidedTrack]) -> Vec<ProvidedTrack> {
     next.iter().filter(|t| !is_queued(t)).cloned().collect()
 }
@@ -366,6 +470,49 @@ mod tests {
     }
 
     #[test]
+    fn restores_promoted_tracks_without_discarding_other_queued_items() {
+        let q = pt("spotify:track:added", "q", "queue");
+        let mut b = pt("spotify:track:b", "b", "queue");
+        b.metadata.insert("is_queued".into(), "true".into());
+        let next = vec![q, b, pt("spotify:track:a", "a", "context"),
+                        pt("spotify:track:c", "c", "context")];
+        let restored = queue_restored(&next, &[RestoreMove {
+            uid: "b".into(), context_index: 1, provider: "context".into(),
+            before_uid: Some("a".into()), after_uid: Some("c".into()),
+        }]).expect("restore");
+        assert_eq!(restored.iter().map(|t| t.uid.as_str()).collect::<Vec<_>>(),
+            vec!["q", "a", "b", "c"]);
+        assert_eq!(restored[2].provider, "context");
+        assert!(restored[2].metadata.get("is_queued").is_none());
+        assert!(queue_restored(&next, &[RestoreMove { uid: "missing".into(),
+            context_index: 0, provider: "context".into(), before_uid: None,
+            after_uid: None }]).is_none());
+    }
+
+    #[test]
+    fn reshuffle_keeps_manual_queue_and_hidden_slots() {
+        let mut manual = pt("spotify:track:manual", "q", "queue");
+        manual.metadata.insert("is_queued".into(), "true".into());
+        let next = vec![
+            manual,
+            pt("spotify:track:a", "a", "context"),
+            pt("spotify:delimiter", "delimiter0", "context"),
+            pt("spotify:track:b", "b", "context"),
+            pt("spotify:track:c", "c", "context"),
+        ];
+        let result = queue_reshuffled(&next, 123456).expect("context can be shuffled");
+        assert_eq!(result[0].uid, "q");
+        assert_eq!(result[0].provider, "queue");
+        assert_eq!(result[2].uid, "delimiter0");
+        let mut a: Vec<_> = next.iter().map(|t| t.uid.as_str()).collect();
+        let mut b: Vec<_> = result.iter().map(|t| t.uid.as_str()).collect();
+        a.sort(); b.sort();
+        assert_eq!(a, b, "all tracks remain in the queue");
+        assert_ne!(result[1].uid, next[1].uid, "reshuffle must alter context order");
+        assert!(queue_reshuffled(&next[..2], 42).is_none());
+    }
+
+    #[test]
     fn queue_edits() {
         let mut q = pt("spotify:track:q", "q0", "queue");
         q.metadata.insert("is_queued".into(), "true".into());
@@ -382,6 +529,15 @@ mod tests {
 
         let moved = queue_moved(&next, "c2", 0).expect("found");
         assert_eq!(moved.iter().map(|t| t.uid.as_str()).collect::<Vec<_>>(), vec!["c2", "q0", "c1", "delimiter0"]);
+        assert_eq!(moved[0].provider, "queue");
+        assert_eq!(moved[0].metadata.get("is_queued").map(String::as_str), Some("true"));
+        assert!(queue_moved(&next, "", 0).is_none());
+        let promoted = queue_promoted(&next, &["c1".into(), "c2".into()]).expect("found");
+        assert_eq!(promoted.iter().map(|t| t.uid.as_str()).collect::<Vec<_>>(),
+            vec!["c1", "c2", "q0", "delimiter0"]);
+        assert_eq!(promoted[0].provider, "queue");
+        assert_eq!(promoted[1].metadata.get("is_queued").map(String::as_str), Some("true"));
+        assert!(queue_promoted(&next, &["c1".into(), "missing".into()]).is_none());
         let moved = queue_moved(&next, "q0", 1).expect("found");
         assert_eq!(moved.iter().map(|t| t.uid.as_str()).collect::<Vec<_>>(), vec!["c1", "q0", "delimiter0", "c2"]);
         let moved = queue_moved(&next, "q0", 99).expect("found");

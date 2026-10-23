@@ -103,12 +103,85 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
             let a: MoveArgs = parse_args(args)?;
             control(Ctl::QueueMove(a.uid, a.to_index)).await
         }
+        "queue.promoteMany" => promote_many(args).await,
+        "queue.restoreMoved" => restore_moved(args).await,
+        "queue.reshuffle" => reshuffle_queue().await,
         "queue.clear" => control(Ctl::QueueClear).await,
         "queue.skipTo" => control(Ctl::SkipTo(parse_args::<UidArgs>(args)?.uid)).await,
         "connect.transfer" => transfer(parse_args(args)?).await,
         "connect.refreshDevices" => to_value(&hub::refresh_devices().await),
         _ => Err(AppError::invalid(format!("unknown method {method}"))),
     }
+}
+
+/// Atomically moves several upcoming remote tracks to the head of the manual queue.
+/// One set_queue request avoids racing successive commands against a stale queue revision.
+async fn promote_many(args: Value) -> AppResult<Value> {
+    let ids = args.get("uids").and_then(Value::as_array)
+        .ok_or_else(|| AppError::invalid("Missing queue UIDs"))?;
+    if ids.is_empty() || ids.len() > 80 {
+        return Err(AppError::invalid("Invalid queue selection size"));
+    }
+    let mut uids = Vec::with_capacity(ids.len());
+    for id in ids {
+        let uid = id.as_str().ok_or_else(|| AppError::invalid("Invalid queue UID"))?;
+        if uid.is_empty() || uid.len() > 256 || uids.iter().any(|s: &String| s == uid) {
+            return Err(AppError::invalid("Invalid or duplicate queue UID"));
+        }
+        uids.push(uid.to_owned());
+    }
+    await_ready(CommandKind::Queue, true).await;
+    let target = match decide(CommandKind::Queue, false)? {
+        Target::Remote(device) => device,
+        _ => return Err(AppError::unavailable("Bulk queue promotion requires a remote playback device")),
+    };
+    let (next, previous, revision, _) = remote_state()?;
+    let promoted = remote::queue_promoted(&next, &uids)
+        .ok_or_else(|| AppError::not_found("A selected track is no longer upcoming"))?;
+    remote::send(&target, remote::set_queue(&promoted, &previous, &revision, &uri::random_command_id()))
+        .await.map_err(remote::remote_error)?;
+    ok()
+}
+
+/// User-requested Jam reshuffle: one remote queue revision, keeping manual slots fixed.
+/// This is not a toggle for Spotify's shuffling_context option.
+async fn reshuffle_queue() -> AppResult<Value> {
+    await_ready(CommandKind::Queue, true).await;
+    let device = match decide(CommandKind::Queue, false)? {
+        Target::Remote(device) => device,
+        _ => return Err(AppError::unavailable("Reshuffle requires an active remote Connect device")),
+    };
+    let (next, previous, revision, _) = remote_state()?;
+    let seed = SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|t| t.as_nanos() as u64).unwrap_or(0);
+    let reshuffled = remote::queue_reshuffled(&next, seed)
+        .ok_or_else(|| AppError::unavailable("At least two upcoming context songs are needed"))?;
+    remote::send(&device, remote::set_queue(
+        &reshuffled, &previous, &revision, &uri::random_command_id()))
+        .await.map_err(remote::remote_error)?;
+    ok()
+}
+
+/** One remote set_queue update for locally recorded context promotions only. */
+async fn restore_moved(args: Value) -> AppResult<Value> {
+    let raw = args.get("moves").cloned()
+        .ok_or_else(|| AppError::invalid("Missing original queue locations"))?;
+    let moves: Vec<remote::RestoreMove> = serde_json::from_value(raw)
+        .map_err(|_| AppError::invalid("Invalid original queue locations"))?;
+    if moves.is_empty() || moves.len() > 80 {
+        return Err(AppError::invalid("Invalid original queue selection size"));
+    }
+    await_ready(CommandKind::Queue, true).await;
+    let target = match decide(CommandKind::Queue, false)? {
+        Target::Remote(device) => device,
+        _ => return Err(AppError::unavailable("Restoring Jam queue positions requires a remote device")),
+    };
+    let (next, previous, revision, _) = remote_state()?;
+    let restored = remote::queue_restored(&next, &moves)
+        .ok_or_else(|| AppError::unavailable("One or more promoted songs cannot be safely restored"))?;
+    remote::send(&target, remote::set_queue(&restored, &previous, &revision, &uri::random_command_id()))
+        .await.map_err(remote::remote_error)?;
+    ok()
 }
 
 /// The active device per the cluster, or the one a play was just sent to (see

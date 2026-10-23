@@ -82,6 +82,43 @@ over JNI). Requires a Spotify Premium account.
 
 ## Building
 
+### Optional GIPHY GIF browsing (build-time SDK key)
+
+GIPHY GIF search in Messages is **optional**. The rest of Spotify Good builds and
+works without a GIPHY key; the GIF tab shows a setup explanation instead.
+Spotify **lyric stickers** are a separate feature and do not use GIPHY.
+
+1. Create a developer application at [GIPHY Developer Dashboard](https://developers.giphy.com/dashboard/)
+   and obtain an **Android SDK** key (not a REST API key).
+2. Open the repository's root **`local.properties`** file (next to `settings.gradle.kts`).
+   Android Studio may already have created this file with `sdk.dir`; **keep** that entry.
+   Add one new line, substituting your own key:
+
+   ```properties
+   giphySdkKey=YOUR_GIPHY_ANDROID_SDK_KEY
+   ```
+
+3. Build and install a new APK (PowerShell):
+
+   ```powershell
+   .\gradlew.bat :app:assembleDebug '-Pnative.abis=arm64-v8a'
+   ```
+
+Ensure that your root `.gitignore` includes `/local.properties` (run the ZIP's
+PowerShell helper if needed), and never force-add `local.properties` to Git.
+Existing builders can alternatively use
+`%USERPROFILE%\.gradle\gradle.properties` with the same `giphySdkKey=` property;
+**the root local.properties key takes precedence** if both are set.
+
+**Distribution / security limitation:** The SDK key is embedded in `BuildConfig`
+and the installed APK and can be recovered from a shared APK. Git-ignoring
+`local.properties` only prevents committing it to the source repository; it
+**does not hide it in the compiled APK**. Use a key whose quota and exposure
+are appropriate for a public mobile application, and follow GIPHY's terms.
+If an APK is built with no key, its recipient cannot add a key after installation:
+the builder must add one and build/install a new APK. A per-user runtime-key
+setting is a different feature and is not provided by this build-time setup.
+
 Requirements:
 - JDK 21
 - Android SDK with platform 37

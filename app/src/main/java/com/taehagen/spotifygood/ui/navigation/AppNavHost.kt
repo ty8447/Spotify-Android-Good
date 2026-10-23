@@ -25,7 +25,8 @@ import com.taehagen.spotifygood.ui.screens.home.HomeScreen
 import com.taehagen.spotifygood.ui.screens.library.DownloadsScreen
 import com.taehagen.spotifygood.ui.screens.library.LibraryScreen
 import com.taehagen.spotifygood.ui.screens.library.LikedSongsScreen
-import com.taehagen.spotifygood.ui.screens.menu.MessagesScreen
+import com.taehagen.spotifygood.ui.screens.menu.MessagesProbeScreen
+import com.taehagen.spotifygood.ui.screens.menu.MessageConversationScreen
 import com.taehagen.spotifygood.ui.screens.menu.ActivityScreen
 import com.taehagen.spotifygood.ui.screens.menu.RecentsScreen
 import com.taehagen.spotifygood.ui.screens.menu.UpdatesScreen
@@ -38,6 +39,10 @@ import com.taehagen.spotifygood.ui.screens.search.SearchResultsScreen
 import com.taehagen.spotifygood.ui.screens.search.SearchScreen
 import com.taehagen.spotifygood.ui.screens.codes.SpotifyCodeScreen
 import com.taehagen.spotifygood.ui.screens.codes.SpotifyCodeScannerScreen
+import com.taehagen.spotifygood.ui.screens.settings.PlaylistPrivacySettingsScreen
+import com.taehagen.spotifygood.ui.screens.settings.NotificationSettingsScreen
+import com.taehagen.spotifygood.ui.screens.settings.NotificationCategorySettingsScreen
+import com.taehagen.spotifygood.ui.screens.settings.StorageBreakdownSettingsScreen
 import com.taehagen.spotifygood.ui.screens.settings.SettingsScreen
 import com.taehagen.spotifygood.ui.screens.show.EpisodeScreen
 import com.taehagen.spotifygood.ui.screens.show.ShowScreen
@@ -68,11 +73,21 @@ fun AppNavHost(
         composable<Route.LikedSongs> { LikedSongsScreen(contentPadding) }
         composable<Route.Downloads> { DownloadsScreen(contentPadding) }
         composable<Route.Settings> { SettingsScreen(contentPadding) }
+        composable<Route.PlaylistPrivacy> { PlaylistPrivacySettingsScreen(contentPadding) }
+        composable<Route.NotificationSettings> { NotificationSettingsScreen(contentPadding) }
+        composable<Route.NotificationCategory> { entry ->
+            NotificationCategorySettingsScreen(entry.toRoute<Route.NotificationCategory>().kind, contentPadding)
+        }
+        composable<Route.StorageBreakdown> { StorageBreakdownSettingsScreen(contentPadding) }
         composable<Route.Recents> { RecentsScreen(contentPadding) }
         composable<Route.Updates> { UpdatesScreen(contentPadding) }
         composable<Route.WhatsNew> { WhatsNewScreen(contentPadding) }
         composable<Route.Activity> { ActivityScreen(contentPadding) }
-        composable<Route.Messages> { MessagesScreen(contentPadding) }
+        composable<Route.Messages> { MessagesProbeScreen(contentPadding) }
+        composable<Route.MessageConversation> { entry ->
+            val route = entry.toRoute<Route.MessageConversation>()
+            MessageConversationScreen(route.hierarchyId, route.title, contentPadding)
+        }
         composable<Route.Album> { entry -> AlbumScreen(entry.toRoute<Route.Album>().uri, contentPadding) }
         composable<Route.Artist> { entry -> ArtistScreen(entry.toRoute<Route.Artist>().uri, contentPadding) }
         composable<Route.ArtistDiscography> { entry ->

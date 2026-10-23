@@ -60,7 +60,6 @@ import com.taehagen.spotifygood.ui.components.OfflineBanner
 import com.taehagen.spotifygood.ui.navigation.AppNavigator
 import com.taehagen.spotifygood.ui.navigation.LocalAppNavigator
 import com.taehagen.spotifygood.ui.navigation.Route
-import com.taehagen.spotifygood.ui.screens.library.AvatarButton
 import com.taehagen.spotifygood.ui.screens.library.BrowsePalette
 import com.taehagen.spotifygood.ui.screens.library.ChipRow
 import com.taehagen.spotifygood.ui.screens.library.GradientTile
@@ -71,6 +70,7 @@ import com.taehagen.spotifygood.ui.screens.library.isLikedSongsUri
 import com.taehagen.spotifygood.ui.screens.library.messageRes
 import com.taehagen.spotifygood.ui.screens.library.toActionTarget
 import com.taehagen.spotifygood.ui.screens.menu.LocalProfileMenu
+import com.taehagen.spotifygood.ui.screens.menu.UnreadProfileMenuButton
 
 @Composable
 fun HomeScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) {
@@ -135,7 +135,7 @@ private fun HomeTopBar(greeting: Greeting, user: User?, onProfile: () -> Unit, o
             .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AvatarButton(user = user, onClick = onProfile)
+        UnreadProfileMenuButton(user = user, onClick = onProfile)
         Text(
             text = stringResource(
                 when (greeting) {

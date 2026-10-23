@@ -81,17 +81,24 @@ async fn request(method: Method, url: &str, payload: Vec<u8>) -> AppResult<Bytes
         let headers = req.headers_mut();
         headers.insert(HeaderName::from_static("origin"), origin);
         headers.insert(HeaderName::from_static("accept-language"), HeaderValue::from_static("en"));
-        headers.insert(HeaderName::from_static("app-platform"), HeaderValue::from_static("Win32_x86_64"));
-        headers.insert(HeaderName::from_static("spotify-app-version"), HeaderValue::from_static("130503058"));
-        headers.insert(HeaderName::from_static("time-zone"), HeaderValue::from_static("America/New_York"));
-        headers.insert(HeaderName::from_static("user-agent"), HeaderValue::from_static("Spotify/130503058 Win32_x86_64/Windows 10 (10.0.26100; x64)"));
-        log::info!("[profile-privacy-artists] desktop-request-metadata-test enabled");
+        // Identity headers removed: our session token is not the desktop client, so claiming
+        // Win32/desktop app-version can make the backend silently no-op the write.
+        // liborbit tags this write with its live dealer connection id (Spotify-Connection-Id,
+        // seen beside clientsettings/api/v1/ in the native lib). Without it the server appears
+        // to accept the write but never propagate the product-state update to other clients.
+        let cid = session.connection_id();
+        if !cid.is_empty() {
+            if let Ok(v) = HeaderValue::from_str(&cid) {
+                headers.insert(HeaderName::from_static("spotify-connection-id"), v);
+            }
+        }
     }
     // Only log request metadata, never bearer/client token values or payload contents.
     let path = req.uri().path().to_owned();
     let has_client_token = req.headers().contains_key("client-token");
-    log::info!("[profile-privacy-wire] method={} path={} client_token_present={} payload_bytes={}",
-        req.method(), path, has_client_token, req.body().len());
+    let has_conn_id = req.headers().contains_key("spotify-connection-id");
+    log::info!("[profile-privacy-wire] method={} path={} client_token_present={} conn_id_present={} payload_bytes={}",
+        req.method(), path, has_client_token, has_conn_id, req.body().len());
     match http::send(Some(&session), req, http::TIMEOUT).await {
         Ok(reply) => {
             log::info!("[profile-privacy-wire] path={} HTTP helper accepted request response_bytes={}", path, reply.len());

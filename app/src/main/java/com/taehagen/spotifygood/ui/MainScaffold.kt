@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationRailDefaults
@@ -86,10 +87,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.NavDestination.Companion.hasRoute
 import androidx.navigation.compose.rememberNavController
 import com.taehagen.spotifygood.R
+import com.taehagen.spotifygood.model.best
 import com.taehagen.spotifygood.nativebridge.NativeErrorCode
 import com.taehagen.spotifygood.ui.components.BackgroundMessages
 import com.taehagen.spotifygood.ui.components.OfflineBanner
@@ -106,6 +111,13 @@ import com.taehagen.spotifygood.ui.navigation.rememberMainNavigator
 import com.taehagen.spotifygood.ui.components.AddToPlaylistSheet
 import com.taehagen.spotifygood.ui.components.AlreadyAddedDialog
 import com.taehagen.spotifygood.ui.components.MediaActionsSheet
+import com.taehagen.spotifygood.ui.screens.menu.ChatJamConversationBar
+import com.taehagen.spotifygood.ui.screens.menu.ChatJamStatusSheet
+import com.taehagen.spotifygood.ui.screens.menu.JamGlobalState
+import com.taehagen.spotifygood.ui.screens.menu.JamLastLocalContext
+import com.taehagen.spotifygood.ui.screens.menu.JamServiceStatus
+import com.taehagen.spotifygood.ui.screens.menu.ChatUnreadStates
+import com.taehagen.spotifygood.ui.screens.menu.MessageOverviewResult
 import com.taehagen.spotifygood.ui.screens.menu.LocalProfileMenu
 import com.taehagen.spotifygood.ui.screens.menu.ProfileMenu
 import com.taehagen.spotifygood.ui.screens.player.DevicePicks
@@ -116,6 +128,8 @@ import com.taehagen.spotifygood.ui.screens.player.PendingDeviceBanner
 import com.taehagen.spotifygood.ui.screens.player.PlayerBackHandler
 import com.taehagen.spotifygood.ui.screens.player.PlayerDock
 import com.taehagen.spotifygood.ui.screens.player.PlayerSheetState
+import com.taehagen.spotifygood.ui.screens.player.PlayerViewModel
+import com.taehagen.spotifygood.ui.appViewModel
 import com.taehagen.spotifygood.ui.screens.player.pendingTargetNameFlow
 import com.taehagen.spotifygood.ui.screens.player.QueueScreen
 import com.taehagen.spotifygood.ui.screens.player.SleepTimerSheet
@@ -125,7 +139,10 @@ import com.taehagen.spotifygood.ui.screens.player.surfaceCoversStatusBar
 import com.taehagen.spotifygood.ui.screens.status.PlaybackRefusedBanner
 import com.taehagen.spotifygood.ui.screens.status.PlaybackRefusedScreen
 import com.taehagen.spotifygood.ui.theme.LocalSystemBarsController
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -140,6 +157,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * player (docked mini player ↔ Now Playing), full-screen overlays (Queue, Lyrics), global sheets
  * and snackbars.
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
     val graph = rememberAppGraph()
@@ -158,6 +176,60 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
     val offlineMode by remember(graph) {
         graph.settings.settings.map { it.offlineMode }.distinctUntilChanged()
     }.collectAsStateWithLifecycle(initialValue = graph.settings.settings.value.offlineMode)
+    // Keep the unread badge current even when the Messages screen and profile menu are closed.
+    // It uses the same authoritative unseen-contribution counter as the inbox and drawer.
+    val signedInUser by graph.engine.user.collectAsStateWithLifecycle()
+    val messageAccount = signedInUser?.username
+    // This phone's last playlist/album is stored independently of the shared Connect queue.
+    // Recording the current LOCAL context is read-only and doesn't activate playback.
+    val jamLocalPlayer = appViewModel { playerGraph -> PlayerViewModel(playerGraph) }
+    val jamLocalPlayback by jamLocalPlayer.snapshot.collectAsStateWithLifecycle()
+    LaunchedEffect(messageAccount, jamLocalPlayback.source,
+        jamLocalPlayback.context?.uri, jamLocalPlayback.track?.uri) {
+        JamLastLocalContext.capture(context, messageAccount, jamLocalPlayback)
+    }
+    val jamHostName = signedInUser?.displayName?.takeIf { it.isNotBlank() }
+        ?: signedInUser?.username.orEmpty()
+    val jamHostAvatar = signedInUser?.images?.best(96)
+    val jamSession = JamGlobalState.session
+    // Each app surface observes the same current Jam. Read-only verification never starts a Jam.
+    LaunchedEffect(graph.rpc, messageAccount, networkAvailable, offlineMode) {
+        JamGlobalState.session = null
+        if (messageAccount.isNullOrBlank() || !networkAvailable || offlineMode) return@LaunchedEffect
+        while (true) {
+            try {
+                val status = graph.rpc.call<JamServiceStatus>(
+                    "catalog.jamServiceStatus", buildJsonObject {})
+                JamGlobalState.acceptServerRead(status.current)
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                // Keep the last verified state while connectivity is transiently unavailable.
+            }
+            delay(15_000L)
+        }
+    }
+    val unreadLifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(messageAccount) {
+        // Never show a previous account's unread counts after a user change or logout.
+        ChatUnreadStates.counts.clear()
+    }
+    LaunchedEffect(graph.rpc, messageAccount, networkAvailable, offlineMode, unreadLifecycle) {
+        if (messageAccount.isNullOrBlank() || !networkAvailable || offlineMode) return@LaunchedEffect
+        unreadLifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                try {
+                    val overview = graph.rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                    ChatUnreadStates.update(overview.conversations)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    // Keep the last confirmed count on transient network errors.
+                }
+                delay(12_000L)
+            }
+        }
+    }
     val refusal by shell.playbackRefusal.collectAsStateWithLifecycle()
     // A Connect device picked for the next play while nothing plays anywhere.
     val pendingDevice by remember(graph) { graph.devices.pendingTargetNameFlow() }
@@ -287,6 +359,10 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
                     snackbarHostState = snackbarHostState,
                     showSnackbars = !overlayOpen,
                     hasTrack = hasTrack,
+                    jamSession = jamSession,
+                    jamHostName = jamHostName,
+                    jamHostAvatar = jamHostAvatar,
+                    onOpenJam = JamGlobalState::open,
                     fullScreenScanner = scannerOpen,
                     showOffline = !networkAvailable || offlineMode,
                     refusal = refusal,
@@ -346,7 +422,26 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
         navigator.playlistAddPrompt?.let { prompt ->
             key(prompt) { AlreadyAddedDialog(prompt, onDismiss = navigator::dismissPlaylistAddPrompt) }
         }
-        if (navigator.isDevicesOpen) DevicesSheet(onDismiss = navigator::dismissDevices)
+        if (navigator.isDevicesOpen) DevicesSheet(
+            onDismiss = navigator::dismissDevices,
+            onStartJam = { navigator.dismissDevices(); JamGlobalState.open() },
+        )
+        if (JamGlobalState.showSheet) {
+            ModalBottomSheet(onDismissRequest = JamGlobalState::close) {
+                ChatJamStatusSheet(
+                    onDismiss = JamGlobalState::close,
+                    conversationTitle = "",
+                    hostName = jamHostName,
+                    hostAvatarUrl = jamHostAvatar,
+                    conversationAvatarUrl = null,
+                    onSessionChanged = { JamGlobalState.session = it },
+                    onOpenQueue = { JamGlobalState.close(); navigator.openQueue() },
+                    onFindSongs = { JamGlobalState.close(); navigator.navigate(Route.Search) },
+                    onOpenLikedSongs = { JamGlobalState.close(); navigator.navigate(Route.LikedSongs) },
+                    initialView = if (jamSession?.active == true) 0 else -1,
+                )
+            }
+        }
         if (navigator.isSleepTimerOpen) SleepTimerSheet(onDismiss = navigator::dismissSleepTimer)
     }
 }
@@ -359,6 +454,10 @@ private fun MainContent(
     snackbarHostState: SnackbarHostState,
     showSnackbars: Boolean,
     hasTrack: Boolean,
+    jamSession: com.taehagen.spotifygood.ui.screens.menu.JamSessionSummary?,
+    jamHostName: String,
+    jamHostAvatar: String?,
+    onOpenJam: () -> Unit,
     fullScreenScanner: Boolean,
     showOffline: Boolean,
     refusal: PlaybackRefusal,
@@ -413,6 +512,15 @@ private fun MainContent(
             ) {
                 (pendingDevice ?: shownPendingDevice)?.let { name ->
                     PendingDeviceBanner(deviceName = name, onClick = onPendingDeviceClick, onCancel = onPendingDeviceCancel)
+                }
+            }
+            AnimatedVisibility(
+                visible = hasTrack && !sheet.isExpanded && jamSession?.active == true,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                jamSession?.let { jam ->
+                    ChatJamConversationBar(jam, jamHostName, jamHostAvatar, onOpenJam)
                 }
             }
             // The mini player's card is drawn by the expanding player above everything; the dock

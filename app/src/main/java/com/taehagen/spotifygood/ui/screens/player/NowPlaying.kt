@@ -89,6 +89,11 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.model.ContextType
+import com.taehagen.spotifygood.model.Playlist
+import com.taehagen.spotifygood.model.Album
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import com.taehagen.spotifygood.model.Lyrics
 import com.taehagen.spotifygood.model.LyricsSyncType
 import com.taehagen.spotifygood.model.PlaybackContext
@@ -97,8 +102,12 @@ import com.taehagen.spotifygood.model.PlaybackSource
 import com.taehagen.spotifygood.model.PlaybackStatus
 import com.taehagen.spotifygood.model.PlaybackTrack
 import com.taehagen.spotifygood.model.TrackProvider
+import com.taehagen.spotifygood.model.best
 import com.taehagen.spotifygood.playback.PodcastSpeeds
 import com.taehagen.spotifygood.playback.SleepTimerState
+import com.taehagen.spotifygood.ui.screens.menu.JamGlobalState
+import com.taehagen.spotifygood.ui.screens.menu.JamAvatar
+import com.taehagen.spotifygood.ui.components.rememberAppGraph
 import com.taehagen.spotifygood.ui.appViewModel
 import com.taehagen.spotifygood.ui.components.EmptyState
 import com.taehagen.spotifygood.ui.navigation.AppNavigator
@@ -440,7 +449,31 @@ private fun NowPlayingTopBar(
     menu: @Composable () -> Unit,
 ) {
     val header = stringResource(contextHeaderRes(playbackContext?.type))
-    val name = contextName(playbackContext, isPlayingAutoplay)
+    // Connect often supplies the context URI but no display name. Resolve only
+    // metadata for that exact context; never infer a different queue/album.
+    val graph = rememberAppGraph()
+    val uri = playbackContext?.uri
+    var lookedUpName by remember(uri) { mutableStateOf<String?>(null) }
+    LaunchedEffect(uri, playbackContext?.name, playbackContext?.type) {
+        lookedUpName = null
+        if (uri.isNullOrBlank() || !playbackContext?.name.isNullOrBlank()) return@LaunchedEffect
+        try {
+            lookedUpName = when (playbackContext?.type) {
+                ContextType.PLAYLIST -> graph.rpc.call<Playlist>("catalog.playlist", buildJsonObject {
+                    put("uri", uri); put("offset", 0); put("limit", 1)
+                }).name.takeIf { it.isNotBlank() }
+                ContextType.ALBUM -> graph.rpc.call<Album>("catalog.album", buildJsonObject {
+                    put("uri", uri)
+                }).name.takeIf { it.isNotBlank() }
+                else -> null
+            }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (_: Exception) {
+            // Retain the generic label if context metadata is unavailable.
+        }
+    }
+    val name = contextName(playbackContext, isPlayingAutoplay).ifBlank { lookedUpName.orEmpty() }
     val openLabel = stringResource(R.string.player_open_context, name.ifEmpty { header })
     val collapseLabel = stringResource(R.string.player_collapse)
     Row(
@@ -923,8 +956,22 @@ private fun BottomActions(
         IconButton(onClick = onShare) {
             Icon(Icons.Rounded.Share, contentDescription = stringResource(R.string.player_share))
         }
-        IconButton(onClick = onQueue) {
-            Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = stringResource(R.string.player_open_queue))
+        val activeJam = JamGlobalState.session?.takeIf { it.active }
+        if (activeJam != null) {
+            val user by rememberAppGraph().engine.user.collectAsStateWithLifecycle()
+            IconButton(onClick = JamGlobalState::open) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.AutoMirrored.Rounded.QueueMusic, contentDescription = "Open Jam queue",
+                        modifier = Modifier.size(21.dp))
+                    JamAvatar(if (activeJam.isSessionOwner == true) user?.images?.best(96) else null,
+                        19, "Jam host")
+                }
+            }
+        } else {
+            IconButton(onClick = onQueue) {
+                Icon(Icons.AutoMirrored.Rounded.QueueMusic,
+                    contentDescription = stringResource(R.string.player_open_queue))
+            }
         }
     }
 }

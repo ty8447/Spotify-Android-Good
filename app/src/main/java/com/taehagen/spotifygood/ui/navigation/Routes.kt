@@ -20,11 +20,16 @@ sealed interface Route {
     @Serializable data object Library : Route
     @Serializable data object LikedSongs : Route
     @Serializable data object Downloads : Route
+    @Serializable data object PlaylistPrivacy : Route
+    @Serializable data object NotificationSettings : Route
+    @Serializable data class NotificationCategory(val kind: String) : Route
+    @Serializable data object StorageBreakdown : Route
     @Serializable data object Settings : Route
     @Serializable data object Recents : Route
     @Serializable data object Updates : Route
     @Serializable data object WhatsNew : Route
     @Serializable data object Messages : Route
+    @Serializable data class MessageConversation(val hierarchyId: String, val title: String) : Route
     @Serializable data object Activity : Route
     @Serializable data class Album(val uri: String) : Route
     @Serializable data class Artist(val uri: String) : Route

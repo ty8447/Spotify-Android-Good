@@ -423,8 +423,12 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             .build()
     }
 
-    /** A downloaded collection of the Downloads tab: browsable (its downloads) and playable (its context). */
-    private fun downloadedCollectionItem(collection: DownloadedCollection, group: String?): MediaItem? {
+    /** A downloaded collection: tap browses its downloaded tracks; voice commands may play the whole context. */
+    private fun downloadedCollectionItem(
+        collection: DownloadedCollection,
+        group: String?,
+        allowDirectPlay: Boolean = false,
+    ): MediaItem? {
         val ref = collection.ref
         val liked = ref.type == CollectionType.LIKED_SONGS
         val title = if (liked) context.getString(R.string.playback_liked_songs) else ref.name
@@ -445,7 +449,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
                         },
                     )
                     .setIsBrowsable(true)
-                    .setIsPlayable(true)
+                    .setIsPlayable(allowDirectPlay)
                     .setMediaType(
                         when (ref.type) {
                             CollectionType.ALBUM -> MediaMetadata.MEDIA_TYPE_ALBUM
@@ -652,7 +656,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         val likedName = context.getString(R.string.playback_liked_songs)
         when {
             !offline && likedContextUri() != null -> list += VoiceMatch.Candidate(likedName, VoiceMatch.Kind.PLAYLIST) { likedFolder() }
-            liked != null -> list += VoiceMatch.Candidate(likedName, VoiceMatch.Kind.PLAYLIST) { downloadedCollectionItem(liked, group = null) }
+            liked != null -> list += VoiceMatch.Candidate(likedName, VoiceMatch.Kind.PLAYLIST) { downloadedCollectionItem(liked, group = null, allowDirectPlay = true) }
         }
         for (c in downloaded) {
             val kind = when (c.ref.type) {
@@ -663,7 +667,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             }
             // Offline only what plays: something of it is downloaded.
             if (offline && c.itemUris.none(done::contains)) continue
-            list += VoiceMatch.Candidate(c.ref.name, kind) { downloadedCollectionItem(c, group = null) }
+            list += VoiceMatch.Candidate(c.ref.name, kind) { downloadedCollectionItem(c, group = null, allowDirectPlay = true) }
         }
         if (offline) return list
         graph.library.playlists().cachedOrSettled()?.flatPlaylists().orEmpty().forEach { entry ->

@@ -147,7 +147,7 @@ pub(crate) async fn recently_played(session: &Session, limit: u32) -> AppResult<
     );
     let body = http::spc_get(session, &endpoint, Some(JSON)).await?;
     //log_recent_response("recently_played", limit, &body);
-    //let uris = parse_contexts(&body)?;
+    let uris = parse_contexts(&body)?;
     //let parsed_count = uris.len();
     let resolved = refs::resolve(session, &uris).await;
     //log::info!("[recent-diagnostic] recently_played: parsed_count={parsed_count} resolved_count={}", resolved.len());

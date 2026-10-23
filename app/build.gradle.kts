@@ -12,6 +12,7 @@ import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
 import javax.inject.Inject
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -24,6 +25,19 @@ val nativeAbis: List<String> = providers.gradleProperty("native.abis")
     .map { it.split(',').map(String::trim).filter(String::isNotEmpty) }
     .getOrElse(listOf("arm64-v8a", "armeabi-v7a", "x86_64"))
 val nativeProfile: String = providers.gradleProperty("native.profile").getOrElse("release")
+// Optional GIF integration: keep developer-specific configuration out of Git.
+// In the PROJECT ROOT local.properties, add: giphySdkKey=YOUR_GIPHY_ANDROID_SDK_KEY
+// This file is git-ignored. A user-level Gradle property remains supported for
+// existing local setups, but local.properties takes precedence when both exist.
+// IMPORTANT: Android SDK client keys are embedded in the resulting APK and can be
+// extracted by recipients; git-ignoring this file does NOT protect distributed keys.
+val localGiphyKey: String = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) file.inputStream().use { load(it) }
+}.getProperty("giphySdkKey")?.trim().orEmpty()
+val giphySdkKey: String = localGiphyKey.ifBlank {
+    providers.gradleProperty("giphySdkKey").getOrElse("").trim()
+}
 val appMinSdk = 26
 /** `-Pscreenshots`: also runs the Robolectric/Roborazzi screenshot tests (images in build/outputs/roborazzi). */
 val screenshots: Boolean = providers.gradleProperty("screenshots").isPresent
@@ -39,6 +53,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
+        buildConfigField("String", "GIPHY_SDK_KEY", "\"${giphySdkKey.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         ndk { abiFilters += nativeAbis }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -223,8 +238,13 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.browser)
     implementation(libs.androidx.palette.ktx)
+    // Official Android GIF picker and animated media renderer, Maven Central.
+    implementation("com.giphy.sdk:ui:2.5.1")
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
+    // Coil 3 does not decode animated GIF frames without this artifact.
+    // Keep the GIF decoder version aligned to the existing Coil version catalog.
+    implementation("io.coil-kt.coil3:coil-gif:${libs.versions.coil.get()}")
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
@@ -232,7 +252,6 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
-    testImplementation(platform(libs.androidx.compose.bom))
     testImplementation(libs.robolectric)
     testImplementation(libs.roborazzi)
     testImplementation(libs.roborazzi.compose)

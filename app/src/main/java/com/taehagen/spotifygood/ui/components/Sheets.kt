@@ -880,6 +880,28 @@ fun AddToPlaylistSheet(uris: List<String>, onDismiss: () -> Unit, excludeUri: St
                 .semantics { heading() },
         )
         LazyColumn(Modifier.fillMaxWidth()) {
+            // Liked Songs is a saved-track collection, not an editable playlist.
+            // Offer it explicitly for track additions instead of omitting it from the picker.
+            if (uris.isNotEmpty() && uris.all { it.startsWith("spotify:track:") }) {
+                item(key = "liked-songs") {
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            animatedDismiss()
+                            uris.forEach { trackUri ->
+                                runner.setSaved(trackUri, true,
+                                    R.string.shell_msg_liked, R.string.shell_msg_unliked)
+                            }
+                        }.heightIn(min = 64.dp).padding(horizontal = 20.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        Icon(Icons.Rounded.Favorite, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(40.dp))
+                        Text("Liked Songs", style = MaterialTheme.typography.bodyLarge)
+                    }
+                }
+            }
             item(key = "new") {
                 Row(
                     modifier = Modifier

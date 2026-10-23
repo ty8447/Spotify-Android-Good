@@ -32,6 +32,8 @@ static NAMES: LazyLock<Mutex<HashMap<String, User>>> = LazyLock::new(Default::de
 struct Args {
     #[serde(default)]
     username: Option<String>,
+    #[serde(default, rename = "publicPreview")]
+    public_preview: bool,
 }
 
 /// `catalog.user` result: `User` plus `publicPlaylists` (other users only, omitted when empty).
@@ -42,6 +44,24 @@ pub(crate) struct Profile {
     pub user: User,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub public_playlists: Vec<PlaylistRef>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub public_playlist_saves: HashMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recently_played_artists: Vec<PublicProfileArtist>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_follows: Option<bool>,
+}
+
+/// Only fields returned by the public profile endpoint; never local listening history.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicProfileArtist {
+    pub uri: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<Image>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followers_count: Option<u64>,
 }
 
 /// An image reference of the profile API: an https URL, `spotify:image:<hex>` or
@@ -81,6 +101,38 @@ fn parse_public_playlists(v: &Value) -> Vec<PlaylistRef> {
         .collect()
 }
 
+/// Count public playlist saves without changing the global PlaylistRef model.
+fn public_playlist_saves(v: &Value) -> HashMap<String, u64> {
+    v.get("public_playlists").or_else(|| v.get("publicPlaylists"))
+        .and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|p| {
+            let uri = p.get("uri")?.as_str()?;
+            if !uri.starts_with("spotify:playlist:") { return None; }
+            let count = p.get("followers_count").or_else(|| p.get("followersCount"))
+                .and_then(Value::as_u64)?;
+            Some((uri.to_owned(), count))
+        }).collect()
+}
+
+/// Artist entries returned by Spotify to profile visitors. Never use own play history.
+fn parse_public_artists(v: &Value) -> Vec<PublicProfileArtist> {
+    let Some(list) = v.get("recently_played_artists").or_else(|| v.get("recentlyPlayedArtists"))
+        .and_then(Value::as_array) else { return Vec::new(); };
+    list.iter().filter_map(|entry| {
+        let uri = entry.get("uri")?.as_str()?;
+        if !uri.starts_with("spotify:artist:") { return None; }
+        let name = entry.get("name")?.as_str()?.trim();
+        if name.is_empty() { return None; }
+        let image = entry.get("image_url").or_else(|| entry.get("imageUrl"))
+            .and_then(Value::as_str).and_then(image_url);
+        let images = image.map(|url| vec![Image { url, width: None, height: None }])
+            .unwrap_or_default();
+        let followers_count = entry.get("followers_count").or_else(|| entry.get("followersCount"))
+            .and_then(Value::as_u64);
+        Some(PublicProfileArtist { uri: uri.into(), name: name.into(), images, followers_count })
+    }).take(50).collect()
+}
+
 /// Display name, images and public playlists from a profile response (lenient about field names).
 pub(crate) fn parse_profile(body: &[u8], username: &str) -> AppResult<Profile> {
     let v: Value = http::json(body)?;
@@ -112,7 +164,13 @@ pub(crate) fn parse_profile(body: &[u8], username: &str) -> AppResult<Profile> {
         following_count: v.get("following_count").or_else(|| v.get("followingCount")).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()),
         ..Default::default()
     };
-    Ok(Profile { user, public_playlists: parse_public_playlists(&v) })
+    Ok(Profile {
+        user,
+        public_playlists: parse_public_playlists(&v),
+        public_playlist_saves: public_playlist_saves(&v),
+        recently_played_artists: parse_public_artists(&v),
+        show_follows: v.get("show_follows").or_else(|| v.get("showFollows")).and_then(Value::as_bool),
+    })
 }
 
 /// The cached display name of `username` (see [`resolve_names`]).
@@ -132,16 +190,16 @@ pub(crate) async fn resolve_names<'a>(session: &Session, usernames: impl IntoIte
         usernames.into_iter().filter(|u| !u.is_empty() && *u != "spotify" && !names.contains_key(*u)).map(str::to_string).collect()
     };
     let _: Vec<_> = stream::iter(missing.into_iter().take(NAME_LOOKUPS))
-        .map(|u| async move { profile(session, &u, 0).await })
+        .map(|u| async move { profile(session, &u, 0, 0).await })
         .buffer_unordered(6)
         .collect()
         .await;
 }
 
 /// A profile from `user-profile-view/v3`; its display name is cached for [`cached_name`].
-async fn profile(session: &Session, username: &str, playlist_limit: u32) -> AppResult<Profile> {
+async fn profile(session: &Session, username: &str, playlist_limit: u32, artist_limit: u32) -> AppResult<Profile> {
     let endpoint = format!(
-        "/user-profile-view/v3/profile/{}?playlist_limit={playlist_limit}&artist_limit=0",
+        "/user-profile-view/v3/profile/{}?playlist_limit={playlist_limit}&artist_limit={artist_limit}",
         encode_component(username)
     );
     let p = parse_profile(&http::spc_get(session, &endpoint, Some(JSON)).await?, username)?;
@@ -315,7 +373,7 @@ pub(crate) async fn update_name(args: Value) -> AppResult<Value> {
     http::send(Some(&session), request, http::TIMEOUT).await.map_err(AppError::from)?;
 
     // A successful HTTP status alone is not proof of persisted account state.
-    let confirmed = profile(&session, &username, 0).await?;
+    let confirmed = profile(&session, &username, 0, 0).await?;
     if confirmed.user.display_name.as_deref() != Some(name) {
         return Err(AppError::invalid("Spotify accepted the request but did not return the updated display name; please refresh and verify"));
     }
@@ -337,7 +395,7 @@ pub(crate) async fn update_photo(args: Value) -> AppResult<Value> {
     let session = engine::session()?;
     let username = engine::username().unwrap_or_else(|| session.username());
     if username.is_empty() { return Err(AppError::invalid("Not signed in")); }
-    let previous = profile(&session, &username, 0).await?.user.images;
+    let previous = profile(&session, &username, 0, 0).await?.user.images;
     let token = session.login5().auth_token().await?;
     let mut request = Request::builder().method(Method::POST)
         .uri("https://image-upload.spotify.com/v4/user-profile")
@@ -360,7 +418,7 @@ pub(crate) async fn update_photo(args: Value) -> AppResult<Value> {
     let request = request.body(Bytes::new())
         .map_err(|e| AppError::invalid(format!("Invalid image registration: {e}")))?;
     http::send(Some(&session), request, http::TIMEOUT).await.map_err(AppError::from)?;
-    let fresh = profile(&session, &username, 0).await?;
+    let fresh = profile(&session, &username, 0, 0).await?;
     if fresh.user.images.is_empty() || fresh.user.images == previous {
         return Err(AppError::invalid("Spotify accepted the image but the account avatar has not yet changed; refresh your profile"));
     }
@@ -379,7 +437,7 @@ pub(crate) async fn remove_photo(_args: Value) -> AppResult<Value> {
     let request = request.body(Bytes::new())
         .map_err(|e| AppError::invalid(format!("Invalid image deletion: {e}")))?;
     http::send(Some(&session), request, http::TIMEOUT).await.map_err(AppError::from)?;
-    let fresh = profile(&session, &username, 0).await?;
+    let fresh = profile(&session, &username, 0, 0).await?;
     if !fresh.user.images.is_empty() {
         return Err(AppError::invalid("Spotify has not yet confirmed the profile photo removal; refresh your profile"));
     }
@@ -429,16 +487,19 @@ pub(crate) async fn rpc(args: Value) -> AppResult<Value> {
     }
     let is_me = username.eq_ignore_ascii_case(&me);
     // My own playlists come from the rootlist; other users' public ones only from here.
-    let playlist_limit = if is_me { 0 } else { PUBLIC_PLAYLISTS };
-    let mut profile = match profile(&session, &username, playlist_limit).await {
+    let playlist_limit = if is_me && !a.public_preview { 0 } else { PUBLIC_PLAYLISTS };
+    let artist_limit = if a.public_preview { 50 } else { 0 };
+    let mut profile = match profile(&session, &username, playlist_limit, artist_limit).await {
         Ok(p) => p,
-        Err(e) if is_me => {
+        Err(e) if is_me && !a.public_preview => {
             log::info!("own profile lookup failed: {e}");
-            Profile { user: User { username: username.clone(), ..Default::default() }, public_playlists: Vec::new() }
+            Profile { user: User { username: username.clone(), ..Default::default() },
+                public_playlists: Vec::new(), public_playlist_saves: HashMap::new(),
+                recently_played_artists: Vec::new(), show_follows: None }
         }
         Err(e) => return Err(e),
     };
-    if is_me {
+    if is_me && !a.public_preview {
         let user = &mut profile.user;
         user.product = session.get_user_attribute("type");
         // Diagnostic: every product state value (listening activity lives in one of them).
@@ -457,6 +518,8 @@ pub(crate) async fn rpc(args: Value) -> AppResult<Value> {
         }
         user.explicit_filter = session.filter_explicit_content();
         profile.public_playlists.clear();
+        profile.public_playlist_saves.clear();
+        profile.recently_played_artists.clear();
     }
     to_value(&profile)
 }
@@ -486,6 +549,23 @@ mod tests {
     }
 
     #[test]
+    fn public_preview_reads_only_public_api_fields() {
+        let json = br#"{"uri":"spotify:user:alice","name":"Alice",
+            "show_follows":false,
+            "recently_played_artists":[
+                {"uri":"spotify:artist:1a2b","name":"Example Artist",
+                 "image_url":"spotify:image:abcdef12","followers_count":1200},
+                {"uri":"spotify:track:bad","name":"Not an artist"}
+            ]}"#;
+        let p = parse_profile(json, "alice").unwrap();
+        assert_eq!(p.show_follows, Some(false));
+        assert_eq!(p.recently_played_artists.len(), 1);
+        assert_eq!(p.recently_played_artists[0].followers_count, Some(1200));
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["recentlyPlayedArtists"][0]["name"], "Example Artist");
+    }
+
+    #[test]
     fn parses_public_playlists() {
         let body = br#"{"uri":"spotify:user:alice","name":"Alice","public_playlists":[
             {"uri":"spotify:playlist:37i9dQZF1DXcBWIGoYBM5M","name":"Road trip","image_url":"https://i.scdn.co/image/ab67706c0000da84aaaa",
@@ -509,6 +589,7 @@ mod tests {
         assert!(p.public_playlists[2].owner.is_none());
         let v = serde_json::to_value(&p).unwrap();
         assert_eq!(v["publicPlaylists"][0]["name"], "Road trip");
+        assert_eq!(v["publicPlaylistSaves"]["spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"], 12);
         assert_eq!(image_url("spotify:image:not-hex"), None);
         assert_eq!(image_url("http://insecure"), None);
     }

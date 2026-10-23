@@ -100,8 +100,8 @@ fun LyricsScreen(onDismiss: () -> Unit, modifier: Modifier = Modifier) {
 
 /** Device picker: this phone (+ local outputs), Spotify Connect devices, system output switcher. */
 @Composable
-fun DevicesSheet(onDismiss: () -> Unit) {
-    DevicesSheetContent(onDismiss = onDismiss)
+fun DevicesSheet(onDismiss: () -> Unit, onStartJam: () -> Unit = {}) {
+    DevicesSheetContent(onDismiss = onDismiss, onStartJam = onStartJam)
 }
 
 /** Sleep timer picker. */

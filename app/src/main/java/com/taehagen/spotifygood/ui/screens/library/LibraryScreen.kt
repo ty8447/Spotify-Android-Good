@@ -100,6 +100,7 @@ import com.taehagen.spotifygood.ui.navigation.MediaActionTarget
 import com.taehagen.spotifygood.ui.navigation.PageBackHandler
 import com.taehagen.spotifygood.ui.navigation.Route
 import com.taehagen.spotifygood.ui.screens.menu.LocalProfileMenu
+import com.taehagen.spotifygood.ui.screens.menu.UnreadProfileMenuButton
 import kotlinx.coroutines.flow.Flow
 import com.taehagen.spotifygood.ui.components.FastScroller
 import com.taehagen.spotifygood.ui.components.fastScrollDate
@@ -229,7 +230,7 @@ private fun LibraryHeader(
         modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 4.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AvatarButton(user = user, onClick = onProfile)
+        UnreadProfileMenuButton(user = user, onClick = onProfile)
         Text(
             text = stringResource(R.string.browse_library_title),
             style = MaterialTheme.typography.headlineSmall,

@@ -23,6 +23,7 @@ mod context;
 mod feeds;
 mod home;
 mod http;
+mod jam;
 mod inflate;
 mod lyrics;
 pub mod metadata;
@@ -39,7 +40,9 @@ mod recent;
 mod refs;
 mod search;
 mod scannable;
+mod messaging;
 mod social;
+mod stickers;
 pub(crate) mod user;
 mod util;
 
@@ -100,6 +103,33 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "catalog.playlistUris" => playlist::playlist_uris(args).await,
         "catalog.search" => search::rpc(args).await,
         "catalog.resolveScannable" => scannable::resolve(args).await,
+        "catalog.jamServiceStatus" => jam::service_status().await,
+        "catalog.jamInvitationLink" => jam::invitation_link().await,
+        "catalog.jamAskToJoin" => jam::ask_to_join(args).await,
+        "catalog.jamPeerLookup" => jam::peer_lookup(args).await,
+        "catalog.jamStartSession" => jam::start_session().await,
+        "catalog.jamLeaveSession" => jam::leave_session().await,
+        "catalog.jamSetQueueOnlyMode" => jam::set_queue_only_mode(args).await,
+        "catalog.messagesProbe" => messaging::probe().await,
+        "catalog.messagesOverview" => messaging::overview().await,
+        "catalog.chatRecipientProfiles" => messaging::recipient_profiles(args).await,
+        "catalog.messageHistory" => messaging::history(args).await,
+        "catalog.messageShares" => messaging::shares(args).await,
+        "catalog.sendTextMessage" => messaging::send_text(args).await,
+        "catalog.sendMusicMessage" => messaging::send_share(args).await,
+        "catalog.sendRichMediaMessage" => messaging::send_rich_media(args).await,
+        "catalog.lyricStickerSurface" => stickers::surface(args).await,
+        "catalog.searchLyricStickers" => stickers::search(args).await,
+        "catalog.lyricStickerDetails" => stickers::details(args).await,
+        "catalog.setMessageReaction" => messaging::set_reaction(args).await,
+        "catalog.markChatSeen" => messaging::mark_chat_seen(args).await,
+        "catalog.deleteChatMessage" => messaging::delete_contribution(args).await,
+        "catalog.deleteChatForMe" => messaging::delete_chat_for_me(args).await,
+        "catalog.createGroupChat" => messaging::create_group(args).await,
+        "catalog.leaveGroupChat" => messaging::leave_group(args).await,
+        "catalog.muteChat" => messaging::mute_chat(args).await,
+        "catalog.unmuteChat" => messaging::unmute_chat(args).await,
+        "catalog.chatMuteStatus" => messaging::chat_mute_status(args).await,
         "catalog.home" => home::rpc(args).await,
         "catalog.lyrics" => lyrics::lyrics(args).await,
         "catalog.radio" => radio::rpc(args).await,
@@ -124,6 +154,8 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "catalog.deleteNotification" => feeds::delete_notification(args).await,
         "catalog.deleteNotifications" => feeds::delete_notifications(args).await,
         "catalog.friendActivity" => feeds::friend_activity(args).await,
+        "catalog.probeGroupMemberActivity" => feeds::probe_group_member_activity(args).await,
+        "catalog.groupMemberActivity" => feeds::group_member_activity(args).await,
         "library.playlists" => playlist::library_playlists(args).await,
         "library.tracks" => collection::tracks(args).await,
         "library.albums" => collection::albums(args).await,

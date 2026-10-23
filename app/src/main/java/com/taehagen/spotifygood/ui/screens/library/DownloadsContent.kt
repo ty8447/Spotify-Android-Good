@@ -164,7 +164,8 @@ internal fun DownloadsContent(contentPadding: PaddingValues, modifier: Modifier 
                 state = state,
                 contentPadding = contentPadding,
                 statusOf = viewModel::collectionStatus,
-                onPlayCollection = viewModel::playCollection,
+                // A collection tap browses its songs; the overflow sheet retains the explicit Play action.
+                onOpenCollection = { navigator.openCollection(it) },
                 onCollectionMore = { sheet = SheetTarget.OfCollection(it) },
                 onPlayEntry = viewModel::playEntry,
                 onEntryMore = { sheet = SheetTarget.OfEntry(it) },
@@ -260,7 +261,7 @@ private fun DownloadsList(
     state: DownloadsUiState,
     contentPadding: PaddingValues,
     statusOf: (String) -> Flow<CollectionDownloadStatus>,
-    onPlayCollection: (DownloadedCollection) -> Unit,
+    onOpenCollection: (DownloadedCollection) -> Unit,
     onCollectionMore: (DownloadedCollection) -> Unit,
     onPlayEntry: (DownloadEntry) -> Unit,
     onEntryMore: (DownloadEntry) -> Unit,
@@ -279,9 +280,9 @@ private fun DownloadsList(
                     OfflineBanner(Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                 }
             }
-            collectionSection("playlists", R.string.browse_downloads_section_playlists, content.playlists, statusOf, onPlayCollection, onCollectionMore)
-            collectionSection("albums", R.string.browse_downloads_section_albums, content.albums, statusOf, onPlayCollection, onCollectionMore)
-            collectionSection("podcasts", R.string.browse_downloads_section_podcasts, content.podcasts, statusOf, onPlayCollection, onCollectionMore)
+            collectionSection("playlists", R.string.browse_downloads_section_playlists, content.playlists, statusOf, onOpenCollection, onCollectionMore)
+            collectionSection("albums", R.string.browse_downloads_section_albums, content.albums, statusOf, onOpenCollection, onCollectionMore)
+            collectionSection("podcasts", R.string.browse_downloads_section_podcasts, content.podcasts, statusOf, onOpenCollection, onCollectionMore)
             if (content.songs.isNotEmpty()) {
                 item(key = "songsHeader", contentType = "sectionHeader") {
                     SectionHeader(
@@ -346,7 +347,7 @@ private fun LazyListScope.collectionSection(
     title: Int,
     collections: List<DownloadedCollection>,
     statusOf: (String) -> Flow<CollectionDownloadStatus>,
-    onPlay: (DownloadedCollection) -> Unit,
+    onOpen: (DownloadedCollection) -> Unit,
     onMore: (DownloadedCollection) -> Unit,
 ) {
     if (collections.isEmpty()) return
@@ -357,7 +358,7 @@ private fun LazyListScope.collectionSection(
         )
     }
     items(collections, key = { "collection:${it.uri}" }, contentType = { "collection" }) { collection ->
-        CollectionRow(collection = collection, statusOf = statusOf, onClick = { onPlay(collection) }, onMore = { onMore(collection) })
+        CollectionRow(collection = collection, statusOf = statusOf, onClick = { onOpen(collection) }, onMore = { onMore(collection) })
     }
 }
 

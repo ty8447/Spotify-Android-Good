@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.model.User
+import com.taehagen.spotifygood.model.PublicProfileArtist
 import com.taehagen.spotifygood.model.best
 import com.taehagen.spotifygood.ui.appViewModel
 import com.taehagen.spotifygood.ui.components.Artwork
@@ -105,6 +106,10 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
     val state by viewModel.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     var showProfileOptions by rememberSaveable { mutableStateOf(false) }
+    var showPublicPreview by rememberSaveable { mutableStateOf(false) }
+    // Show a short profile overview first; expand in place on request.
+    var showAllPlaylists by rememberSaveable(username) { mutableStateOf(false) }
+    var showAllArtists by rememberSaveable(username) { mutableStateOf(false) }
     var editing by rememberSaveable { mutableStateOf(false) }
     var draftName by rememberSaveable { mutableStateOf("") }
     var photo by remember { mutableStateOf<ByteArray?>(null) }
@@ -128,8 +133,13 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
     var visibilitySaving by remember { mutableStateOf<String?>(null) }
     var visibilityError by remember { mutableStateOf<String?>(null) }
     var artistsStatus by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(showProfileOptions, state.user?.username) {
-        if (!showProfileOptions || !state.isMe) return@LaunchedEffect
+    var recentArtists by remember(state.user?.username) { mutableStateOf<List<PublicProfileArtist>>(emptyList()) }
+    var recentArtistsLoading by remember(state.user?.username) { mutableStateOf(false) }
+    var recentArtistsError by remember(state.user?.username) { mutableStateOf(false) }
+    // The Settings screen edits these same server-backed switches. Refresh on profile
+    // entry and when returning from the options sheet or public preview.
+    LaunchedEffect(state.isMe, state.user?.username, showProfileOptions, showPublicPreview) {
+        if (!state.isMe || state.user == null) return@LaunchedEffect
         visibilityLoading = true
         visibilityError = null
         profileVisibility = emptyMap()
@@ -146,6 +156,27 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
             visibilityLoading = false
         }
     }
+    // Only public-facing artist entries belong on the profile; do not derive them
+    // from private playback history or the signed-in user's followed artists.
+    LaunchedEffect(state.isMe, state.user?.username, profileVisibility["artists"]) {
+        val username = state.user?.username
+        if (!state.isMe || username == null || profileVisibility["artists"] != true) {
+            recentArtists = emptyList()
+            recentArtistsLoading = false
+            recentArtistsError = false
+            return@LaunchedEffect
+        }
+        recentArtistsLoading = true
+        recentArtistsError = false
+        try {
+            recentArtists = graph.catalog.publicProfilePreview(username).recentlyPlayedArtists
+        } catch (_: Exception) {
+            recentArtists = emptyList()
+            recentArtistsError = true
+        } finally {
+            recentArtistsLoading = false
+        }
+    }
     fun saveVisibility(key: String, enabled: Boolean) {
         if (visibilitySaving != null || profileVisibility[key] == null) return
         visibilitySaving = key
@@ -158,9 +189,7 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
                 })
                 val saved = reply["enabled"]?.jsonPrimitive?.booleanOrNull
                     ?: error("Spotify did not acknowledge the change")
-                val verified = reply["verified"]?.jsonPrimitive?.booleanOrNull == true
                 profileVisibility = profileVisibility + (key to saved)
-                if (!verified) visibilityError = "Saved. Spotify hasn't exposed a fresh verification read for recently played artists yet."
             } catch (e: Exception) {
                 visibilityError = "Couldn't save setting: ${e.message ?: "Network unavailable"}"
             } finally {
@@ -177,6 +206,11 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
                 ErrorState(message = stringResource(error.messageRes()), onRetry = viewModel::retry)
             }
             user == null -> LoadingState()
+            showPublicPreview -> PublicProfilePreviewScreen(
+                username = user.username,
+                contentPadding = contentPadding,
+                onBack = { showPublicPreview = false },
+            )
             editing && state.isMe && selectedPhoto != null -> ProfilePhotoCropScreen(
                 uri = selectedPhoto!!,
                 onCancel = { selectedPhoto = null },
@@ -216,7 +250,7 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
                 item(key = "header", contentType = "header") {
                     ProfileHeader(
                         user = user,
-                        playlistCount = if (state.isMe) state.playlists.size else null,
+                        playlistCount = if (state.isMe && profileVisibility["playlists"] != false) state.playlists.size else null,
                         onFollowers = { navigator.navigate(Route.SocialPeople("followers", if (state.isMe) null else user.username)) },
                         onFollowing = { navigator.navigate(Route.SocialPeople("following", if (state.isMe) null else user.username)) },
                     )
@@ -236,7 +270,10 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
                         )
                     }
                 }
-                if (state.isMe || state.playlists.isNotEmpty()) {
+                // The signed-in profile follows the same server visibility control
+                // as Settings and the read-only public profile preview.
+                if ((state.isMe || state.playlists.isNotEmpty()) &&
+                    (!state.isMe || profileVisibility["playlists"] != false)) {
                     item(key = "playlistsHeader", contentType = "sectionHeader") {
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 24.dp, bottom = 4.dp),
@@ -252,7 +289,8 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
                             }
                         }
                     }
-                    items(state.playlists, key = { "playlist:${it.uri}" }, contentType = { "playlist" }) { playlist ->
+                    items(if (showAllPlaylists) state.playlists else state.playlists.take(3),
+                        key = { "playlist:${it.uri}" }, contentType = { "playlist" }) { playlist ->
                         val ref = remember(playlist) { playlist.toMediaRef() }
                         MediaRow(
                             ref = ref,
@@ -261,11 +299,51 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
                             onLongClick = { navigator.showActions(profilePlaylistTarget(playlist, state.myUsername)) },
                         )
                     }
+                    if (state.playlists.size > 3) item(key = "playlistsSeeAll") {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 14.dp), contentAlignment = Alignment.Center) {
+                            OutlinedButton(onClick = { showAllPlaylists = !showAllPlaylists }) {
+                                Text(if (showAllPlaylists) "Show fewer playlists" else "See all playlists")
+                            }
+                        }
+                    }
+                }
+                if (state.isMe && profileVisibility["artists"] == true) {
+                    item(key = "recentArtistsHeader", contentType = "sectionHeader") {
+                        Box(Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 24.dp, bottom = 4.dp)) {
+                            SectionHeader(title = "Recently played artists")
+                        }
+                    }
+                    if (recentArtists.isEmpty()) {
+                        item(key = "recentArtistsEmpty") {
+                            Text(
+                                when {
+                                    recentArtistsLoading -> "Loading recently played artists…"
+                                    recentArtistsError -> "Could not load recently played artists. Reopen your profile to retry."
+                                    else -> "No recently played artists to show."
+                                },
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        items(if (showAllArtists) recentArtists else recentArtists.take(3),
+                            key = { "recentArtist:${it.uri}" }, contentType = { "artist" }) { artist ->
+                            PreviewArtistRow(artist, onClick = { navigator.navigate(Route.Artist(artist.uri)) })
+                        }
+                        if (recentArtists.size > 3) item(key = "artistsSeeAll") {
+                            Box(Modifier.fillMaxWidth().padding(vertical = 14.dp), contentAlignment = Alignment.Center) {
+                                OutlinedButton(onClick = { showAllArtists = !showAllArtists }) {
+                                    Text(if (showAllArtists) "Show fewer artists" else "See all artists")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
         // Back button floating over the header gradient.
-        if (!editing) {
+        if (!editing && !showPublicPreview) {
             IconButton(onClick = navigator::back, modifier = Modifier.statusBarsPadding().padding(4.dp)) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.browse_back))
             }
@@ -312,7 +390,7 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
                 HorizontalDivider()
                 ProfileOption(Icons.Rounded.Visibility, "Preview public profile") {
                     showProfileOptions = false
-                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(profileUrl)))
+                    showPublicPreview = true
                 }
                 ProfileOption(Icons.Rounded.Share, "Share profile") {
                     val send = Intent(Intent.ACTION_SEND).apply {

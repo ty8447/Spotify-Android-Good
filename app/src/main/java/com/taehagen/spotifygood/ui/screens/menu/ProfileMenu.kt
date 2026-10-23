@@ -34,6 +34,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.History
@@ -85,6 +86,10 @@ import com.taehagen.spotifygood.AppGraph
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.auth.BrowserLauncher
 import com.taehagen.spotifygood.model.FriendActivity
+import com.taehagen.spotifygood.model.MediaType
+import com.taehagen.spotifygood.playback.PlayRequest
+import com.taehagen.spotifygood.ui.components.MediaActionRunner
+import com.taehagen.spotifygood.ui.navigation.MediaActionTarget
 import com.taehagen.spotifygood.model.MediaRef
 import com.taehagen.spotifygood.model.SpotifyNotification
 import com.taehagen.spotifygood.model.best
@@ -115,10 +120,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.ui.graphics.graphicsLayer
-import com.taehagen.spotifygood.model.MediaType
-import com.taehagen.spotifygood.playback.PlayRequest
 import com.taehagen.spotifygood.ui.screens.library.toActionTarget
 import com.taehagen.spotifygood.ui.screens.library.toMediaRef
 import androidx.lifecycle.Lifecycle
@@ -138,15 +142,19 @@ private const val PREMIUM_URL = "https://www.spotify.com/account/overview/"
  */
 @Composable
 fun ProfileMenu(onClosed: () -> Unit) {
-    val state = rememberDrawerState(DrawerValue.Closed)
+    // The content must be hit-testable from the first frame. The previous
+    // Closed -> open() animation let a rapid first tap dismiss the scrim
+    // before the drawer had reached its interactive anchors.
+    val state = rememberDrawerState(DrawerValue.Open)
+    // Defer navigation until the closing animation is complete.
+    var pendingAction by remember { androidx.compose.runtime.mutableStateOf<(() -> Unit)?>(null) }
     LaunchedEffect(state) {
-        withFrameNanos {} // its anchors are set by the first layout
-        try {
-            state.open()
-        } catch (e: CancellationException) {
-            // A swipe or tap took over the opening: it settles on its own.
-        }
         snapshotFlow { state.currentValue == DrawerValue.Closed && !state.isAnimationRunning }.first { it }
+        // Run the click exactly once while the navigator is still in composition,
+        // then remove the drawer. This also works for taps during opening.
+        val action = pendingAction
+        pendingAction = null
+        action?.invoke()
         onClosed()
     }
     val navigator = LocalAppNavigator.current
@@ -160,9 +168,12 @@ fun ProfileMenu(onClosed: () -> Unit) {
     val updatesState by updatesVm.state.collectAsStateWithLifecycle()
     AutoRefresh(updatesVm, 30_000)
     val unreadUpdates = updatesState.items.count { it.isNew }
+    val unreadChats = ChatUnreadStates.counts.values.sum()
+    var showNewMessage by remember { androidx.compose.runtime.mutableStateOf(false) }
     var selectedFriend by androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf<FriendActivity?>(null)
     }
+    var selectedGroup by remember { androidx.compose.runtime.mutableStateOf<ConversationSummary?>(null) }
     var showOurActivity by androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf(false)
     }
@@ -189,8 +200,10 @@ fun ProfileMenu(onClosed: () -> Unit) {
         }
     }
     val go = { action: () -> Unit ->
-        scope.launch { state.close() }
-        action()
+        if (pendingAction == null) {
+            pendingAction = action
+            scope.launch { state.close() }
+        }
     }
     BackHandler(enabled = state.isOpen) { scope.launch { state.close() } }
     ModalNavigationDrawer(
@@ -211,7 +224,15 @@ fun ProfileMenu(onClosed: () -> Unit) {
                         .padding(horizontal = 20.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Artwork(user?.images?.best(96), null, Modifier.size(52.dp), CircleShape, Icons.Rounded.Person, avatarName = user?.let { it.displayName ?: it.username })
+                    Box(Modifier.size(56.dp)) {
+                        Artwork(user?.images?.best(96), null, Modifier.size(52.dp), CircleShape,
+                            Icons.Rounded.Person, avatarName = user?.let { it.displayName ?: it.username })
+                        if (unreadChats > 0) {
+                            Box(Modifier.align(Alignment.BottomEnd).offset(3.dp, 3.dp)) {
+                                ChatUnreadBadge(unreadChats)
+                            }
+                        }
+                    }
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
@@ -271,12 +292,29 @@ fun ProfileMenu(onClosed: () -> Unit) {
                 ActivityDrawerPreview(onOurActivity = { showOurActivity = true },
                     selfImage = user?.images?.best(96),
                     onViewMore = { go { navigator.navigate(Route.Activity) } },
-                    onUser = { friend -> selectedFriend = friend })
-                MessagesDrawerPreview(onViewAll = { go { navigator.navigate(Route.Messages) } })
+                    onUser = { friend -> selectedFriend = friend },
+                    onGroup = { chat -> selectedGroup = chat })
+                MessagesDrawerPreview(
+                    onViewAll = { go { navigator.navigate(Route.Messages) } },
+                    onNewMessage = { showNewMessage = true },
+                    onConversation = { id, name ->
+                        go { navigator.navigate(Route.MessageConversation(id, name)) }
+                    },
+                )
                 }
             }
         },
     ) {}
+    if (showNewMessage) {
+        NewMessageSheet(onDismiss = { showNewMessage = false }, onOpenChat = { id, title ->
+            showNewMessage = false
+            go { navigator.navigate(Route.MessageConversation(id, title)) }
+        })
+    }
+    selectedGroup?.let { group ->
+        GroupActivityModal(group, onDismiss = { selectedGroup = null },
+            onNavigate = { route -> go { navigator.navigate(route) } })
+    }
     selectedFriend?.let { friend ->
         androidx.compose.material3.ModalBottomSheet(
             onDismissRequest = { selectedFriend = null },
@@ -780,16 +818,185 @@ private fun AutoRefresh(vm: FeedViewModel<*>, periodMs: Long = 10_000) {
 private fun List<FriendActivity>.byActivity(): List<FriendActivity> =
     sortedWith(compareByDescending<FriendActivity> { it.isActive == true }.thenByDescending { it.timestampMs })
 
+/** Only conversations with actual server-returned activity from another member qualify.
+ * This does not assert a chat-level listening-visibility setting, which this API does not expose.
+ */
+private data class GroupActivityPreview(
+    val chat: ConversationSummary,
+    val people: List<FriendActivity>,
+) {
+    val currentlyPlaying: Int get() = people.count { it.isActive == true }
+    val mostRecentMs: Long get() = people.maxOfOrNull { it.timestampMs } ?: 0L
+    // Show what the most relevant member is playing, not a generic count.
+    // A positive isPlaying signal always takes precedence over a recent timestamp.
+    val leadingListener: FriendActivity? get() = people.maxWithOrNull(
+        compareBy<FriendActivity> { it.isActive == true }
+            .thenBy { it.timestampMs })
+    val title: String get() = chat.displayTitle.ifBlank { chat.groupName ?: "Group chat" }
+}
+
+@Composable
+private fun rememberGroupActivityPreviews(): List<GroupActivityPreview> {
+    val graph = rememberAppGraph()
+    val selfUsername = graph.engine.user.collectAsStateWithLifecycle().value?.username
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var groups by remember(selfUsername) {
+        androidx.compose.runtime.mutableStateOf<List<GroupActivityPreview>>(emptyList())
+    }
+    LaunchedEffect(graph, selfUsername, lifecycle) {
+        if (selfUsername.isNullOrBlank()) return@LaunchedEffect
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                try {
+                    val overview = graph.rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                    // Bound the number of background calls; never enumerate unrelated usernames.
+                    val candidates = overview.conversations.asSequence()
+                        .filter { it.hierarchyId.isNotBlank() && (it.isGroup || it.groupMemberCount > 2) }
+                        .distinctBy { it.hierarchyId }
+                        .filter { chat ->
+                            chat.participants.map { it.username }.filter(String::isNotBlank)
+                                .distinct().size in 3..40
+                        }
+                        .sortedByDescending { it.latestOccurredAtMs ?: 0L }
+                        .take(10).toList()
+                    val found = mutableListOf<GroupActivityPreview>()
+                    for (chat in candidates) {
+                        val usernames = chat.participants.map { it.username }
+                            .filter(String::isNotBlank).distinct()
+                        val people = try {
+                            graph.catalog.groupMemberActivity(usernames)
+                                .filter { it.username != selfUsername }
+                        } catch (cancel: CancellationException) {
+                            throw cancel
+                        } catch (_: Exception) { emptyList() }
+                        if (people.isNotEmpty()) found.add(GroupActivityPreview(chat, people))
+                    }
+                    groups = found.sortedWith(
+                        compareByDescending<GroupActivityPreview> { it.currentlyPlaying > 0 }
+                            .thenByDescending { it.mostRecentMs })
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    // Keep the last confirmed activity during transient overview errors.
+                }
+                delay(45_000)
+            }
+        }
+    }
+    return groups
+}
+
+private data class ActivityGridEntry(
+    val friend: FriendActivity? = null,
+    val group: GroupActivityPreview? = null,
+) {
+    val playing: Boolean get() = friend?.isActive == true || (group?.currentlyPlaying ?: 0) > 0
+    val timestamp: Long get() = friend?.timestampMs ?: group?.mostRecentMs ?: 0L
+}
+
+@Composable
+private fun GroupActivityTile(group: GroupActivityPreview, modifier: Modifier = Modifier,
+                              onClick: () -> Unit) {
+    Column(modifier.clickable(onClick = onClick).padding(3.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        MessageGroupAvatar(group.chat.participants, 54.dp)
+        Text(group.title, style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold, maxLines = 1,
+            overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth())
+        Row(Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center) {
+            val listener = group.leadingListener
+            val live = listener?.isActive == true
+            if (live) LiveBars()
+            Text(listener?.track?.name ?: "Recently listened",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (live) Color(0xFF1DB954)
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.weight(1f, fill = false))
+        }
+    }
+}
+
+/** A group bubble uses the same member sheet/card as the conversation itself. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GroupActivityModal(
+    chat: ConversationSummary,
+    onDismiss: () -> Unit,
+    onNavigate: (Route) -> Unit,
+) {
+    val graph = rememberAppGraph()
+    val navigator = LocalAppNavigator.current
+    val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val runner = remember(graph, navigator, context) { MediaActionRunner(graph, navigator, context) }
+    val signedInUsername = graph.engine.user.collectAsStateWithLifecycle().value?.username
+    val title = chat.displayTitle.ifBlank { chat.groupName ?: "Group chat" }
+    val conversation = Route.MessageConversation(chat.hierarchyId, title)
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        GroupConversationActivitySheet(
+            participants = chat.participants,
+            onPlay = { friend ->
+                if (friend.track.type == MediaType.TRACK)
+                    graph.player.play(PlayRequest(trackUris = listOf(friend.track.uri)))
+                else navigator.open(friend.track)
+            },
+            onProfile = { friend -> onDismiss(); onNavigate(Route.Profile(friend.username)) },
+            onDraftChatMessage = { message ->
+                PendingListeningChatDraft.stage(signedInUsername, chat.hierarchyId, message)
+                onDismiss()
+                onNavigate(conversation)
+            },
+            onQueue = { friend ->
+                if (friend.track.type == MediaType.TRACK)
+                    runner.addToQueue(listOf(friend.track.uri))
+                else navigator.showMessage("Queue is available for songs")
+            },
+            onAddToPlaylist = { friend ->
+                if (friend.track.type == MediaType.TRACK)
+                    navigator.addToPlaylist(listOf(friend.track.uri))
+                else navigator.showMessage("Add to playlist is available for songs")
+            },
+            onSongActions = { friend ->
+                if (friend.track.type != MediaType.TRACK) navigator.open(friend.track)
+                else scope.launch {
+                    try {
+                        val track = graph.catalog.tracks(listOf(friend.track.uri)).firstOrNull()
+                        if (track != null) navigator.showActions(MediaActionTarget.TrackTarget(track))
+                        else navigator.showMessage("Song actions are unavailable")
+                    } catch (cancel: CancellationException) {
+                        throw cancel
+                    } catch (_: Exception) {
+                        navigator.showMessage("Unable to load song actions")
+                    }
+                }
+            },
+            onGoToChat = { onDismiss(); onNavigate(conversation) },
+        )
+    }
+}
+
 /** Compact friends module inside the profile drawer: most recently active first. */
 @Composable
-private fun ActivityDrawerPreview(onOurActivity: () -> Unit, selfImage: String?, onViewMore: () -> Unit, onUser: (FriendActivity) -> Unit) {
+private fun ActivityDrawerPreview(onOurActivity: () -> Unit, selfImage: String?, onViewMore: () -> Unit,
+                                  onUser: (FriendActivity) -> Unit, onGroup: (ConversationSummary) -> Unit) {
     @Suppress("UNCHECKED_CAST")
     val vm = appViewModel<FeedViewModel<*>>(key = "menu:activity-preview") {
         FeedViewModel(it) { graph -> graph.catalog.friendActivity() }
     } as FeedViewModel<FriendActivity>
     val state by vm.state.collectAsStateWithLifecycle()
     AutoRefresh(vm)
-    val friends = state.items.byActivity().take(9)
+    val friends = state.items.byActivity()
+    val groups = rememberGroupActivityPreviews()
+    val entries = (friends.map { ActivityGridEntry(friend = it) } +
+        groups.map { ActivityGridEntry(group = it) })
+        .sortedWith(compareByDescending<ActivityGridEntry> { it.playing }
+            .thenByDescending { it.timestamp }).take(8)
     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Activity", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold,
@@ -797,17 +1004,17 @@ private fun ActivityDrawerPreview(onOurActivity: () -> Unit, selfImage: String?,
             TextButton(onClick = onViewMore) { Text("View more") }
         }
         when {
-            state.loading && friends.isEmpty() -> Text("Loading activityâ€¦", style = MaterialTheme.typography.bodySmall)
-            state.error != null && friends.isEmpty() -> TextButton(onClick = vm::refresh) { Text("Retry activity") }
-            friends.isEmpty() -> Text("No friend activity yet", style = MaterialTheme.typography.bodySmall,
+            state.loading && entries.isEmpty() -> Text("Loading activityâ€¦", style = MaterialTheme.typography.bodySmall)
+            state.error != null && entries.isEmpty() -> TextButton(onClick = vm::refresh) { Text("Retry activity") }
+            entries.isEmpty() -> Text("No friend activity yet", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             else -> {
                 // Place our activity in cell 0 of the same three-column grid as friends.
-                val tiles: List<FriendActivity?> = listOf(null) + friends.take(8)
+                val tiles: List<ActivityGridEntry?> = listOf(null) + entries
                 tiles.chunked(3).forEach { group ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        group.forEach { friend ->
-                            if (friend == null) {
+                        group.forEach { entry ->
+                            if (entry == null) {
                                 Column(
                                     Modifier.weight(1f).clickable(onClick = onOurActivity)
                                         .border(1.dp, MaterialTheme.colorScheme.primary,
@@ -821,7 +1028,14 @@ private fun ActivityDrawerPreview(onOurActivity: () -> Unit, selfImage: String?,
                                 }
                             } else {
                                 Box(Modifier.weight(1f)) {
-                                    FriendTile(friend, Modifier.fillMaxWidth()) { onUser(friend) }
+                                    entry.friend?.let { friend ->
+                                        FriendTile(friend, Modifier.fillMaxWidth()) { onUser(friend) }
+                                    }
+                                    entry.group?.let { groupActivity ->
+                                        GroupActivityTile(groupActivity, Modifier.fillMaxWidth()) {
+                                            onGroup(groupActivity.chat)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -923,7 +1137,7 @@ private fun FriendTile(friend: FriendActivity, modifier: Modifier = Modifier, on
 }
 
 @Composable
-private fun LiveBars() {
+internal fun LiveBars() {
     val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "listening")
     Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom,
         modifier = Modifier.padding(end = 3.dp).heightIn(min = 12.dp)) {
@@ -948,6 +1162,14 @@ fun ActivityScreen(contentPadding: PaddingValues) {
     } as FeedViewModel<FriendActivity>
     val state by vm.state.collectAsStateWithLifecycle()
     AutoRefresh(vm)
+    val groups = rememberGroupActivityPreviews()
+    // View More has the same active-first, newest-next order as the drawer grid.
+    // Previously every group was displayed ahead of individuals regardless of recency.
+    val entries = (groups.map { ActivityGridEntry(group = it) } +
+        state.items.map { ActivityGridEntry(friend = it) })
+        .sortedWith(compareByDescending<ActivityGridEntry> { it.playing }
+            .thenByDescending { it.timestamp })
+    var selectedGroup by remember { androidx.compose.runtime.mutableStateOf<ConversationSummary?>(null) }
     val navigator = LocalAppNavigator.current
     Column(Modifier.fillMaxSize()) {
         TopAppBar(title = { Text("Friend Activity", fontWeight = FontWeight.Bold) },
@@ -955,19 +1177,55 @@ fun ActivityScreen(contentPadding: PaddingValues) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
             } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background))
         when {
-            state.loading && state.items.isEmpty() -> LoadingState()
-            state.error != null && state.items.isEmpty() -> StateBox {
+            state.loading && state.items.isEmpty() && groups.isEmpty() -> LoadingState()
+            state.error != null && state.items.isEmpty() && groups.isEmpty() -> StateBox {
                 ErrorState(stringResource(state.error!!.messageRes()), onRetry = vm::refresh)
             }
-            state.items.isEmpty() -> StateBox { EmptyState(title = "No friend activity yet") }
+            state.items.isEmpty() && groups.isEmpty() -> StateBox { EmptyState(title = "No friend activity yet") }
             else -> LazyColumn(contentPadding = contentPaddingWith(contentPadding)) {
-                items(state.items.byActivity(), key = { it.username }) { friend ->
-                    FriendRow(friend, onUser = { navigator.navigate(Route.Profile(friend.username)) },
-                        onTrack = { navigator.open(friend.track) },
-                        onContext = friend.contextUri?.let { uri -> { navigator.openUri(uri) } })
+                items(entries, key = { entry ->
+                    entry.group?.let { "group-" + it.chat.hierarchyId }
+                        ?: "friend-${entry.friend?.username}"
+                }) { entry ->
+                    entry.group?.let { group ->
+                        Row(Modifier.fillMaxWidth().clickable { selectedGroup = group.chat }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            MessageGroupAvatar(group.chat.participants, 48.dp)
+                            Column(Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(group.title, fontWeight = FontWeight.SemiBold,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    val listener = group.leadingListener
+                                    val live = listener?.isActive == true
+                                    if (live) LiveBars()
+                                    Text(listener?.track?.name ?: "Recently listened",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (live) Color(0xFF1DB954)
+                                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f))
+                                }
+                            }
+                            Icon(Icons.Rounded.People, contentDescription = "Group activity")
+                        }
+                    }
+                    entry.friend?.let { friend ->
+                        FriendRow(friend, onUser = { navigator.navigate(Route.Profile(friend.username)) },
+                            onTrack = { navigator.open(friend.track) },
+                            onContext = friend.contextUri?.let { uri -> { navigator.openUri(uri) } })
+                    }
                 }
             }
         }
+    }
+    selectedGroup?.let { group ->
+        GroupActivityModal(group, onDismiss = { selectedGroup = null },
+            onNavigate = { route -> navigator.navigate(route) })
     }
 }
 
@@ -1021,18 +1279,88 @@ private fun FriendRow(friend: FriendActivity, onUser: () -> Unit, onTrack: () ->
     }
 }
 
-/** Messaging is not available from the current native catalog. Never display invented conversations. */
+/** The drawer and full Messages page consume the same authenticated overview response. */
 @Composable
-private fun MessagesDrawerPreview(onViewAll: () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text("Messages", style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f).clickable(onClick = onViewAll))
-            TextButton(onClick = onViewAll) { Text("View all") }
+private fun MessagesDrawerPreview(
+    onViewAll: () -> Unit,
+    onNewMessage: () -> Unit,
+    onConversation: (String, String) -> Unit,
+) {
+    val rpc = rememberAppGraph().rpc
+    var latest by remember { androidx.compose.runtime.mutableStateOf<List<ConversationSummary>>(emptyList()) }
+    var loading by remember { androidx.compose.runtime.mutableStateOf(true) }
+    var failed by remember { androidx.compose.runtime.mutableStateOf(false) }
+    LaunchedEffect(rpc) {
+        while (true) {
+            try {
+                val overview = rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                ChatUnreadStates.update(overview.conversations)
+                latest = overview.conversations.filter { it.hierarchyId.isNotBlank() }
+                    .distinctBy { it.hierarchyId }
+                    .sortedByDescending { it.latestOccurredAtMs ?: Long.MIN_VALUE }
+                    .take(5)
+                failed = false
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (_: Exception) {
+                failed = true
+            } finally {
+                loading = false
+            }
+            // Drawer is removed from composition when closed: polling stops with it.
+            delay(15_000)
         }
-        Text("Messages aren't connected yet", style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.clickable(onClick = onViewAll).padding(vertical = 12.dp))
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.weight(1f).clickable(onClick = onViewAll),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Messages", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold)
+                Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = "Open all messages",
+                    modifier = Modifier.size(17.dp))
+            }
+            IconButton(onClick = onNewMessage) {
+                Icon(Icons.Rounded.Edit, contentDescription = "New message")
+            }
+        }
+        when {
+            loading -> Text("Loading chats…", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+            failed -> Text("Couldn't load recent chats. Open Messages to retry.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.clickable(onClick = onViewAll).padding(8.dp))
+            latest.isEmpty() -> Text("No recent chats", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+        }
+        latest.forEach { chat ->
+            val title = chat.displayTitle.ifBlank { chat.groupName ?: "Conversation" }
+            val avatar = chat.participants.singleOrNull()?.avatarUrl
+            Row(Modifier.fillMaxWidth().clickable { onConversation(chat.hierarchyId, title) }
+                    .padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (chat.isGroup && chat.participants.isNotEmpty()) {
+                    MessageGroupAvatar(chat.participants, 38.dp)
+                } else {
+                    Artwork(avatar, null, Modifier.size(38.dp), CircleShape,
+                        Icons.Rounded.Person, avatarName = title)
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val sender = chat.latestSenderName?.takeIf { it.isNotBlank() }
+                    val detail = chat.latestPreviewText ?: chat.latestContentLabel ?: "Chat activity"
+                    Text(if (sender != null) "$sender · $detail" else detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                ConversationDateAndMute(chat.hierarchyId, chat.latestOccurredAtMs,
+                    ChatUnreadStates.counts[chat.hierarchyId] ?: chat.unseenContributions)
+            }
+        }
     }
 }
 

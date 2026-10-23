@@ -426,6 +426,46 @@ internal class PlayerViewModel(graph: AppGraph) : ViewModel(), PlayerCommands {
         }
     }
 
+    /** Moves selected upcoming tracks into the protected manual queue (remote Connect).
+     * A moved context track acquires is_queued=true in the native remote set_queue payload.
+     * Send from the last selection backwards to preserve the original relative order.
+     */
+    fun moveSelectedToFront(selectedKeys: Set<String>) {
+        val state = snapshot.value
+        val sections = queue.value
+        val entries = sections.queued + sections.upNext + sections.autoplay
+        val selected = entries.filter { it.hasUid && it.key in selectedKeys &&
+            (it.track.provider == com.taehagen.spotifygood.model.TrackProvider.QUEUE ||
+             state.source == com.taehagen.spotifygood.model.PlaybackSource.REMOTE) }
+        if (selected.isEmpty()) return
+        // No optimistic section change for context tracks: wait for the server's new provider.
+        if (selected.all { it.track.provider == com.taehagen.spotifygood.model.TrackProvider.QUEUE }) {
+            val original = sections.queued.map { it.key }
+            val target = selected.map { it.key } + original.filterNot { it in selectedKeys }
+            if (target == original) return
+            pendingOrder.value = target
+            viewModelScope.launch {
+                delay(PENDING_EDIT_TIMEOUT_MS)
+                pendingOrder.compareAndSet(target, null)
+            }
+        }
+        if (state.source == com.taehagen.spotifygood.model.PlaybackSource.REMOTE) {
+            player.promoteManyInQueue(selected.map { it.track.uid })
+        } else {
+            selected.asReversed().forEach { player.moveInQueue(it.track.uid, 0) }
+        }
+    }
+
+    /** Reorders an upcoming remote context track or an existing queued track by its UID.
+     * Native remote Connect promotes context tracks to the manual queue on a move.
+     */
+    fun moveUpcoming(entry: QueueEntry, toVisibleIndex: Int) {
+        if (!entry.hasUid) return
+        if (entry.track.provider != com.taehagen.spotifygood.model.TrackProvider.QUEUE &&
+            snapshot.value.source != com.taehagen.spotifygood.model.PlaybackSource.REMOTE) return
+        player.moveInQueue(entry.track.uid, toVisibleIndex.coerceAtLeast(0))
+    }
+
     /** Moves a queued row one step (accessibility actions). */
     fun moveBy(entry: QueueEntry, delta: Int) {
         val keys = queue.value.queued.map { it.key }

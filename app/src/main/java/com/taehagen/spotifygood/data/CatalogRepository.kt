@@ -5,6 +5,7 @@ import com.taehagen.spotifygood.model.Artist
 import com.taehagen.spotifygood.model.Episode
 import com.taehagen.spotifygood.model.FriendActivity
 import com.taehagen.spotifygood.model.MediaRef
+import com.taehagen.spotifygood.model.MediaType
 import com.taehagen.spotifygood.model.SpotifyNotification
 import com.taehagen.spotifygood.model.Playlist
 import com.taehagen.spotifygood.model.Show
@@ -151,11 +152,115 @@ class CatalogRepository(
         rpc.callOffMain<kotlinx.serialization.json.JsonObject>("catalog.deleteNotification", rpcArgs { put("storageId", storageId) })
     }
 
-    /** What friends listen to, newest first. */
-    suspend fun friendActivity(): List<FriendActivity> = rpc.callOffMain<FriendActivities>("catalog.friendActivity").items
+    /**
+     * Merge the legacy desktop buddylist with the mobile listening feed. The latter
+     * can contain users absent from the buddylist, but has only media URIs. Resolve
+     * those URIs through Spotify's verified metadata endpoints before showing rows.
+     * A failed media lookup never produces a fabricated title or phantom activity.
+     */
+    suspend fun friendActivity(): List<FriendActivity> {
+        val sources = rpc.callOffMain<FriendActivities>("catalog.friendActivity")
+        if (sources.feedOnly.isEmpty()) return sources.items
+        val missing = sources.feedOnly.distinctBy { it.username }
+            .filter { it.username.isNotBlank() &&
+                (it.mediaUri.startsWith("spotify:track:") ||
+                    it.mediaUri.startsWith("spotify:episode:")) }
+        if (missing.isEmpty()) return sources.items
+
+        val trackUris = missing.map { it.mediaUri }.filter { it.startsWith("spotify:track:") }.distinct()
+        val episodeUris = missing.map { it.mediaUri }.filter { it.startsWith("spotify:episode:") }.distinct()
+        // Failure resolving a batch does not prevent the other media type from appearing.
+        val tracks = try { tracks(trackUris) } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c
+        } catch (_: Exception) { emptyList() }
+        val episodes = try { episodes(episodeUris) } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c
+        } catch (_: Exception) { emptyList() }
+        val mediaByUri = buildMap<String, MediaRef> {
+            tracks.filter { it.name.isNotBlank() }.forEach { track ->
+                put(track.uri, MediaRef(MediaType.TRACK, track.uri, track.name,
+                    track.artists.joinToString(", ") { it.name }.takeIf { it.isNotBlank() },
+                    track.album?.images.orEmpty()))
+            }
+            episodes.filter { it.name.isNotBlank() }.forEach { episode ->
+                put(episode.uri, MediaRef(MediaType.EPISODE, episode.uri, episode.name,
+                    episode.show?.name, episode.images))
+            }
+        }
+        val resolved = mutableListOf<FriendActivity>()
+        for (entry in missing) {
+            val media = mediaByUri[entry.mediaUri] ?: continue
+            val profile = try { user(entry.username) } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
+            } catch (_: Exception) { null }
+            resolved += FriendActivity(
+                username = entry.username,
+                name = profile?.displayName?.takeIf { it.isNotBlank() } ?: entry.username,
+                image = profile?.images?.firstOrNull()?.url,
+                track = media,
+                contextUri = entry.contextUri,
+                timestampMs = entry.timestampMs,
+                isActive = entry.isActive,
+            )
+        }
+        android.util.Log.i("SpotifyGoodActivity",
+            "feedOnlyResolved=${resolved.size} from=${sources.feedOnly.size}")
+        return (sources.items + resolved).distinctBy { it.username }
+            .sortedWith(compareByDescending<FriendActivity> { it.isActive == true }
+                .thenByDescending { it.timestampMs })
+    }
+
+    /** Activity returned by Spotify for explicitly requested participants of a group chat.
+     * Unlike the FOLLOWING feed, this uses the official UsersActivityRequest path.
+     * Only valid server-returned tracks/episodes are shown; never substitute global
+     * activity or invent details for members with no activity.
+     */
+    suspend fun groupMemberActivity(usernames: List<String>): List<FriendActivity> {
+        val requested = usernames.filter { it.isNotBlank() }.distinct()
+        if (requested.size !in 3..40) return emptyList()
+        val response = rpc.callOffMain<GroupMemberActivityResponse>(
+            "catalog.groupMemberActivity", rpcArgs { putStrings("usernames", requested) })
+        val candidates = response.items.filter { it.username in requested }
+            .distinctBy { it.username }
+        val trackUris = candidates.map { it.mediaUri }.filter { it.startsWith("spotify:track:") }.distinct()
+        val episodeUris = candidates.map { it.mediaUri }.filter { it.startsWith("spotify:episode:") }.distinct()
+        val tracks = try { tracks(trackUris) } catch (cancel: kotlinx.coroutines.CancellationException) {
+            throw cancel
+        } catch (_: Exception) { emptyList() }
+        val episodes = try { episodes(episodeUris) } catch (cancel: kotlinx.coroutines.CancellationException) {
+            throw cancel
+        } catch (_: Exception) { emptyList() }
+        val mediaByUri = buildMap<String, MediaRef> {
+            tracks.filter { it.name.isNotBlank() }.forEach { track ->
+                put(track.uri, MediaRef(MediaType.TRACK, track.uri, track.name,
+                    track.artists.joinToString(", ") { it.name }.takeIf(String::isNotBlank),
+                    track.album?.images.orEmpty()))
+            }
+            episodes.filter { it.name.isNotBlank() }.forEach { episode ->
+                put(episode.uri, MediaRef(MediaType.EPISODE, episode.uri, episode.name,
+                    episode.show?.name, episode.images))
+            }
+        }
+        val resolved = candidates.mapNotNull { entry ->
+            val media = mediaByUri[entry.mediaUri] ?: return@mapNotNull null
+            FriendActivity(entry.username, entry.username, null, media,
+                entry.contextUri, null, entry.timestampMs, entry.isActive)
+        }
+        android.util.Log.i("SpotifyGoodGroupMembersUi",
+            "returned=${candidates.size} resolved=${resolved.size}")
+        return resolved.sortedWith(compareByDescending<FriendActivity> { it.isActive == true }
+            .thenByDescending { it.timestampMs })
+    }
 
     suspend fun user(username: String? = null): User =
         rpc.callOffMain("catalog.user", rpcArgs { if (username != null) put("username", username) })
+
+    /** Fetch the server's public-facing profile, even for the signed-in account. */
+    suspend fun publicProfilePreview(username: String): User =
+        rpc.callOffMain("catalog.user", rpcArgs {
+            put("username", username)
+            put("publicPreview", true)
+        })
 
     /** Writes the Spotify account profile and requires a fresh server read to confirm. */
     suspend fun updateProfilePhoto(jpeg: ByteArray): User =
@@ -227,7 +332,22 @@ internal data class EpisodesResult(val episodes: List<Episode> = emptyList())
 internal data class MediaRefs(val items: List<MediaRef> = emptyList())
 
 @Serializable
-internal data class FriendActivities(val items: List<FriendActivity> = emptyList())
+internal data class MobileFeedOnlyActivity(
+    val username: String,
+    val mediaUri: String,
+    val contextUri: String? = null,
+    val timestampMs: Long = 0L,
+    val isActive: Boolean = false,
+)
+
+@Serializable
+internal data class GroupMemberActivityResponse(val items: List<MobileFeedOnlyActivity> = emptyList())
+
+@Serializable
+internal data class FriendActivities(
+    val items: List<FriendActivity> = emptyList(),
+    val feedOnly: List<MobileFeedOnlyActivity> = emptyList(),
+)
 
 @Serializable
 internal data class NotificationsResult(val items: List<SpotifyNotification> = emptyList(), val latestCursor: String? = null)

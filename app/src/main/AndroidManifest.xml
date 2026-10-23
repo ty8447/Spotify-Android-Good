@@ -71,6 +71,11 @@
              did); requests from outside come through LinkActivity. The app starts it only with
              MainActivity.launchIntent (the launcher's intent, no package), so the task's root
              intent matches a launcher tap's; an installer "Open" root is handled in onCreate -->
+        <!-- Isolated GIPHY browser; returns one media ID to the Compose composer. -->
+        <activity android:name=".ui.messaging.GiphyMessagePickerActivity"
+            android:exported="false" android:theme="@style/Theme.SpotifyGood"
+            android:windowSoftInputMode="adjustResize" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

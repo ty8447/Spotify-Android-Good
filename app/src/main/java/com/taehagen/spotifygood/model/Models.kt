@@ -329,6 +329,14 @@ data class Lyrics(
 )
 
 @Serializable
+data class PublicProfileArtist(
+    val uri: String,
+    val name: String,
+    val images: List<Image> = emptyList(),
+    val followersCount: Long? = null,
+)
+
+@Serializable
 data class User(
     val username: String,
     val displayName: String? = null,
@@ -341,6 +349,12 @@ data class User(
     val explicitFilter: Boolean = false,
     /** Another user's public playlists (`catalog.user {username}`); empty for me (use the rootlist). */
     val publicPlaylists: List<PlaylistRef> = emptyList(),
+    /** Save counts supplied by the public profile endpoint, keyed by playlist URI. */
+    val publicPlaylistSaves: Map<String, Long> = emptyMap(),
+    /** Included only by the public-profile API. Never infer this from private play history. */
+    val recentlyPlayedArtists: List<PublicProfileArtist> = emptyList(),
+    /** Whether followers/following are visible to visitors; absent means unspecified. */
+    val showFollows: Boolean? = null,
 ) {
     val isPremium: Boolean get() = product == null || product == "premium"
 }

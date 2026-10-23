@@ -42,6 +42,18 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
+/** Original location of a track promoted from playback context into the Jam manual queue.
+ * These anchors are captured before moving the track, never inferred after the move.
+ */
+data class JamQueueMoveOrigin(
+    val uid: String,
+    val uri: String,
+    val contextIndex: Int,
+    val provider: String,
+    val beforeUid: String? = null,
+    val afterUid: String? = null,
+)
+
 /**
  * What to play (maps to `player.load`, docs/ARCHITECTURE.md §6.2). [positionAt]: when
  * [positionMs] dates from (wall time; 0: unknown) for a stored session's position
@@ -377,6 +389,9 @@ class PlayerController internal constructor(
         clearQueueAsync()
     }
 
+    /** Reshuffles upcoming context tracks without touching manually queued tracks. */
+    internal fun reshuffleJamQueueAsync(): Deferred<Boolean> = send("queue.reshuffle")
+
     /** `queue.clear`; bulk adds queued before it stop (their remaining items would refill the queue). */
     internal fun clearQueueAsync(): Deferred<Boolean> {
         val cancelled: List<BulkAdd>
@@ -646,6 +661,33 @@ class PlayerController internal constructor(
             put("toIndex", toIndex.coerceAtLeast(0))
         },
     )
+
+    /** One atomic remote queue update, preserving the order of [uids]. */
+    fun promoteManyInQueue(uids: List<String>) {
+        if (uids.isEmpty()) return
+        send("queue.promoteMany", buildJsonObject {
+            putJsonArray("uids") { uids.forEach { add(it) } }
+        })
+    }
+
+    /** Restore only playlist/context songs moved by this Jam sheet.
+     * Unlike queue.clear, this preserves the songs and reverts their manually queued flag.
+     * An anchored single set_queue mutation prevents racing multiple queue revisions.
+     */
+    fun restoreJamMovedAsync(moves: List<JamQueueMoveOrigin>): Deferred<Boolean> =
+        send("queue.restoreMoved", buildJsonObject {
+            putJsonArray("moves") {
+                moves.forEach { origin ->
+                    add(buildJsonObject {
+                        put("uid", origin.uid)
+                        put("contextIndex", origin.contextIndex)
+                        put("provider", origin.provider)
+                        origin.beforeUid?.let { put("beforeUid", it) }
+                        origin.afterUid?.let { put("afterUid", it) }
+                    })
+                }
+            }
+        })
 
     internal fun skipToAsync(uid: String): Deferred<Boolean> {
         userCommand()

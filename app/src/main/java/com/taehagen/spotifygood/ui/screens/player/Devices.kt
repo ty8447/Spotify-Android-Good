@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -50,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
@@ -328,7 +332,7 @@ internal class DevicesViewModel(graph: AppGraph) : ViewModel() {
 }
 
 @Composable
-internal fun DevicesSheetContent(onDismiss: () -> Unit) {
+internal fun DevicesSheetContent(onDismiss: () -> Unit, onStartJam: () -> Unit = {}) {
     val viewModel = appViewModel { graph -> DevicesViewModel(graph) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -360,11 +364,17 @@ internal fun DevicesSheetContent(onDismiss: () -> Unit) {
     }
 
     PlayerSurfaceTheme {
-        ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
-            Box {
-                DevicesList(
+        // A stable sheet height prevents the footer from moving as the device list scrolls.
+        // Disabling the outer drag gesture prevents nested scroll fighting over flings.
+        val height = (LocalConfiguration.current.screenHeightDp * 0.82f).dp
+        ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState,
+            sheetGesturesEnabled = false) {
+            Column(Modifier.fillMaxWidth().height(height)) {
+                Box(Modifier.weight(1f)) {
+                    DevicesList(
                     state = state,
                     localDevices = localDevices,
+                    modifier = Modifier.fillMaxSize(),
                     onRefresh = { viewModel.refresh(sheetToken, userInitiated = true) },
                     onTransfer = { id, name -> viewModel.transferTo(id, name, sheetToken) },
                     onSelectOutput = viewModel::selectOutput,
@@ -375,7 +385,20 @@ internal fun DevicesSheetContent(onDismiss: () -> Unit) {
                         }
                     },
                 )
-                SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
+                    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
+                }
+                Surface(onClick = onStartJam,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                    shape = RoundedCornerShape(30.dp),
+                    color = MaterialTheme.colorScheme.primary) {
+                    Box(Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center) {
+                        Text(if (com.taehagen.spotifygood.ui.screens.menu.JamGlobalState.session?.active == true)
+                            "View Jam" else "Start a Jam", color = MaterialTheme.colorScheme.onPrimary,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }
@@ -384,6 +407,7 @@ internal fun DevicesSheetContent(onDismiss: () -> Unit) {
 @Composable
 private fun DevicesList(
     state: DevicesUiState,
+    modifier: Modifier = Modifier,
     localDevices: LocalDevicesHolder,
     onRefresh: () -> Unit,
     onTransfer: (id: String, name: String) -> Unit,
@@ -394,7 +418,7 @@ private fun DevicesList(
     val remote = state.remoteActive
     val thisPhone = stringResource(R.string.player_devices_this_phone)
     val others = state.otherDevices
-    LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+    LazyColumn(modifier = modifier, contentPadding = PaddingValues(bottom = 24.dp)) {
         item(key = "title") {
             Row(
                 verticalAlignment = Alignment.CenterVertically,

@@ -136,6 +136,23 @@ pub(crate) async fn spc_get_grpc(session: &Session, endpoint: &str) -> Result<By
     .await
 }
 
+/// Stickers surfaces are client- and locale-targeted; without the official webgate
+/// client-context headers the catalog resolves to an empty (200, 0-byte) surface.
+pub(crate) async fn spc_get_stickers(session: &Session, endpoint: &str, accept: Option<&'static str>) -> Result<Bytes, HttpError> {
+    let mut headers = header_map(accept, accept);
+    headers.insert(HeaderName::from_static("app-platform"), HeaderValue::from_static("Android-ARM"));
+    headers.insert(HeaderName::from_static("spotify-app-version"), HeaderValue::from_static("9.1.90.2270"));
+    headers.insert(HeaderName::from_static("accept-language"), HeaderValue::from_static("en-US;q=1.00"));
+    timed(session.spclient().request_with_options(
+        &Method::GET,
+        endpoint,
+        Some(headers),
+        None,
+        &RequestOptions::default(),
+    ))
+    .await
+}
+
 pub(crate) async fn spc_post_idempotent(
     session: &Session,
     endpoint: &str,
