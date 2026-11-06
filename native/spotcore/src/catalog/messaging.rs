@@ -415,10 +415,20 @@ pub(super) async fn send_text(args: Value) -> AppResult<Value> {
 /// as text but with ContributionPayload.trackedShare=2 / TrackedShare.uri=1.
 /// The write is sent ONCE; on an ambiguous result, never retry the POST.
 pub(super) async fn send_share(args: Value) -> AppResult<Value> {
+    send_validated_share(args, false).await
+}
+
+/// A single Spotify Campfire TrackedShare for the active socialsession URI.
+/// No text post, no implicit retry after an ambiguous acknowledgement.
+pub(super) async fn send_jam_invitation(args: Value) -> AppResult<Value> {
+    send_validated_share(args, true).await
+}
+
+async fn send_validated_share(args: Value, jam: bool) -> AppResult<Value> {
     let hierarchy_id = chat_hierarchy_id(&args)?;
     let uri = args.get("uri").and_then(Value::as_str)
-        .ok_or_else(|| AppError::unavailable("Spotify music URI is required"))?;
-    validate_share_uri(uri)?;
+        .ok_or_else(|| AppError::unavailable("Spotify share URI is required"))?;
+    if jam { validate_jam_share_uri(uri)?; } else { validate_share_uri(uri)?; }
 
     let request = encode_share_request(hierarchy_id, uri);
     let session = engine::session()?;
@@ -430,7 +440,7 @@ pub(super) async fn send_share(args: Value) -> AppResult<Value> {
         let status = e.status.map(|s| format!("HTTP {s}"))
             .unwrap_or_else(|| "network or authorization failure".to_owned());
         AppError::unavailable(format!(
-            "Music share not confirmed: {status}. Check the chat before retrying."))
+            "{} not confirmed: {status}. Check the chat before retrying.", if jam { "Jam invite" } else { "Music share" }))
     })?;
     if reply.len() > MAX_REPLY_BYTES {
         return Err(AppError::unavailable("Music share acknowledgement exceeded safe size limit"));
@@ -468,7 +478,7 @@ pub(super) async fn send_share(args: Value) -> AppResult<Value> {
     if returned_hierarchy_id.as_deref()
         .is_some_and(|returned| returned != hierarchy_id) {
         return Err(AppError::unavailable(
-            "Music share acknowledgement was for another conversation"));
+            "Share acknowledgement was for another conversation"));
     }
 
     // Some successful responses acknowledge only the hierarchy. The read-back
@@ -498,6 +508,15 @@ pub(super) async fn send_share(args: Value) -> AppResult<Value> {
     to_value(&MessageSubmission {
         acknowledged: confirmed_id.is_some(), client_node_id: confirmed_id,
     })
+}
+
+fn validate_jam_share_uri(uri: &str) -> AppResult<()> {
+    let token = uri.strip_prefix("spotify:socialsession:")
+        .ok_or_else(|| AppError::unavailable("Invalid Jam share URI"))?;
+    if token.len() != 22 || !token.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(AppError::unavailable("Invalid Jam share token"));
+    }
+    Ok(())
 }
 
 /// Only native, canonical, user-selected Spotify collection/track identifiers.
@@ -1748,6 +1767,7 @@ fn share_type_label(uri: Option<&str>) -> &'static str {
         Some("track") => "Shared a song",
         Some("album") => "Shared an album",
         Some("playlist") => "Shared a playlist",
+        Some("socialsession") => "Join my Jam",
         Some("artist") => "Shared an artist",
         Some("episode") => "Shared an episode",
         Some("show") => "Shared a podcast",
@@ -2210,6 +2230,20 @@ mod tests {
         let unknown = len_field(8, &len_field(1,
             &len_field(5, &len_field(1, &len_field(12, &[])))));
         assert_eq!(decode_node_system_event(&unknown).unwrap(), None);
+    }
+
+    #[test]
+    fn jam_share_is_one_tracked_share_without_free_text() {
+        let uri = "spotify:socialsession:0123456789ABCDEFGHIJKL";
+        assert!(validate_jam_share_uri(uri).is_ok());
+        assert!(validate_jam_share_uri("spotify:socialsession:short").is_err());
+        assert!(validate_jam_share_uri("https://open.spotify.com/socialsession/0123456789ABCDEFGHIJKL").is_err());
+        assert!(validate_share_uri(uri).is_err());
+        assert_eq!(share_type_label(Some(uri)), "Join my Jam");
+        // Exactly one URI-bearing TrackedShare in the Campfire request.
+        let wire = encode_share_request("chat", uri);
+        assert!(wire.windows(uri.len()).any(|bytes| bytes == uri.as_bytes()));
+        assert!(!wire.windows(9).any(|bytes| bytes == b"Join my J"));
     }
 
     #[test]

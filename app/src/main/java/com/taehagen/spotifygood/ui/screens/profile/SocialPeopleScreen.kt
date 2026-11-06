@@ -1,5 +1,8 @@
 package com.taehagen.spotifygood.ui.screens.profile
 
+import android.content.Intent
+import android.net.Uri
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,6 +46,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,6 +54,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.taehagen.spotifygood.data.SocialPerson
+import com.taehagen.spotifygood.nativebridge.NativeErrorCode
+import com.taehagen.spotifygood.nativebridge.NativeException
 import com.taehagen.spotifygood.ui.components.Artwork
 import com.taehagen.spotifygood.ui.components.rememberAppGraph
 import com.taehagen.spotifygood.ui.navigation.LocalAppNavigator
@@ -63,6 +69,7 @@ import kotlinx.coroutines.launch
 fun SocialPeopleScreen(kind: String, username: String?, contentPadding: PaddingValues) {
     val isFollowers = kind == "followers"
     val navigator = LocalAppNavigator.current
+    val context = LocalContext.current
     val graph = rememberAppGraph()
     val account by graph.engine.user.collectAsStateWithLifecycle()
     val target = username ?: account?.username
@@ -71,14 +78,30 @@ fun SocialPeopleScreen(kind: String, username: String?, contentPadding: PaddingV
     var error by remember(target, kind) { mutableStateOf<String?>(null) }
     var revision by remember(target, kind) { mutableStateOf(0) }
     var workingOn by remember { mutableStateOf(setOf<String>()) }
+    // Never impose a speculative 60-300 second app-side lockout after a 429.
+    // The official client may have a different rate-limit budget. Allow explicit
+    // manual retries, but keep one in-flight write at a time.
+    var followFailure by remember(target, kind) { mutableStateOf<String?>(null) }
+    var followFailedUsername by remember(target, kind) { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<SocialPerson?>(null) }
     var zoomed by remember { mutableStateOf<SocialPerson?>(null) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(target, kind, revision) {
+    LaunchedEffect(target, kind, revision, account?.username) {
         if (target == null) return@LaunchedEffect
         loading = true
         try {
+            // A public profile may withhold its follow visibility. Never probe private
+            // follower lists just because a deep link bypassed the profile's hidden buttons.
+            // Treat an unconfirmed flag conservatively, without assuming a 429 is privacy.
+            if (!target.equals(account?.username, ignoreCase = true)) {
+                val profile = graph.catalog.user(target)
+                if (profile.showFollows != true) {
+                    people = emptyList()
+                    error = "This profile does not confirm public access to followers or following."
+                    return@LaunchedEffect
+                }
+            }
             people = graph.catalog.socialList(kind, target)
             error = null
         } catch (e: Exception) {
@@ -95,6 +118,25 @@ fun SocialPeopleScreen(kind: String, username: String?, contentPadding: PaddingV
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
             } },
         )
+        followFailure?.let { message ->
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text(message, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    followFailedUsername?.let { username ->
+                        TextButton(onClick = {
+                            val link = Uri.parse("https://open.spotify.com/user/${Uri.encode(username)}")
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, link))
+                            }.onFailure { navigator.showMessage("Could not open Spotify profile") }
+                        }) { Text("Open in Spotify") }
+                        TextButton(onClick = { revision++ }) { Text("Refresh") }
+                    }
+                    TextButton(onClick = { followFailure = null; followFailedUsername = null }) { Text("Dismiss") }
+                }
+            }
+        }
         when {
             loading && people.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
@@ -121,15 +163,30 @@ fun SocialPeopleScreen(kind: String, username: String?, contentPadding: PaddingV
                                 style = MaterialTheme.typography.labelSmall)
                         }
                         val busy = person.username in workingOn
-                        IconButton(enabled = !busy, onClick = {
+                        IconButton(enabled = workingOn.isEmpty(), onClick = {
+                            // Disable only while a real request is in flight.
+                            if (workingOn.isNotEmpty()) return@IconButton
+                            followFailure = null
+                            followFailedUsername = null
                             workingOn = workingOn + person.username
                             scope.launch {
                                 try {
                                     graph.catalog.followUser(person.username, !person.isFollowing)
                                     people = people.map { if (it.username == person.username)
                                         it.copy(isFollowing = !person.isFollowing) else it }
+                                    followFailure = null
+                                    followFailedUsername = null
+                                } catch (e: NativeException) {
+                                    followFailedUsername = person.username
+                                    if (e.code == NativeErrorCode.RATE_LIMITED) {
+                                        followFailure = "Spotify's developer API returned 429. " +
+                                            "Open the profile in Spotify to follow there, or retry later."
+                                    } else {
+                                        followFailure = e.message ?: "Could not update follow status"
+                                    }
                                 } catch (e: Exception) {
-                                    navigator.showMessage(e.message ?: "Could not update follow status")
+                                    followFailedUsername = person.username
+                                    followFailure = e.message ?: "Could not update follow status"
                                 } finally {
                                     workingOn = workingOn - person.username
                                 }

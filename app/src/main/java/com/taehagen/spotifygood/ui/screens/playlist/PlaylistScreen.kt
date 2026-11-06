@@ -97,7 +97,6 @@ import com.taehagen.spotifygood.ui.screens.album.PeopleLine
 import com.taehagen.spotifygood.ui.screens.album.Person
 import com.taehagen.spotifygood.ui.screens.album.PagingFooter
 import com.taehagen.spotifygood.ui.screens.album.ShuffleButton
-import com.taehagen.spotifygood.ui.screens.album.SmartShuffleButton
 import com.taehagen.spotifygood.ui.screens.album.canStartNow
 import com.taehagen.spotifygood.ui.screens.album.dataOrNull
 import com.taehagen.spotifygood.ui.screens.album.detailTopInset
@@ -141,7 +140,6 @@ fun PlaylistScreen(uri: String, contentPadding: PaddingValues, modifier: Modifie
         PlaylistActions(
             onPlay = viewModel::playContext,
             onShuffle = viewModel::shuffleContext,
-            onSmartShuffle = viewModel::smartShuffleContext,
             onRetryPartial = viewModel::retryPartial,
             onRetry = viewModel::retry,
             onSort = viewModel::setSort,
@@ -249,7 +247,6 @@ fun PlaylistScreen(uri: String, contentPadding: PaddingValues, modifier: Modifie
 private class PlaylistActions(
     val onPlay: () -> Unit,
     val onShuffle: () -> Unit,
-    val onSmartShuffle: () -> Unit,
     val onRetryPartial: () -> Unit,
     /** Fetches the playlist again (e.g. to replace the downloaded copy). */
     val onRetry: () -> Unit,
@@ -552,12 +549,10 @@ private fun PlaylistHeader(
                             )
                         },
                         trailing = {
-                            // The engine rejects smart shuffle offline (it needs recommendations); plain shuffle works.
-                            if (!state.offline) {
-                                SmartShuffleButton(active = isContext && state.playback.smartShuffle, onClick = actions.onSmartShuffle)
-                            }
+                            // Shared Now Playing tri-state mode; this tap never starts music.
                             ShuffleButton(
-                                active = isContext && state.playback.shuffle && !state.playback.smartShuffle,
+                                shuffle = state.playback.shuffle,
+                                smart = state.playback.smartShuffle,
                                 onClick = actions.onShuffle,
                             )
                             PlayFab(

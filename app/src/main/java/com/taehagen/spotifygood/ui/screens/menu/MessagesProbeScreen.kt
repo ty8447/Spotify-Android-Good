@@ -32,6 +32,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -220,9 +221,13 @@ fun MessagesProbeScreen(contentPadding: PaddingValues) {
         error = null
         // Retain the previous list while fetching so it doesn't blink on each refresh.
         try {
-            val overview = rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+            val overview = retryChatRead {
+                rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+            }
             result = overview
             ChatUnreadStates.update(overview.conversations)
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            throw cancel
         } catch (failure: Exception) {
             error = failure.message?.take(160) ?: failure.javaClass.simpleName
         } finally {
@@ -238,15 +243,21 @@ fun MessagesProbeScreen(contentPadding: PaddingValues) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 delay(12_000)
-                if (loading || pulledRefreshActive || pulling) continue
+                // A terminal failure stays visible until the user explicitly retries.
+                if (loading || pulledRefreshActive || pulling || error != null) continue
                 try {
-                    val overview = rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                    val overview = retryChatRead {
+                        rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                    }
                     result = overview
                     ChatUnreadStates.update(overview.conversations)
                     error = null
                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                     throw cancel
-                } catch (_: Exception) { /* Keep last successfully loaded list. */ }
+                } catch (failure: Exception) {
+                    // Keep the prior list visible, but expose the manual retry action.
+                    error = failure.message?.take(160) ?: "Couldn't refresh conversations"
+                }
             }
         }
     }
@@ -354,9 +365,17 @@ fun MessagesProbeScreen(contentPadding: PaddingValues) {
                     item { CircularProgressIndicator() }
                 }
                 if (error != null) {
-                    item { Text("Messaging request failed: $error", color = MaterialTheme.colorScheme.error) }
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Messaging request failed after 4 attempts: $error",
+                                color = MaterialTheme.colorScheme.error)
+                            TextButton(onClick = { if (!loading) refresh++ }, enabled = !loading) {
+                                Text("Retry")
+                            }
+                        }
+                    }
                 }
-                if (result?.conversations?.isEmpty() == true) {
+                if (!loading && error == null && result?.conversations?.isEmpty() == true) {
                     item { Text("No conversations yet") }
                 }
             itemsIndexed(result?.conversations.orEmpty()) { index, conversation ->

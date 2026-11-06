@@ -2,6 +2,7 @@ package com.taehagen.spotifygood.playback
 
 import android.util.Log
 import com.taehagen.spotifygood.connect.DevicesRepository
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
 import com.taehagen.spotifygood.data.StoredPosition
 import com.taehagen.spotifygood.model.NativeErrorInfo
 import com.taehagen.spotifygood.model.PlaybackSnapshot
@@ -72,6 +73,8 @@ data class PlayRequest(
     val smartShuffle: Boolean? = null,
     val repeat: RepeatMode? = null,
     val play: Boolean = true,
+    /** The user chose a local download: never wait for Spotify Connect or mobile data. */
+    val preferOffline: Boolean = false,
     val positionAt: Long? = null,
 )
 
@@ -227,6 +230,9 @@ class PlayerController internal constructor(
         /** Completed by a pause while this command waits for the session ([awaitSession]). */
         val abort = CompletableDeferred<Unit>()
         var started = false
+        /** A newer song/context selection makes this one obsolete, including while waiting. */
+        @Volatile var superseded = false
+        var running: Deferred<Unit>? = null
         /** Enqueue order (guarded by [lock]); see [cancelStartsBefore]. */
         var seq = 0L
         /**
@@ -264,6 +270,10 @@ class PlayerController internal constructor(
 
     /** Optimistic tri-state values so quick repeated taps cycle correctly before the snapshot catches up. */
     @Volatile private var pendingShuffle: Pending<ShuffleMode>? = null
+    // Mode chosen on a detail page before any local/remote track has loaded.
+    // No RPC is sent in that state: the next play request consumes the choice.
+    private val _queuedShuffleMode = MutableStateFlow<ShuffleMode?>(null)
+    val queuedShuffleMode: StateFlow<ShuffleMode?> = _queuedShuffleMode.asStateFlow()
     @Volatile private var pendingRepeat: Pending<RepeatMode>? = null
 
     private data class Pending<T>(val value: T, val atNanos: Long)
@@ -285,6 +295,9 @@ class PlayerController internal constructor(
             snapshot.collect {
                 // Something plays: whatever failed before is no longer the state to show.
                 if (it.isPlayingOrLoading()) _failure.value = null
+                // Keep a pending UI selection visible until native acknowledges it.
+                // An unrelated snapshot (position/device update) is not an acknowledgement.
+                if (it.track != null && _queuedShuffleMode.value == it.shuffleMode) _queuedShuffleMode.value = null
                 MusicModes.of(it)?.let { modes -> lastMusic = modes }
             }
         }
@@ -292,6 +305,8 @@ class PlayerController internal constructor(
 
     /** An in-app play: it goes to the pending Connect target when there is one. */
     fun play(request: PlayRequest) {
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "play_requested",
+            "context=${request.contextUri != null},tracks=${request.trackUris?.size ?: 0},start=${request.startIndex ?: 0}")
         playAsync(request, toPendingTarget = true)
     }
 
@@ -306,6 +321,7 @@ class PlayerController internal constructor(
 
     /** [user]: false for resumes the app sends by itself (audio focus regained), see [userCommands]. */
     fun resume(user: Boolean = true) {
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "resume_requested", "user=$user")
         resumeAsync(user)
     }
 
@@ -314,10 +330,13 @@ class PlayerController internal constructor(
      * [deliberate]: a pending focus resume is cancelled ([onDeliberatePause]).
      */
     fun pause(user: Boolean = true, deliberate: Boolean = user) {
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "pause_requested", "user=$user,deliberate=$deliberate")
         pauseAsync(user, deliberate)
     }
 
     fun togglePlayPause() {
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "toggle_requested",
+            "currentlyPlaying=${snapshot.value.isPlayingOrLoading()}")
         userCommand()
         if (snapshot.value.isPlayingOrLoading()) {
             onDeliberatePause?.invoke()
@@ -328,14 +347,17 @@ class PlayerController internal constructor(
     }
 
     fun next() {
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "next_requested")
         nextAsync()
     }
 
     fun previous() {
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "previous_requested")
         previousAsync()
     }
 
     fun seekTo(positionMs: Long) {
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "seek_requested", "positionMs=$positionMs")
         seekAsync(positionMs)
     }
 
@@ -348,8 +370,8 @@ class PlayerController internal constructor(
     }
 
     /** off → shuffle → smart shuffle → off (smart shuffle skipped when unavailable). */
-    fun cycleShuffle() {
-        cycleShuffleAsync()
+    fun cycleShuffle(allowSmartWithoutContext: Boolean = false) {
+        cycleShuffleAsync(allowSmartWithoutContext)
     }
 
     fun setRepeat(mode: RepeatMode) {
@@ -461,6 +483,12 @@ class PlayerController internal constructor(
                 command.request = request
                 command.toPendingTarget = toPendingTarget && !onThisPhone
                 command.onThisPhone = onThisPhone
+                // Only the newest selection may start playing after connectivity returns.
+                latestLoad?.takeIf { !it.done.isCompleted }?.let { previous ->
+                    previous.superseded = true
+                    previous.abort.complete(Unit)
+                    previous.running?.cancel()
+                }
                 latestLoad = command
             },
         ) { sendLoad(self) }
@@ -508,12 +536,22 @@ class PlayerController internal constructor(
         return send("player.setSmartShuffle", buildJsonObject { put("enabled", enabled) })
     }
 
-    internal fun cycleShuffleAsync(): Deferred<Boolean> {
+    internal fun cycleShuffleAsync(allowSmartWithoutContext: Boolean = false): Deferred<Boolean> {
         val s = snapshot.value
+        // An idle player has no native queue/restrictions yet. Save the selection for
+        // the next Play rather than silently ignoring taps on Liked Songs or Downloads.
+        if (s.track == null) {
+            val previous = _queuedShuffleMode.value ?: s.shuffleMode
+            _queuedShuffleMode.value = PlaybackModes.nextShuffle(
+                previous, allowSmartWithoutContext && !s.offline,
+            )
+            return CompletableDeferred(true)
+        }
         if (!s.restrictions.canToggleShuffle) return CompletableDeferred(false)
         val current = pendingShuffle.validOr(s.shuffleMode)
         val target = PlaybackModes.nextShuffle(current, s.isSmartShuffleAvailable)
         pendingShuffle = Pending(target, System.nanoTime())
+        _queuedShuffleMode.value = target // immediate and shared across all shuffle buttons
         val done = enqueue("cycleShuffle") {
             when (target) {
                 ShuffleMode.SHUFFLE -> call("player.setShuffle", enabledArgs(true))
@@ -524,7 +562,12 @@ class PlayerController internal constructor(
                 }
             }
         }
-        done.invokeOnCompletion { cause -> if (cause != null || !done.getCompleted()) pendingShuffle = null }
+        done.invokeOnCompletion { cause ->
+            if (cause != null || !done.getCompleted()) {
+                if (pendingShuffle?.value == target) pendingShuffle = null
+                if (_queuedShuffleMode.value == target) _queuedShuffleMode.value = null
+            }
+        }
         return done
     }
 
@@ -718,6 +761,7 @@ class PlayerController internal constructor(
             command.sent = true
             checkNotNull(command.request).play
         }
+        if (command.superseded) throw SupersededException("a newer selection was made")
         val target = if (command.toPendingTarget) pendingTargetFor(prepared, play) else null
         call("player.load", loadArgs(prepared.request.copy(play = play), deviceId = target, local = command.onThisPhone))
     }
@@ -726,7 +770,15 @@ class PlayerController internal constructor(
     private fun keepingModes(request: PlayRequest): PlayRequest {
         val s = snapshot.value
         MusicModes.of(s)?.let { lastMusic = it }
-        return withCurrentModes(request, s, pendingShuffle.validOr(s.shuffleMode), pendingRepeat.validOr(s.repeat), lastMusic)
+        val carried = withCurrentModes(request, s, pendingShuffle.validOr(s.shuffleMode), pendingRepeat.validOr(s.repeat), lastMusic)
+        // Pre-play mode changes must not be lost when there is no active native track.
+        val selected = _queuedShuffleMode.value ?: return carried
+        if (carried.shuffle != null || carried.smartShuffle != null) return carried
+        val supportsSmart = request.contextUri?.let {
+            it.startsWith("spotify:playlist:") || it.startsWith("spotify:collection:")
+        } == true && !s.offline && !request.preferOffline
+        val resolved = if (selected == ShuffleMode.SMART && !supportsSmart) ShuffleMode.SHUFFLE else selected
+        return carried.copy(shuffle = resolved != ShuffleMode.OFF, smartShuffle = resolved == ShuffleMode.SMART)
     }
 
     /**
@@ -735,7 +787,7 @@ class PlayerController internal constructor(
      * (offline, or rewritten for the offline queue): then the phone plays it itself.
      */
     private fun pendingTargetFor(prepared: PreparedLoad, play: Boolean): String? {
-        if (!play || prepared.offline || snapshot.value.activeDevice != null) return null
+        if (!play || prepared.offline || prepared.request.preferOffline || snapshot.value.activeDevice != null) return null
         return consumePendingTarget()
     }
 
@@ -883,44 +935,68 @@ class PlayerController internal constructor(
         var cancelled = false
         try {
             val env = environment
+            if (command.superseded) throw SupersededException("a newer selection was made")
             if (command.startsPlayback) {
-                cancelled = cancelledByPause(command) || (env != null && awaitSession(command, env)) || cancelledByPause(command)
+                // A local download does not depend on an online session. Do not block it
+                // behind the same connection wait that streaming commands require.
+                val needsSession = command.request?.preferOffline != true
+                cancelled = cancelledByPause(command) || (needsSession && env != null && awaitSession(command, env)) || cancelledByPause(command)
                 if (cancelled) {
                     warn("${command.name} cancelled by a pause while the session was starting")
                     command.done.complete(false)
                     return
                 }
             }
+            if (command.superseded) throw SupersededException("a newer selection was made")
             val block = synchronized(lock) { command.block }
             // Native commands wait briefly for a connecting session themselves: allow for it.
             val allowance = if (env?.reach() == EngineReach.CONNECTING) NATIVE_ONLINE_WAIT_MS else 0L
-            withTimeout(command.timeoutMs + allowance) { block() }
+            // Native waits can outlast mobile coverage. Cancel the *suspended* RPC for a
+            // superseded load without cancelling this queue's consumer coroutine.
+            val task = scope.async { withTimeout(command.timeoutMs + allowance) { block() } }
+            synchronized(lock) {
+                command.running = task
+                if (command.superseded) task.cancel()
+            }
+            try {
+                task.await()
+            } finally {
+                synchronized(lock) { if (command.running === task) command.running = null }
+            }
+            if (command.superseded) throw SupersededException("a newer selection was made")
             ok = true
+            if (command.name.startsWith("player.") || command.name.startsWith("queue.") || command.name == "catalog.radio") {
+                DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "command", "completed", "method=${command.name}")
+            }
             command.done.complete(true)
         } catch (e: SupersededException) {
             warn("${command.name} skipped: ${e.message}")
             command.done.complete(false)
         } catch (e: TimeoutCancellationException) {
             warn("${command.name} timed out")
+            DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "command", "timeout", "method=${command.name}")
             report(command, PlaybackErrorKind.TIMEOUT, null)
             command.done.complete(false)
         } catch (e: CancellationException) {
             command.done.complete(false)
-            throw e
+            if (!command.superseded) throw e
+            DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "load_superseded")
         } catch (e: NotAvailableOfflineException) {
             warn("${command.name}: ${e.message}")
             report(command, PlaybackErrorKind.NOT_AVAILABLE_OFFLINE, null)
             command.done.complete(false)
         } catch (e: NativeException) {
             warn("${command.name} failed: ${e.code}")
+            DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "command", "native_failure", "method=${command.name},code=${e.code}")
             if (e.code !in command.quietCodes) kindOf(command, e)?.let { report(command, it, e.info.message) }
             command.done.complete(false)
         } catch (e: Exception) {
             warn("${command.name} failed", e)
+            DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "command", "exception", "method=${command.name},type=${e.javaClass.simpleName}")
             report(command, PlaybackErrorKind.GENERIC, e.message)
             command.done.complete(false)
         } finally {
-            if (command.startsPlayback && !cancelled) {
+            if (command.startsPlayback && !cancelled && !command.superseded) {
                 lastStart = StartOutcome(wasLoad = command.request != null, ok = ok, atNanos = System.nanoTime())
             }
         }
@@ -966,8 +1042,9 @@ class PlayerController internal constructor(
         }
 
     private fun report(command: Command, kind: PlaybackErrorKind, detail: String?) {
-        if (command.silent) return
+        if (command.silent || command.superseded) return
         val message = errorMessages.message(kind, detail)
+        DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "playback", "user_visible_error", "kind=$kind")
         _errors.tryEmit(message)
         if (command.startsPlayback && !snapshot.value.isPlayingOrLoading()) _failure.value = PlaybackFailure(kind, message)
     }
@@ -1191,6 +1268,7 @@ class PlayerController internal constructor(
             request.smartShuffle?.let { put("smartShuffle", it) }
             request.repeat?.let { put("repeat", PlaybackModes.wire(it)) }
             put("play", request.play)
+            if (request.preferOffline) put("preferOffline", true)
             deviceId?.let { put("deviceId", it) }
             if (local) put("local", true)
         }

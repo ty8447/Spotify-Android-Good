@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.provider.MediaStore
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationChannelCompat
@@ -44,6 +45,7 @@ import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.taehagen.spotifygood.App
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
 import com.taehagen.spotifygood.AppGraph
 import com.taehagen.spotifygood.Notifications
 import com.taehagen.spotifygood.MainActivity
@@ -144,10 +146,14 @@ class PlaybackService : MediaLibraryService() {
     /** Start id of a foreign start behind the pending [foregroundDeadline] (null: ours or Media3's). */
     private var deadlineStartId: Int? = null
     private val searchCache = ConcurrentHashMap<String, List<MediaItem>>()
+    /** One log entry per session service lifetime: identifies legacy Auto host access. */
+    private var loggedLegacyCarConnection = false
     /** uri → downloaded cover path of completed downloads (offline artwork). */
     @Volatile private var downloadedImages: Map<String, String> = emptyMap()
     /** Resolved title of the playback context, kept separate from the track title. */
     @Volatile private var currentContextName: Pair<String, String>? = null
+    /** Bounded fallback album metadata for Android Auto when the current snapshot omits it. */
+    private val autoAlbumNames = LinkedHashMap<String, String>() // main-thread only
     /** The downloaded collections ([downloadedQueue]: what is downloaded on its own). */
     @Volatile private var downloadedCollections: List<DownloadedCollection> = emptyList()
     /** The stored credentials were read: "logged out" is real from then on. */
@@ -174,6 +180,7 @@ class PlaybackService : MediaLibraryService() {
             downloadedQueue = ::downloadedQueue,
             downloadedImage = { uri -> downloadedImages[uri] },
             contextName = { uri -> currentContextName?.takeIf { it.first == uri }?.second },
+            resolvedAlbum = { uri -> autoAlbumNames[uri] },
             playerError = ::currentPlayerError,
             onRetry = ::retryAfterError,
             onCommand = ::ensurePlaybackHolder,
@@ -470,6 +477,36 @@ class PlaybackService : MediaLibraryService() {
 
     private fun observeState() {
         val playback = graph.playback
+        lifecycleScope.launch {
+            // The current track can arrive before queueMetadata; in that window Android Auto
+            // otherwise receives a blank album. Resolve only on track changes, and only when
+            // native metadata is incomplete. No calls during position updates.
+            playback.snapshot.map { it.track?.let { track ->
+                if (track.isEpisode || track.album?.name?.isNotBlank() == true) null
+                else track.uri.takeIf { uri -> uri.startsWith("spotify:track:") }
+            } }.distinctUntilChanged().collectLatest { uri ->
+                if (uri == null || autoAlbumNames.containsKey(uri)) return@collectLatest
+                val name = try {
+                    withTimeoutOrNull(5_000L) {
+                        withContext(Dispatchers.IO) {
+                            graph.catalog.tracks(listOf(uri)).firstOrNull()?.album?.name
+                                ?.takeIf(String::isNotBlank)
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "auto", "album_lookup_failed",
+                        "kind=${e.javaClass.simpleName}")
+                    null
+                }
+                if (name != null) {
+                    if (autoAlbumNames.size >= 64) autoAlbumNames.clear()
+                    autoAlbumNames[uri] = name
+                    player.refresh()
+                }
+            }
+        }
         lifecycleScope.launch {
             // Keep Android Auto's context header up to date when the current playlist,
             // album, or station changes. Never resolve on each position/track update.
@@ -917,6 +954,8 @@ class PlaybackService : MediaLibraryService() {
             if (isTrusted(session, controller)) {
                 val commands = ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 PlaybackSessionCommands.ALL.forEach { commands.add(it) }
+                // Never expose the platform media token to external car or browser apps.
+                if (controller.uid == Process.myUid()) commands.add(CarPlaybackBridge.TOKEN_COMMAND)
                 builder.setAvailableSessionCommands(commands.build())
                     .setAvailablePlayerCommands(ConnectionResult.DEFAULT_PLAYER_COMMANDS)
                     .setMediaButtonPreferences(buttons)
@@ -930,6 +969,10 @@ class PlaybackService : MediaLibraryService() {
             // its session's current item; with an empty player it skips us until the user taps. Stage
             // the stored session (paused: setMediaItem + prepare, never play) so we are auto-selected.
             if (session.isAutomotiveController(controller) || session.isAutoCompanionController(controller)) {
+                if (!loggedLegacyCarConnection) {
+                    loggedLegacyCarConnection = true
+                    DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "car", "legacy_session_connected")
+                }
                 stageResumeForAutoSelect()
             }
             return Futures.immediateFuture(builder.build())
@@ -957,6 +1000,14 @@ class PlaybackService : MediaLibraryService() {
             args: Bundle,
         ): ListenableFuture<SessionResult> {
             val uri = graph.playback.snapshot.value.track?.uri
+            if (customCommand.customAction == CarPlaybackBridge.ACTION_TOKEN) {
+                if (controller.uid != Process.myUid()) {
+                    return Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
+                }
+                val token = session.platformToken
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS,
+                    Bundle().apply { putParcelable(CarPlaybackBridge.KEY_PLATFORM_TOKEN, token) }))
+            }
             when (customCommand.customAction) {
                 PlaybackSessionCommands.ACTION_LIKE -> setLiked(uri, true)
                 PlaybackSessionCommands.ACTION_UNLIKE -> setLiked(uri, false)
@@ -1092,19 +1143,39 @@ class PlaybackService : MediaLibraryService() {
             // A playback request (voice search needs the session too).
             ensurePlaybackHolder()
             val query = first?.requestMetadata?.searchQuery
-            if (mediaItems.size == 1 && query != null) {
-                // Voice: "play X" (empty query = "play something": resume the last context). The
-                // same resolver as the activity's MEDIA_PLAY_FROM_SEARCH (LibraryTree.resolveVoice).
-                val voice = VoiceRequest.of(query, first.requestMetadata.extras)
+            val extras = first?.requestMetadata?.extras
+            // Some Android Auto/Gemini clients provide structured media fields but no searchQuery.
+            // Don't misinterpret ordinary catalog items as voice commands: require an actual
+            // search query (including an explicit blank one) or one of the defined media hints.
+            val hasMediaHints = extras != null && listOf(
+                MediaStore.EXTRA_MEDIA_FOCUS,
+                MediaStore.EXTRA_MEDIA_ARTIST,
+                MediaStore.EXTRA_MEDIA_ALBUM,
+                MediaStore.EXTRA_MEDIA_TITLE,
+                MediaStore.EXTRA_MEDIA_PLAYLIST,
+            ).any { key -> extras.getString(key)?.isNotBlank() == true }
+            if (mediaItems.size == 1 && (query != null || hasMediaHints)) {
+                // Media3's generic voice-search media item may have an empty query and only hints.
+                val voice = VoiceRequest.of(query.orEmpty(), extras)
+                DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "voice", "request_received",
+                    "query=${!query.isNullOrBlank()},hints=$hasMediaHints,kind=${voice.kinds.firstOrNull()?.name ?: "ANY"}")
                 // "Play X" right after a cold start: search needs the session (NOT_CONNECTED
                 // otherwise); ensurePlaybackHolder above lets an idle-stopped one start.
                 when (val outcome = VoiceEntry.resolve(voice, tree::isOffline, coordinator.environment::awaitSessionStart, tree::resolveVoice)) {
                     VoiceOutcome.PlaySomething -> {
                         val last = resumeStore.read() ?: noVoiceMatch(PlaybackErrorKind.NOT_ACTIVE_DEVICE)
+                        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "voice", "resume_matched")
                         MediaItemsWithStartPosition(listOf(tree.resumeItem(last, downloadedImages[last.trackUri])), 0, last.positionMs)
                     }
-                    is VoiceOutcome.NoMatch -> noVoiceMatch(outcome.kind)
-                    is VoiceOutcome.Play -> MediaItemsWithStartPosition(outcome.items, 0, C.TIME_UNSET)
+                    is VoiceOutcome.NoMatch -> {
+                        DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "voice", "no_match", "kind=${outcome.kind.name}")
+                        noVoiceMatch(outcome.kind)
+                    }
+                    is VoiceOutcome.Play -> {
+                        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "voice", "result_matched",
+                            "items=${outcome.items.size.coerceAtMost(100)}")
+                        MediaItemsWithStartPosition(outcome.items, 0, C.TIME_UNSET)
+                    }
                 }
             } else {
                 MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs)

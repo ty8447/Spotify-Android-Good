@@ -10,9 +10,6 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Add
 import com.taehagen.spotifygood.model.best
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.supervisorScope
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -62,34 +59,12 @@ internal fun ActivityAudienceDialog(
             val followers = runCatching { graph.catalog.socialList("followers") }.getOrDefault(emptyList())
             val following = runCatching { graph.catalog.socialList("following") }.getOrDefault(emptyList())
             val known = (followers + following).associateBy { it.username }.toMutableMap()
-            val needsLookup = audience.filter { member ->
-                val p = known[member.username]
-                p == null || p.imageUrl.isNullOrBlank() || p.displayName.isBlank() || p.displayName == member.username
-            }
+            // The audience endpoint is authoritative. Render unresolved users by username
+            // instead of issuing one catalog.user network request per row. Large audiences
+            // previously fanned out profile calls and could exhaust Spotify's rate limit.
             profiles = known.toMap()
-            // Limit concurrency and don't block the audience page if a profile is private/unavailable.
-            supervisorScope {
-                needsLookup.chunked(4).forEach { batch ->
-                    batch.map { member ->
-                        async {
-                            member.username to runCatching { graph.catalog.user(member.username) }.getOrNull()
-                        }
-                    }.awaitAll().forEach { (username, user) ->
-                        if (user != null) {
-                            val previous = known[username]
-                            known[username] = SocialPerson(
-                                username = username,
-                                displayName = user.displayName?.takeIf { it.isNotBlank() }
-                                    ?: previous?.displayName.orEmpty(),
-                                imageUrl = user.images.best(160) ?: previous?.imageUrl,
-                                followersCount = previous?.followersCount,
-                                isFollowing = previous?.isFollowing ?: false,
-                            )
-                            profiles = known.toMap()
-                        }
-                    }
-                }
-            }
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            throw cancel
         } catch (e: Exception) {
             error = e.message ?: "Could not load Spotify's listening audience"
         } finally {

@@ -210,7 +210,8 @@ async fn run(uri_str: &str, args: &DownloadArgs, progress: &mut Progress) -> App
     keys::check_turn()?;
     let account = Account::of(&session, country);
     let now = Date::now_utc();
-    let mut prepared = prepare(&session, &uri, uri_str, args.bitrate, &account, &now).await?;
+    let mut prepared = prepare(&session, &uri, uri_str, args.bitrate, &account, &now)
+        .await.map_err(classify_preparation_error)?;
     remember_file(uri_str, &file_id_hex(&prepared.file_id));
     let key = match file_key(&session, &prepared).await {
         // Spotify decides per track and context (license-gated releases): another release of the
@@ -278,6 +279,23 @@ async fn run(uri_str: &str, args: &DownloadArgs, progress: &mut Progress) -> App
     })
 }
 
+/// Stable, content-free categories for diagnostics. Never export raw Spotify errors.
+/// Additional context does not change existing retry/availability policy.
+fn classify_preparation_error(error: AppError) -> AppError {
+    if error.context.is_some() { return error; }
+    let reason = match error.message.as_str() {
+        "Not released yet" => "notReleased",
+        "Not available in your country" => "countryRestricted",
+        "Not available" => "catalogUnavailable",
+        "Not available (no duration)" => "noDuration",
+        "No downloadable audio file" => "noAudioFile",
+        "Episodes hosted outside Spotify cannot be downloaded" => "externallyHosted",
+        "Explicit content is filtered for this account" => "explicitFiltered",
+        _ => "preparationOther",
+    };
+    error.with_context(reason)
+}
+
 // ---------------------------------------------------------------------------------------------
 // Metadata, relinking, availability, file choice
 // ---------------------------------------------------------------------------------------------
@@ -329,7 +347,18 @@ fn track_choice(t: &Track, account: &Account, bitrate: u32, now: &Date) -> Resul
     }
     check_availability(&t.availability, &t.restrictions, Some(&t.earliest_live_timestamp), &account.country, &account.catalogue, now)
         .map_err(unavailable_reason)?;
-    format::choose_file(&t.files, bitrate, account.cap_160).ok_or_else(|| AppError::unavailable("No downloadable audio file"))
+    format::choose_file(&t.files, bitrate, account.cap_160).ok_or_else(|| {
+        // Keep the error code and retry policy stable while revealing which
+        // part of file selection failed. Never log audio file IDs or track URIs.
+        let category = if account.cap_160 && format::choose_file(&t.files, bitrate, false).is_some() {
+            "qualityRestricted"
+        } else if format::has_other_format(&t.files) {
+            "unsupportedAudioFormat"
+        } else {
+            "noAudioFile"
+        };
+        AppError::unavailable("No downloadable audio file").with_context(category)
+    })
 }
 
 async fn get_track(session: &Session, uri: &SpotifyUri) -> AppResult<Track> {
@@ -455,11 +484,16 @@ async fn prepare_episode(
         .map_err(unavailable_reason)?;
     account.check_explicit(episode.is_explicit)?;
     let Some((fmt, file_id)) = format::choose_file(&episode.audio, bitrate, account.cap_160) else {
-        return Err(AppError::unavailable(if episode.external_url.is_empty() {
-            "No downloadable audio file"
+        let (reason, category) = if !episode.external_url.is_empty() {
+            ("Episodes hosted outside Spotify cannot be downloaded", "externallyHosted")
+        } else if account.cap_160 && format::choose_file(&episode.audio, bitrate, false).is_some() {
+            ("No downloadable audio file", "qualityRestricted")
+        } else if format::has_other_format(&episode.audio) {
+            ("No downloadable audio file", "unsupportedAudioFormat")
         } else {
-            "Episodes hosted outside Spotify cannot be downloaded"
-        }));
+            ("No downloadable audio file", "noAudioFile")
+        };
+        return Err(AppError::unavailable(reason).with_context(category));
     };
     let played_id = SpotifyId::try_from(uri).map_err(AppError::from)?;
     Ok(Prepared {
@@ -551,6 +585,22 @@ async fn lock_file(file_hex: &str) -> tokio::sync::OwnedMutexGuard<()> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn preparation_error_has_safe_context() {
+        assert_eq!(classify_preparation_error(AppError::unavailable("No downloadable audio file")).context.as_deref(), Some("noAudioFile"));
+        assert_eq!(classify_preparation_error(AppError::unavailable("something spotify:track:private")).context.as_deref(), Some("preparationOther"));
+    }
+
+    #[test]
+    fn diagnostic_preparation_categories_do_not_leak_identifiers() {
+        assert_eq!(classify_preparation_error(AppError::unavailable("No downloadable audio file"))
+            .context.as_deref(), Some("noAudioFile"));
+        assert_eq!(classify_preparation_error(AppError::unavailable("Not available in your country"))
+            .context.as_deref(), Some("countryRestricted"));
+        assert_eq!(classify_preparation_error(AppError::unavailable("unexpected metadata for spotify:track:secret"))
+            .context.as_deref(), Some("preparationOther"));
+    }
 
     #[test]
     fn explicit_items_are_refused_only_on_the_accounts_own_filter() {

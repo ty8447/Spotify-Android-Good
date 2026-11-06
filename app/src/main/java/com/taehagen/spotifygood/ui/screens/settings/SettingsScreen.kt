@@ -115,6 +115,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewModelScope
 import coil3.SingletonImageLoader
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
 import com.taehagen.spotifygood.AppGraph
 import com.taehagen.spotifygood.auth.BrowserLauncher
 import com.taehagen.spotifygood.BuildConfig
@@ -319,6 +320,31 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
     val activity = LocalActivity.current
     val graph = rememberAppGraph()
     val scope = rememberCoroutineScope()
+    var exportingDiagnostics by remember { mutableStateOf(false) }
+    val diagnosticZipLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri != null) {
+            exportingDiagnostics = true
+            scope.launch {
+                try {
+                    val events = DiagnosticLogs.exportTo(context, uri)
+                    navigator.showMessage("Exported $events diagnostic events. You can share the ZIP now.")
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/zip"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        clipData = android.content.ClipData.newUri(context.contentResolver, "Spotify Good diagnostics", uri)
+                    }
+                    runCatching { context.startActivity(Intent.createChooser(send, "Share diagnostic ZIP")) }
+                        .onFailure { navigator.showMessage("ZIP saved. Open Files to share it.") }
+                } catch (e: Exception) {
+                    DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "diagnostics", "export_failed", e.javaClass.simpleName)
+                    navigator.showMessage("Could not export diagnostics. Please choose another folder.")
+                } finally { exportingDiagnostics = false }
+            }
+        }
+    }
     val settings by vm.settings.collectAsStateWithLifecycle()
     val user by vm.user.collectAsStateWithLifecycle()
     val usedBytes by vm.usedBytes.collectAsStateWithLifecycle()
@@ -1082,6 +1108,18 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                 }
             }
             item(key = "h_about") { SettingsInlineHeader("About and support") }
+            item(key = "export_diagnostics") {
+                PrefItem(
+                    title = if (exportingDiagnostics) "Exporting diagnostic logs…" else "Export diagnostic logs",
+                    summary = "Last 3 hours of playback, session, and app warnings. Save a ZIP to share with support. No computer required.",
+                    icon = Icons.Rounded.Download,
+                    onClick = {
+                        if (!exportingDiagnostics) {
+                            diagnosticZipLauncher.launch("SpotifyGood-diagnostics-${System.currentTimeMillis()}.zip")
+                        }
+                    },
+                )
+            }
             item(key = "version") {
                 PrefItem(
                     title = stringResource(R.string.shell_settings_version),

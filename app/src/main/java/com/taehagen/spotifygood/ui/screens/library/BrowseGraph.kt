@@ -185,6 +185,18 @@ private object TrackStarts {
  * ([startSuperseded]).
  */
 internal fun AppGraph.launchTrackStart(trackUri: String, track: Track?) {
+    // The downloaded copy is immediately playable regardless of stale ONLINE status.
+    // Avoid a pending metadata/Connect lookup that can unfreeze minutes later.
+    if (trackUri in downloads.downloadedUris.value) {
+        val album = track?.album?.uri
+        player.play(com.taehagen.spotifygood.playback.PlayRequest(
+            contextUri = album,
+            trackUris = if (album == null) listOf(trackUri) else null,
+            startUri = if (album == null) null else trackUri,
+            preferOffline = true,
+        ))
+        return
+    }
     // Read at the tap, before the start runs: any command the user issues after it drops it.
     val commands = player.userCommands.value
     TrackStarts.launch(appScope) { startTrack(trackUri, track, commands) }

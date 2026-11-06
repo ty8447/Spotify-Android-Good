@@ -355,6 +355,9 @@ data class User(
     val recentlyPlayedArtists: List<PublicProfileArtist> = emptyList(),
     /** Whether followers/following are visible to visitors; absent means unspecified. */
     val showFollows: Boolean? = null,
+    /** Only when the public profile explicitly reports the logged-in user's relationship. */
+    val isFollowing: Boolean? = null,
+    val followsYou: Boolean? = null,
 ) {
     val isPremium: Boolean get() = product == null || product == "premium"
 }

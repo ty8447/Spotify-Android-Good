@@ -18,6 +18,7 @@ import com.taehagen.spotifygood.nativebridge.NativeErrorCode
 import com.taehagen.spotifygood.nativebridge.NativeException
 import com.taehagen.spotifygood.playback.EngineReach
 import com.taehagen.spotifygood.playback.PlayRequest
+import com.taehagen.spotifygood.playback.ShuffleMode
 import com.taehagen.spotifygood.ui.components.BackgroundMessages
 import com.taehagen.spotifygood.ui.components.SessionMessenger
 import com.taehagen.spotifygood.ui.screens.library.explicitFilterFlow
@@ -223,7 +224,13 @@ internal abstract class DetailViewModel(
     protected val retryTrigger = MutableStateFlow(0)
 
     protected val playbackInfo: Flow<PlaybackInfo> =
-        graph.playback.snapshot.map { it.toPlaybackInfo() }.distinctUntilChanged()
+        combine(graph.playback.snapshot, graph.player.queuedShuffleMode) { snapshot, queued ->
+            val info = snapshot.toPlaybackInfo()
+            if (queued != null) info.copy(
+                shuffle = queued != ShuffleMode.OFF,
+                smartShuffle = queued == ShuffleMode.SMART,
+            ) else info
+        }.distinctUntilChanged()
 
     protected val offline: StateFlow<Boolean> = graph.offlineFlow()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
@@ -314,31 +321,11 @@ internal abstract class DetailViewModel(
         }
     }
 
-    /** Shuffle button: toggles shuffle for the current context, otherwise starts it shuffled. */
+    /** Shared shuffle-mode selector. Never starts or switches a playback context. */
     fun shuffleContext() {
-        val playback = currentPlayback()
-        if (playback.isContext(contextUri)) {
-            graph.player.setShuffle(!playback.shuffle)
-        } else {
-            graph.player.play(PlayRequest(contextUri = contextUri, shuffle = true))
-        }
-    }
-
-    /**
-     * Smart shuffle button: toggles it for the current context, otherwise starts the context with it.
-     * Offline the engine rejects smart shuffle (no recommendations), so plain shuffle is used.
-     */
-    fun smartShuffleContext() {
-        if (offline.value) {
-            shuffleContext()
-            return
-        }
-        val playback = currentPlayback()
-        if (playback.isContext(contextUri)) {
-            graph.player.setSmartShuffle(!playback.smartShuffle)
-        } else {
-            graph.player.play(PlayRequest(contextUri = contextUri, smartShuffle = true))
-        }
+        graph.player.cycleShuffle(
+            allowSmartWithoutContext = !offline.value && contextUri.startsWith("spotify:playlist:"),
+        )
     }
 
     fun startRadio() {

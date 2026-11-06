@@ -2,6 +2,7 @@ package com.taehagen.spotifygood.ui.screens.library
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -32,7 +34,10 @@ import androidx.compose.material.icons.automirrored.rounded.LibraryBooks
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.automirrored.rounded.ViewList
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Bookmark
+import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.ArrowDownward
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CloudOff
@@ -64,6 +69,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -77,6 +84,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.taehagen.spotifygood.R
+import com.taehagen.spotifygood.data.LibraryPin
+import com.taehagen.spotifygood.data.libraryPin
+import com.taehagen.spotifygood.data.isLikedSongsPin
 import com.taehagen.spotifygood.data.settings.LibrarySort
 import com.taehagen.spotifygood.data.settings.LibraryView
 import com.taehagen.spotifygood.model.DownloadState
@@ -107,6 +117,10 @@ import com.taehagen.spotifygood.ui.components.fastScrollDate
 import com.taehagen.spotifygood.ui.components.fastScrollLetter
 import com.taehagen.spotifygood.ui.components.fastScrollPosition
 import com.taehagen.spotifygood.ui.components.rememberFastScrollDatePattern
+import com.taehagen.spotifygood.ui.screens.playlist.rememberReorderState
+import com.taehagen.spotifygood.ui.screens.playlist.reorderHandle
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.material.icons.rounded.PushPin
 
 @Composable
 fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) {
@@ -114,9 +128,13 @@ fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) 
     val state by viewModel.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     var showCreate by rememberSaveable { mutableStateOf(false) }
+    var reorderingPins by rememberSaveable { mutableStateOf(false) }
+    val canReorderPins = state.filter == null && state.folders.isEmpty() &&
+        !state.searchActive && !state.showEpisodes && state.shortcuts.size > 1
+    LaunchedEffect(canReorderPins) { if (!canReorderPins) reorderingPins = false }
 
-    PageBackHandler(enabled = state.showEpisodes || state.folders.isNotEmpty() || state.searchActive) {
-        viewModel.navigateUp()
+    PageBackHandler(enabled = reorderingPins || state.showEpisodes || state.folders.isNotEmpty() || state.searchActive) {
+        if (reorderingPins) reorderingPins = false else viewModel.navigateUp()
     }
 
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -148,6 +166,9 @@ fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) 
                 view = state.view,
                 onSort = viewModel::setSort,
                 onToggleView = viewModel::toggleView,
+                canReorderPins = canReorderPins,
+                reorderingPins = reorderingPins,
+                onReorderPins = { reorderingPins = !reorderingPins },
             )
         }
         PullToRefreshBox(
@@ -171,6 +192,11 @@ fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) 
                 error != null && state.items.isEmpty() -> StateBox {
                     ErrorState(message = stringResource(error.messageRes()), onRetry = viewModel::retry)
                 }
+                reorderingPins && canReorderPins -> LibraryPinnedReorder(
+                    pins = state.shortcuts,
+                    contentPadding = contentPadding,
+                    onMove = viewModel::movePin,
+                )
                 state.view == LibraryView.GRID -> LibraryGrid(
                     state = state,
                     contentPadding = contentPadding,
@@ -179,6 +205,9 @@ fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) 
                     onBack = { viewModel.navigateUp() },
                     onOpenEpisodes = viewModel::openEpisodes,
                     downloadState = viewModel::downloadState,
+                    onTogglePin = viewModel::togglePin,
+                    onUnpin = viewModel::unpin,
+                    onPinnedFolder = viewModel::openPinnedFolder,
                 )
                 else -> LibraryList(
                     state = state,
@@ -188,6 +217,9 @@ fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) 
                     onBack = { viewModel.navigateUp() },
                     onOpenEpisodes = viewModel::openEpisodes,
                     downloadState = viewModel::downloadState,
+                    onTogglePin = viewModel::togglePin,
+                    onUnpin = viewModel::unpin,
+                    onPinnedFolder = viewModel::openPinnedFolder,
                 )
             }
         }
@@ -305,7 +337,15 @@ private fun sortLabel(sort: LibrarySort): String = stringResource(
 )
 
 @Composable
-private fun SortViewRow(sort: LibrarySort, view: LibraryView, onSort: (LibrarySort) -> Unit, onToggleView: () -> Unit) {
+private fun SortViewRow(
+    sort: LibrarySort,
+    view: LibraryView,
+    onSort: (LibrarySort) -> Unit,
+    onToggleView: () -> Unit,
+    canReorderPins: Boolean,
+    reorderingPins: Boolean,
+    onReorderPins: () -> Unit,
+) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp),
@@ -345,7 +385,12 @@ private fun SortViewRow(sort: LibrarySort, view: LibraryView, onSort: (LibrarySo
             }
         }
         Spacer(Modifier.weight(1f))
-        IconButton(onClick = onToggleView) {
+        if (canReorderPins || reorderingPins) {
+            TextButton(onClick = onReorderPins) {
+                Text(stringResource(if (reorderingPins) R.string.browse_library_reorder_done else R.string.browse_library_reorder_pins))
+            }
+        }
+        IconButton(onClick = onToggleView, enabled = !reorderingPins) {
             Icon(
                 imageVector = if (view == LibraryView.LIST) Icons.Rounded.GridView else Icons.AutoMirrored.Rounded.ViewList,
                 contentDescription = stringResource(
@@ -382,12 +427,15 @@ private fun LibraryList(
     onBack: () -> Unit,
     onOpenEpisodes: () -> Unit,
     downloadState: (String) -> Flow<DownloadState?>,
+    onTogglePin: (LibraryItem) -> Unit,
+    onUnpin: (LibraryPin) -> Unit,
+    onPinnedFolder: (LibraryPin) -> Unit,
 ) {
     val listState = rememberLazyListState()
     ScrollToTopOnChange("${state.folders.lastOrNull()?.id}|${state.filter}") { listState.scrollToItem(0) }
 
     // Before the items: the folder's back row and the pinned rows.
-    val itemsStart = (if (state.folders.isNotEmpty()) 1 else 0) + state.pinned.size
+    val itemsStart = (if (state.folders.isNotEmpty()) 1 else 0) + state.pinned.size + state.shortcuts.size
     val datePattern = rememberFastScrollDatePattern()
     val items = state.items
     val sort = state.sort
@@ -403,23 +451,46 @@ private fun LibraryList(
                     }
                 }
             }
+            items(state.shortcuts, key = { "shortcut:${it.kind}:${it.id}" }, contentType = { "shortcut" }) { pin ->
+                val ref = remember(pin) { pin.ref() }
+                if (pin.isLikedSongsPin()) {
+                    PinnedRow(PinnedEntry.LikedSongs(state.likedSongCount, state.likedSongsDownloaded),
+                        onClick = { navigator.navigate(Route.LikedSongs) },
+                        onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) }, pinned = true)
+                } else if (pin.kind == "FOLDER") {
+                    LibraryRowLayout(onClick = { onPinnedFolder(pin) },
+                        onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) },
+                        leading = { GradientTile(BrowsePalette.folder, Icons.Rounded.Folder, Modifier.size(56.dp), iconSize = 26.dp) },
+                        title = pin.name, subtitle = "Pinned folder", pinned = true)
+                } else if (ref != null) {
+                    MediaRow(ref = ref, onClick = { navigator.open(ref) },
+                        subtitle = typedSubtitle(ref.type, pin.creator), pinned = true,
+                        onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) })
+                } else {
+                    // Keep unknown server pin types visible instead of silently losing them.
+                    LibraryRowLayout(onClick = { navigator.openUri(pin.id) },
+                        onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) },
+                        leading = { GradientTile(BrowsePalette.folder, Icons.AutoMirrored.Rounded.LibraryBooks,
+                            Modifier.size(56.dp), iconSize = 26.dp) },
+                        title = pin.name, subtitle = "Pinned item", pinned = true)
+                }
+            }
             items(state.pinned, key = { it.key }, contentType = { "pinned" }) { entry ->
                 PinnedRow(entry = entry, onClick = { onPinnedClick(entry, navigator, onOpenEpisodes) })
             }
             items(state.items, key = { it.key }, contentType = { if (it.kind == LibraryItemKind.FOLDER) "folder" else "item" }) { item ->
                 if (item.kind == LibraryItemKind.FOLDER) {
-                    FolderRow(item = item, onClick = { onOpenFolder(item) })
+                    FolderRow(item = item, onClick = { onOpenFolder(item) },
+                        onLongClick = { navigator.showActions(itemPinActions(item, state.user?.username)) })
                 } else {
                     val ref = remember(item) { item.toMediaRef() }
                     MediaRow(
                         ref = ref,
                         onClick = { navigator.openLibraryItem(item) },
                         subtitle = typedSubtitle(ref.type, item.creator),
-                        onLongClick = { item.actionTarget(state.user?.username)?.let(navigator::showActions) },
-                        trailing = if (item.id in state.downloaded) {
-                            { CollectionDownloadBadge(item.id, downloadState) }
-                        } else {
-                            null
+                        onLongClick = { navigator.showActions(itemPinActions(item, state.user?.username)) },
+                        trailing = {
+                            if (item.id in state.downloaded) CollectionDownloadBadge(item.id, downloadState)
                         },
                     )
                 }
@@ -449,6 +520,9 @@ private fun LibraryGrid(
     onBack: () -> Unit,
     onOpenEpisodes: () -> Unit,
     downloadState: (String) -> Flow<DownloadState?>,
+    onTogglePin: (LibraryItem) -> Unit,
+    onUnpin: (LibraryPin) -> Unit,
+    onPinnedFolder: (LibraryPin) -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val horizontal = 16.dp
@@ -473,12 +547,38 @@ private fun LibraryGrid(
                     }
                 }
             }
+            items(state.shortcuts, key = { "shortcut:${it.kind}:${it.id}" }, contentType = { "shortcut" }) { pin ->
+                Box {
+                    val ref = remember(pin) { pin.ref() }
+                    if (pin.isLikedSongsPin()) {
+                        PinnedGridTile(PinnedEntry.LikedSongs(state.likedSongCount, state.likedSongsDownloaded),
+                            size = cell, onClick = { navigator.navigate(Route.LikedSongs) },
+                            onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) }, pinned = true)
+                    } else if (pin.kind == "FOLDER") {
+                        GridTileLayout(onClick = { onPinnedFolder(pin) },
+                            onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) },
+                            artwork = { GradientTile(BrowsePalette.folder, Icons.Rounded.Folder,
+                                Modifier.size(cell), shape = RoundedCornerShape(6.dp), iconSize = cell / 3) },
+                            title = pin.name, subtitle = "Pinned folder", pinned = true)
+                    } else if (ref != null) {
+                        MediaCard(ref = ref, onClick = { navigator.open(ref) }, size = cell, pinned = true,
+                            onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) })
+                    } else {
+                        GridTileLayout(onClick = { navigator.openUri(pin.id) },
+                            onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) },
+                            artwork = { GradientTile(BrowsePalette.folder, Icons.AutoMirrored.Rounded.LibraryBooks,
+                                Modifier.size(cell), shape = RoundedCornerShape(6.dp), iconSize = cell / 3) },
+                            title = pin.name, subtitle = "Pinned item", pinned = true)
+                    }
+                }
+            }
             items(state.pinned, key = { it.key }, contentType = { "pinned" }) { entry ->
                 PinnedGridTile(entry = entry, size = cell, onClick = { onPinnedClick(entry, navigator, onOpenEpisodes) })
             }
             items(state.items, key = { it.key }, contentType = { if (it.kind == LibraryItemKind.FOLDER) "folder" else "item" }) { item ->
                 if (item.kind == LibraryItemKind.FOLDER) {
-                    FolderGridTile(item = item, size = cell, onClick = { onOpenFolder(item) })
+                    FolderGridTile(item = item, size = cell, onClick = { onOpenFolder(item) },
+                        onLongClick = { navigator.showActions(itemPinActions(item, state.user?.username)) })
                 } else {
                     val ref = remember(item) { item.toMediaRef() }
                     Box {
@@ -486,7 +586,7 @@ private fun LibraryGrid(
                             ref = ref,
                             onClick = { navigator.openLibraryItem(item) },
                             size = cell,
-                            onLongClick = { item.actionTarget(state.user?.username)?.let(navigator::showActions) },
+                            onLongClick = { navigator.showActions(itemPinActions(item, state.user?.username)) },
                         )
                         if (item.id in state.downloaded) {
                             Surface(
@@ -530,7 +630,7 @@ private data class PinnedVisual(val colors: List<Color>, val icon: ImageVector)
 
 private fun PinnedEntry.visual(): PinnedVisual = when (this) {
     is PinnedEntry.LikedSongs -> PinnedVisual(BrowsePalette.likedSongs, Icons.Rounded.Favorite)
-    PinnedEntry.YourEpisodes -> PinnedVisual(BrowsePalette.episodes, Icons.Rounded.Bookmark)
+    PinnedEntry.YourEpisodes -> PinnedVisual(BrowsePalette.episodes, Icons.Rounded.Podcasts)
     is PinnedEntry.Downloads -> PinnedVisual(BrowsePalette.downloads, Icons.Rounded.DownloadForOffline)
 }
 
@@ -554,14 +654,17 @@ private fun pinnedSubtitle(entry: PinnedEntry): String = when (entry) {
 }
 
 @Composable
-private fun PinnedRow(entry: PinnedEntry, onClick: () -> Unit) {
+private fun PinnedRow(entry: PinnedEntry, onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null, pinned: Boolean = false, trailing: (@Composable () -> Unit)? = null) {
     val visual = entry.visual()
     LibraryRowLayout(
         onClick = onClick,
+        onLongClick = onLongClick,
+        pinned = pinned,
         leading = { GradientTile(visual.colors, visual.icon, Modifier.size(56.dp), iconSize = 26.dp) },
         title = pinnedTitle(entry),
         subtitle = pinnedSubtitle(entry),
-        trailing = if (entry is PinnedEntry.LikedSongs && entry.downloaded) {
+        trailing = trailing ?: if (entry is PinnedEntry.LikedSongs && entry.downloaded) {
             { DownloadIndicator(DownloadState.COMPLETED) }
         } else {
             null
@@ -570,10 +673,11 @@ private fun PinnedRow(entry: PinnedEntry, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FolderRow(item: LibraryItem, onClick: () -> Unit) {
+private fun FolderRow(item: LibraryItem, onClick: () -> Unit, onLongClick: (() -> Unit)? = null) {
     val count = item.playlistCount()
     LibraryRowLayout(
         onClick = onClick,
+        onLongClick = onLongClick,
         leading = { GradientTile(BrowsePalette.folder, Icons.Rounded.Folder, Modifier.size(56.dp), iconSize = 26.dp) },
         title = item.name,
         subtitle = stringResource(
@@ -587,15 +691,17 @@ private fun FolderRow(item: LibraryItem, onClick: () -> Unit) {
 @Composable
 internal fun LibraryRowLayout(
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     leading: @Composable () -> Unit,
     title: String,
     subtitle: String,
+    pinned: Boolean = false,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .then(if (onLongClick != null) Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick) else Modifier.clickable(onClick = onClick))
             .heightIn(min = 72.dp)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -603,23 +709,29 @@ internal fun LibraryRowLayout(
         leading()
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (pinned) {
+                    Icon(Icons.Rounded.PushPin, contentDescription = "Pinned",
+                        tint = Color(0xFF1ED760), modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
         trailing?.invoke()
     }
 }
 
 @Composable
-private fun PinnedGridTile(entry: PinnedEntry, size: Dp, onClick: () -> Unit) {
+private fun PinnedGridTile(entry: PinnedEntry, size: Dp, onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null, pinned: Boolean = false) {
     val visual = entry.visual()
     GridTileLayout(
         onClick = onClick,
+        onLongClick = onLongClick,
+        pinned = pinned,
         artwork = { GradientTile(visual.colors, visual.icon, Modifier.size(size), shape = RoundedCornerShape(6.dp), iconSize = size / 3) },
         title = pinnedTitle(entry),
         subtitle = pinnedSubtitle(entry),
@@ -627,10 +739,11 @@ private fun PinnedGridTile(entry: PinnedEntry, size: Dp, onClick: () -> Unit) {
 }
 
 @Composable
-private fun FolderGridTile(item: LibraryItem, size: Dp, onClick: () -> Unit) {
+private fun FolderGridTile(item: LibraryItem, size: Dp, onClick: () -> Unit, onLongClick: (() -> Unit)? = null) {
     val count = item.playlistCount()
     GridTileLayout(
         onClick = onClick,
+        onLongClick = onLongClick,
         artwork = { GradientTile(BrowsePalette.folder, Icons.Rounded.Folder, Modifier.size(size), shape = RoundedCornerShape(6.dp), iconSize = size / 3) },
         title = item.name,
         subtitle = pluralStringResource(R.plurals.browse_playlist_count, count, count),
@@ -638,8 +751,9 @@ private fun FolderGridTile(item: LibraryItem, size: Dp, onClick: () -> Unit) {
 }
 
 @Composable
-private fun GridTileLayout(onClick: () -> Unit, artwork: @Composable () -> Unit, title: String, subtitle: String) {
-    Column(Modifier.clip(RoundedCornerShape(6.dp)).clickable(onClick = onClick)) {
+private fun GridTileLayout(onClick: () -> Unit, artwork: @Composable () -> Unit, title: String, subtitle: String,
+    onLongClick: (() -> Unit)? = null, pinned: Boolean = false) {
+    Column(Modifier.clip(RoundedCornerShape(6.dp)).then(if (onLongClick != null) Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick) else Modifier.clickable(onClick = onClick))) {
         artwork()
         Text(
             title,
@@ -649,13 +763,16 @@ private fun GridTileLayout(onClick: () -> Unit, artwork: @Composable () -> Unit,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.padding(top = 8.dp),
         )
-        Text(
-            subtitle,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (pinned) {
+                Icon(Icons.Rounded.PushPin, contentDescription = "Pinned",
+                    tint = Color(0xFF1ED760), modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(subtitle, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
@@ -784,5 +901,103 @@ private fun YourEpisodesList(
             contentCount = episodes.items.size,
             bottomPadding = contentPadding.calculateBottomPadding(),
         )
+    }
+}
+
+private fun pinActions(pin: LibraryPin, myUsername: String?): MediaActionTarget =
+    MediaActionTarget.LibraryPinTarget(
+        pin,
+        LibraryItem(
+            kind = LibraryItemKind.entries.firstOrNull { it.name == pin.kind } ?: LibraryItemKind.FOLDER,
+            id = pin.id, name = pin.name, creator = pin.creator,
+            images = pin.images, ownerUsername = pin.ownerUsername,
+        ).actionTarget(myUsername),
+    )
+
+private fun itemPinActions(item: LibraryItem, myUsername: String?) =
+    MediaActionTarget.LibraryPinTarget(item.libraryPin(), item.actionTarget(myUsername))
+
+/** Pin/unpin now belongs to the standard long-press action sheet. */
+/** Explicit, accessible reordering surface; edits are saved per Spotify account. */
+@Composable
+private fun LibraryPinnedReorder(
+    pins: List<LibraryPin>,
+    contentPadding: PaddingValues,
+    onMove: (Int, Int) -> Unit,
+) {
+    val listState = rememberLazyListState()
+    val currentPins by rememberUpdatedState(pins)
+    val reorder = rememberReorderState(
+        listState = listState,
+        indexOfKey = { key -> currentPins.indexOfFirst { "shortcut:${it.kind}:${it.id}" == key }.takeIf { it >= 0 } },
+        onStart = {},
+        onMove = onMove,
+        onEnd = { _, _ -> },
+        edgeTop = 0.dp,
+        edgeBottom = contentPadding.calculateBottomPadding(),
+    )
+    LazyColumn(state = listState, contentPadding = contentPaddingWith(contentPadding)) {
+        item(key = "reorder-hint") {
+            Text(
+                text = stringResource(R.string.browse_library_reorder_hint),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            )
+        }
+        items(pins, key = { "shortcut:${it.kind}:${it.id}" }) { pin ->
+            val key = "shortcut:${pin.kind}:${pin.id}"
+            val dragging = reorder.draggingKey == key
+            val dragModifier = Modifier
+                .fillMaxWidth()
+                .then(if (dragging) Modifier else Modifier.animateItem())
+                .zIndex(if (dragging) 1f else 0f)
+                .graphicsLayer { translationY = reorder.translationFor(key) }
+                .then(if (dragging) Modifier.background(MaterialTheme.colorScheme.surfaceContainerHighest) else Modifier)
+            val handle: @Composable () -> Unit = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val index = currentPins.indexOfFirst { it.kind == pin.kind && it.id == pin.id }
+                    IconButton(onClick = { onMove(index, index - 1) }, enabled = index > 0) {
+                        Icon(Icons.Rounded.ArrowUpward, contentDescription = stringResource(R.string.browse_library_move_pin_up))
+                    }
+                    IconButton(onClick = { onMove(index, index + 1) }, enabled = index >= 0 && index < currentPins.lastIndex) {
+                        Icon(Icons.Rounded.ArrowDownward, contentDescription = stringResource(R.string.browse_library_move_pin_down))
+                    }
+                    Icon(
+                        Icons.Rounded.DragHandle,
+                        contentDescription = stringResource(R.string.browse_library_reorder_pins),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(48.dp).reorderHandle(reorder, key).padding(12.dp),
+                    )
+                }
+            }
+            val ref = remember(pin) { pin.ref() }
+            if (pin.isLikedSongsPin()) {
+                Box(dragModifier) {
+                    PinnedRow(PinnedEntry.LikedSongs(null, false), onClick = {}, pinned = true, trailing = handle)
+                }
+            } else if (pin.kind == "FOLDER") {
+                Box(dragModifier) {
+                    LibraryRowLayout(
+                        onClick = {},
+                        leading = { GradientTile(BrowsePalette.folder, Icons.Rounded.Folder, Modifier.size(56.dp), iconSize = 26.dp) },
+                        title = pin.name,
+                        subtitle = stringResource(R.string.browse_type_playlist),
+                        pinned = true, trailing = handle,
+                    )
+                }
+            } else if (ref != null) {
+                Box(dragModifier) {
+                    MediaRow(ref = ref, onClick = {}, subtitle = typedSubtitle(ref.type, pin.creator), pinned = true, trailing = handle)
+                }
+            } else {
+                Box(dragModifier) {
+                    LibraryRowLayout(onClick = {},
+                        leading = { GradientTile(BrowsePalette.folder, Icons.AutoMirrored.Rounded.LibraryBooks,
+                            Modifier.size(56.dp), iconSize = 26.dp) },
+                        title = pin.name, subtitle = "Pinned item", pinned = true, trailing = handle)
+                }
+            }
+        }
     }
 }

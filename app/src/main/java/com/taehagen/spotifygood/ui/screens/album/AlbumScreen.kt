@@ -196,7 +196,7 @@ private fun AlbumHeader(
                         MoreButton(onClick = onMore, label = album.name)
                     },
                     trailing = {
-                        ShuffleButton(active = isContext && state.playback.shuffle, onClick = onShuffle)
+                        ShuffleButton(shuffle = state.playback.shuffle, smart = state.playback.smartShuffle, onClick = onShuffle)
                         PlayFab(isPlaying = state.playback.isPlayingContext(album.uri), onClick = onPlay)
                     },
                 )

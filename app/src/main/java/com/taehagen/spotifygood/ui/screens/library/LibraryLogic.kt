@@ -354,3 +354,17 @@ fun pinnedEntries(
         LibraryFilter.ALBUMS, LibraryFilter.ARTISTS -> emptyList()
     }
 }
+
+/** Returns the actual folder id chain, including nested pins, or empty if no longer saved. */
+fun pinnedFolderPath(tree: List<LibraryItem>, id: String): List<String> {
+    fun find(items: List<LibraryItem>, path: List<String>): List<String>? {
+        for (item in items) {
+            if (item.kind != LibraryItemKind.FOLDER) continue
+            val next = path + item.id
+            if (item.id == id) return next
+            find(item.children, next)?.let { return it }
+        }
+        return null
+    }
+    return find(tree, emptyList()).orEmpty()
+}

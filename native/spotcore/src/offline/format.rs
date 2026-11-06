@@ -104,6 +104,18 @@ pub fn choose_file(files: &AudioFiles, bitrate: u32, cap_160: bool) -> Option<(A
     candidates(bitrate, cap_160).into_iter().find_map(|f| files.get(&f).map(|id| (f, *id)))
 }
 
+/// True when metadata offers audio files, but not one our on-disk decoder supports.
+/// This is an enumeration of *format categories*, not a log of file IDs or track URIs.
+/// Avoid treating an unsupported DRM format as if it were decodable Ogg/MP3.
+pub fn has_other_format(files: &AudioFiles) -> bool {
+    use AudioFileFormat as F;
+    [
+        F::MP3_160_ENC, F::AAC_24, F::AAC_48, F::AAC_160, F::AAC_320,
+        F::FLAC_FLAC, F::FLAC_FLAC_24BIT, F::XHE_AAC_24, F::XHE_AAC_16,
+        F::XHE_AAC_12, F::MP4_128, F::OTHER5,
+    ].iter().any(|f| files.get(f).is_some())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Hex ids / keys
 // ---------------------------------------------------------------------------------------------

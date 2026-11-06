@@ -15,6 +15,7 @@ import coil3.intercept.Interceptor
 import coil3.memory.MemoryCache
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.crossfade
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
 import com.taehagen.spotifygood.engine.EngineHolder
 import com.taehagen.spotifygood.engine.HolderType
 import com.taehagen.spotifygood.engine.NativeStatus
@@ -54,6 +55,7 @@ object AppInitializer {
 
     fun initialize(app: App, graph: AppGraph) {
         createNotificationChannels(app)
+        DiagnosticLogs.initialize(app)
         initNative(app, graph)
         setUpImageLoader(graph)
         registerUiHolder(graph)
@@ -80,6 +82,7 @@ object AppInitializer {
             // exception: keep the process alive, the engine reports the error state to the UI.
             NativeStatus.initError = t
             Log.e(TAG, "Native engine initialisation failed", t)
+            DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "native", "init_failed", t.javaClass.simpleName)
         }
     }
 

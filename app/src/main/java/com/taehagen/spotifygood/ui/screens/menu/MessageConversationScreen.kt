@@ -19,7 +19,6 @@ import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -88,6 +87,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -110,6 +110,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
@@ -163,6 +164,7 @@ import com.taehagen.spotifygood.ui.navigation.Route
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -341,54 +343,79 @@ private fun shareOptionsTarget(media: ChatSharedMedia): MediaActionTarget? = whe
     else -> null
 }
 
-/** Rounded pink Jam invite card, distinct from ordinary Shared music contributions.
- * The decorative collage uses local Compose graphics; no unverified remote art.
+/** Jam TrackedShare visual treatment; the socialsession URI is the click target.
+ * This now also styles incoming Spotify-native JOIN_JAM shares from other users.
  */
 @Composable
-private fun JamConversationInviteCard(onClick: () -> Unit, onLongClick: () -> Unit) {
-    val pink = Color(0xFFE992C7)
+private fun JamConversationInviteCard(
+    hostAvatarUrl: String?,
+    hostName: String?,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    val cardPink = Color(0xFFE78CCA)
+    val artBackground = Brush.linearGradient(listOf(Color(0xFF261133), Color(0xFF120F2A)))
     Surface(
         modifier = Modifier.width(194.dp).combinedClickable(onClick = onClick,
             onLongClick = onLongClick),
-        shape = RoundedCornerShape(15.dp), color = pink,
+        shape = RoundedCornerShape(15.dp), color = cardPink,
     ) {
         Column(Modifier.padding(5.dp)) {
             Box(Modifier.fillMaxWidth().height(166.dp)
                 .clip(RoundedCornerShape(topStart = 11.dp, topEnd = 11.dp))
-                .background(Brush.linearGradient(listOf(Color(0xFF30182D), Color(0xFF180E27))))) {
-                // Small record-and-sticker collage inspired by Spotify's card.
-                Box(Modifier.align(Alignment.Center).size(108.dp)
-                    .clip(CircleShape).background(Brush.sweepGradient(listOf(
-                        Color(0xFF3323A6), Color(0xFF087CA7), Color(0xFFAB256B),
-                        Color(0xFF0B123A), Color(0xFF3323A6))))
-                    .border(5.dp, Color(0xFF4A2675), CircleShape),
-                    contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Headphones, contentDescription = null,
-                        tint = Color.White, modifier = Modifier.size(49.dp))
+                .background(artBackground)) {
+                Box(Modifier.align(Alignment.Center).size(118.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF3A1E76))
+                    .border(3.dp, Color(0xFF6D3DD3), CircleShape)) {
+                    if (hostAvatarUrl?.startsWith("https://") == true) {
+                        AsyncImage(
+                            model = hostAvatarUrl,
+                            contentDescription = hostName?.let { "$it Jam host" },
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.matchParentSize().blur(10.dp).alpha(0.96f),
+                        )
+                    }
+                    Box(Modifier.matchParentSize().background(
+                        Brush.radialGradient(listOf(
+                            Color(0x5547E6FF), Color(0x66631BBF), Color(0xAA180F2E), Color.Transparent
+                        ))
+                    ))
+                    Box(Modifier.align(Alignment.Center).size(86.dp)
+                        .clip(CircleShape)
+                        .background(Color(0x33201048))
+                        .border(2.dp, Color(0xAA7F69F0), CircleShape),
+                        contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Headphones, contentDescription = null,
+                            tint = Color.White, modifier = Modifier.size(42.dp))
+                    }
                 }
                 Box(Modifier.align(Alignment.TopStart).offset(x = 14.dp, y = 19.dp)
-                    .size(37.dp).rotate(-13f)
-                    .background(Color(0xFFF6AFD6), RoundedCornerShape(6.dp)),
+                    .size(35.dp).rotate(-12f)
+                    .background(Color(0xFFF3AED8), RoundedCornerShape(6.dp)),
                     contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.QueueMusic, null, tint = Color(0xFF5134AB))
+                    Icon(Icons.Rounded.QueueMusic, null, tint = Color(0xFF5C2CB1),
+                        modifier = Modifier.size(18.dp))
                 }
-                Box(Modifier.align(Alignment.CenterEnd).offset(x = (-10).dp, y = (-48).dp)
-                    .size(47.dp).background(Color(0xFFF385D5), CircleShape),
+                Box(Modifier.align(Alignment.TopEnd).offset(x = (-12).dp, y = 15.dp)
+                    .size(42.dp).background(Color(0xFFE57AD1), CircleShape),
                     contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.People, null, tint = Color(0xFF6532A6),
-                        modifier = Modifier.size(29.dp))
+                    Icon(Icons.Rounded.People, null, tint = Color(0xFF6E38B0),
+                        modifier = Modifier.size(22.dp))
                 }
-                Box(Modifier.align(Alignment.CenterStart).offset(x = 7.dp, y = 38.dp)
-                    .size(38.dp).rotate(12f)
-                    .background(Color(0xFFFCAA24), RoundedCornerShape(7.dp)),
+                Box(Modifier.align(Alignment.BottomStart).offset(x = 12.dp, y = (-18).dp)
+                    .size(34.dp).rotate(12f)
+                    .background(Color(0xFFF4A823), RoundedCornerShape(7.dp)),
                     contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Headphones, null, tint = Color(0xFFCB35A1))
+                    Icon(Icons.Rounded.Headphones, null, tint = Color(0xFFBF2B98),
+                        modifier = Modifier.size(18.dp))
                 }
-                Box(Modifier.align(Alignment.BottomEnd).offset(x = (-14).dp, y = (-15).dp)
-                    .size(38.dp).rotate(15f)
-                    .background(Color(0xFFFFCF69), RoundedCornerShape(6.dp)),
+                Box(Modifier.align(Alignment.BottomEnd).offset(x = (-14).dp, y = (-16).dp)
+                    .size(34.dp).rotate(15f)
+                    .background(Color(0xFFFFD566), RoundedCornerShape(6.dp)),
                     contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.QueueMusic, null, tint = Color(0xFFE04C88))
+                    Text("♫", color = Color(0xFFDF508E), fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp)
                 }
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
@@ -406,7 +433,12 @@ private fun JamConversationInviteCard(onClick: () -> Unit, onLongClick: () -> Un
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding: PaddingValues) {
+    if (hierarchyId.startsWith(PENDING_DIRECT_PREFIX)) {
+        PendingDirectMessageScreen(hierarchyId.removePrefix(PENDING_DIRECT_PREFIX), title, contentPadding)
+        return
+    }
     val graph = rememberAppGraph()
+    val chatTrackPreview = rememberSpotifyTrackPreviewController()
     val navigator = LocalAppNavigator.current
     val scroll = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -449,6 +481,9 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
     // An incoming canonical Jam link can request approval without leaving Spotify Good.
     // The host's approval and the actual playback transfer are separate server actions.
     var incomingJoinUrl by remember(hierarchyId) { mutableStateOf<String?>(null) }
+    // The green headphones mean active listening, not necessarily an existing Jam.
+    // Show the same Ask to Join sheet even when discovery hasn't returned a token.
+    var showAskToJoinForListener by remember(hierarchyId) { mutableStateOf(false) }
     var listenOnThisPhone by remember(hierarchyId) { mutableStateOf(true) }
     var askToJoinBusy by remember(hierarchyId) { mutableStateOf(false) }
     var askToJoinFeedback by remember(hierarchyId) { mutableStateOf<String?>(null) }
@@ -456,6 +491,7 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
     // Unlike activeChatJam (our own session), this state is account-bound to
     // the *other* participant and is populated only by the official token lookup.
     var peerJamUrl by remember(hierarchyId) { mutableStateOf<String?>(null) }
+    var peerJamDiscoveryMethod by remember(hierarchyId) { mutableStateOf("listening_activity") }
 
     // Read-only server-verified status for the persistent Jam ribbon.
     var activeChatJam by remember(hierarchyId) { mutableStateOf<JamSessionSummary?>(null) }
@@ -623,12 +659,14 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
         if (isFirstPage) loading = true else loadingOlder = true
         error = null
         try {
-            val response = graph.rpc.call<MessageHistoryPage>(
-                "catalog.messageHistory", buildJsonObject {
-                    put("hierarchyId", hierarchyId)
-                    if (requestedToken.isNotEmpty()) put("pageToken", requestedToken)
-                },
-            )
+            val response = retryChatRead {
+                graph.rpc.call<MessageHistoryPage>(
+                    "catalog.messageHistory", buildJsonObject {
+                        put("hierarchyId", hierarchyId)
+                        if (requestedToken.isNotEmpty()) put("pageToken", requestedToken)
+                    },
+                )
+            }
             val ids = messages.asSequence().map { it.id }.toHashSet()
             page = if (isFirstPage || page == null) response else page
             messages = if (isFirstPage) response.messages else (
@@ -636,6 +674,8 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
             ).sortedWith(compareBy<HistoryMessage> { it.occurredAtMs ?: Long.MIN_VALUE }.thenBy { it.id })
             // The API uses descending order. The next-page cursor should lead to older nodes.
             nextToken = response.nextPageToken?.takeIf { it.isNotBlank() && it != requestedToken }
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            throw cancel
         } catch (failure: Exception) {
             error = failure.message?.take(200) ?: "Unable to load conversation history"
         } finally {
@@ -651,14 +691,18 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
         sharesLoading = true
         sharesError = null
         try {
-            val result = graph.rpc.call<MessageHistoryPage>("catalog.messageShares", buildJsonObject {
-                put("hierarchyId", hierarchyId)
-                if (shareToken.isNotEmpty()) put("pageToken", shareToken)
-            })
+            val result = retryChatRead {
+                graph.rpc.call<MessageHistoryPage>("catalog.messageShares", buildJsonObject {
+                    put("hierarchyId", hierarchyId)
+                    if (shareToken.isNotEmpty()) put("pageToken", shareToken)
+                })
+            }
             val seen = archiveShares.map { it.id }.toHashSet()
             archiveShares = if (shareToken.isEmpty()) result.messages else
                 archiveShares + result.messages.filter { it.id !in seen }
             sharesNextToken = result.nextPageToken?.takeIf { it.isNotBlank() && it != shareToken }
+        } catch (cancel: kotlinx.coroutines.CancellationException) {
+            throw cancel
         } catch (e: Exception) {
             sharesError = e.message?.take(180) ?: "Shares could not be retrieved"
         } finally {
@@ -739,10 +783,17 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
 
     val participants = page?.participants.orEmpty()
     val participantIds = participants.map { it.username }.filter { it.isNotBlank() }.toSet()
-    LaunchedEffect(participantIds) {
-        listening = if (participantIds.isEmpty()) emptyList() else {
-            runCatching { graph.catalog.friendActivity().filter { it.username in participantIds } }
-                .getOrDefault(emptyList())
+    // Refresh live activity while foregrounded; don't blank confirmed activity on network errors.
+    LaunchedEffect(participantIds, lifecycle, graph.catalog) {
+        if (participantIds.isEmpty()) { listening = emptyList(); return@LaunchedEffect }
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                try {
+                    listening = graph.catalog.friendActivity().filter { it.username in participantIds }
+                } catch (cancel: kotlinx.coroutines.CancellationException) { throw cancel }
+                  catch (_: Exception) { /* preserve the last known list */ }
+                delay(15_000)
+            }
         }
     }
     val currentlyListening = listening.filter { it.isActive == true }
@@ -796,29 +847,75 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
     val directPeer = if (isDirectChat) participants.firstOrNull {
         it.username != selfUsername
     } else null
+    // Spotify's green chat affordance follows *active playback*. A session
+    // started but not playing must not appear green. Activity alone never
+    // proves there is an invite token for Ask to Join.
+    val peerActivelyListening = directPeer?.username?.let { peer ->
+        currentlyListening.any { it.username == peer }
+    } == true
+    // On some playback contexts Spotify supplies an explicit socialsession URI
+    // directly with a verified friend-activity row. Use it only for that peer.
+    val peerActivitySession = directPeer?.username?.let { peer ->
+        currentlyListening.firstOrNull { it.username == peer }?.contextUri
+    }?.let(JamInviteLinks::canonical)
     // Our own /sessions/current never tells us whether this person is hosting.
     // Spotify's /tokens/lookup returns their currently discoverable Jam token.
     // Recheck while foregrounded and reset immediately on peer/account changes.
     LaunchedEffect(hierarchyId, directPeer?.username, selfUsername, graph.rpc, lifecycle) {
         peerJamUrl = null
+        peerJamDiscoveryMethod = "listening_activity"
         val peer = directPeer?.username?.takeIf { it.isNotBlank() && it != selfUsername }
         if (peer != null) lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 try {
-                    val result = graph.rpc.call<JamPeerLookupResult>(
-                        "catalog.jamPeerLookup", buildJsonObject { put("username", peer) })
-                    when (result.result) {
-                        "active" -> peerJamUrl = JamInviteLinks.canonical(result.invitationUrl)
+                    // Recheck without closing/reopening chat; bound slow RPCs so
+                    // a stalled lookup cannot freeze the live Jam indicator.
+                    val result = withTimeoutOrNull(8_000L) {
+                        graph.rpc.call<JamPeerLookupResult>(
+                            "catalog.jamPeerLookup", buildJsonObject { put("username", peer) })
+                    }
+                    if (result != null) when (result.result) {
+                        "active" -> {
+                            val url = JamInviteLinks.canonical(result.invitationUrl)
+                            if (url != null) {
+                                peerJamDiscoveryMethod = result.discoveryMethod
+                                    ?.takeIf { it in setOf("listening_activity", "social_radar_tap", "social_radar_invite", "nearby_wifi", "discovered_device") }
+                                    ?: "listening_activity"
+                                peerJamUrl = url
+                            }
+                        }
                         "inactive" -> peerJamUrl = null
-                        // Transient errors must not make a currently verified Jam flicker.
+                        // Timeout/unverified: keep the last confirmed Jam status.
                     }
                 } catch (cancel: kotlinx.coroutines.CancellationException) {
                     throw cancel
                 } catch (_: Exception) {
                     // Keep the last confirmed state during a short-lived error.
                 }
-                delay(15_000)
+                delay(5_000L)
             }
+        }
+    }
+    // An already open Start Jam popup must react if this peer starts a Jam.
+    // The join approval remains a separate, explicit user action.
+    LaunchedEffect(peerJamUrl, peerActivitySession, showJam, subpage, activeChatJam?.active) {
+        val invite = peerJamUrl ?: peerActivitySession
+        if (isDirectChat && subpage == 0 && invite != null && showJam &&
+            activeChatJam?.active != true && !askToJoinBusy) {
+            showJam = false
+            incomingJoinUrl = invite
+            joinDiscoveryMethod = peerJamDiscoveryMethod
+            listenOnThisPhone = true
+            askToJoinFeedback = null
+        }
+    }
+    // Keep a pending peer Ask-to-Join dialog current when the host restarts Jam.
+    LaunchedEffect(peerJamUrl, peerActivitySession) {
+        val invite = peerJamUrl ?: peerActivitySession
+        if (!askToJoinBusy && (incomingJoinUrl != null || showAskToJoinForListener) &&
+            joinDiscoveryMethod in setOf("listening_activity", "social_radar_tap", "social_radar_invite", "nearby_wifi", "discovered_device") && invite != null) {
+            incomingJoinUrl = invite
+            joinDiscoveryMethod = peerJamDiscoveryMethod
         }
     }
     val nearBottom by remember(scroll) {
@@ -1011,11 +1108,16 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
             },
             actions = {
                 if (subpage == 0) {
-                    val activePeerInvite = if (isDirectChat) peerJamUrl else null
+                    val activePeerInvite = if (isDirectChat) peerJamUrl ?: peerActivitySession else null
+                    val showPeerPlaying = peerActivelyListening
                     Row(Modifier.clickable {
-                        if (activePeerInvite != null) {
+                        if (isDirectChat && (activePeerInvite != null || showPeerPlaying)) {
+                            // A listener does not need to have started a Jam to
+                            // display Spotify's Ask to Join choice. An actual
+                            // request still requires a verified token on Submit.
                             incomingJoinUrl = activePeerInvite
-                            joinDiscoveryMethod = "listening_activity"
+                            showAskToJoinForListener = true
+                            joinDiscoveryMethod = peerJamDiscoveryMethod
                             listenOnThisPhone = true
                             askToJoinFeedback = null
                         } else {
@@ -1026,11 +1128,11 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         Icon(Icons.Rounded.Headphones,
-                            contentDescription = if (activePeerInvite != null) "Join Jam" else "Jam",
-                            tint = if (activePeerInvite != null) Color(0xFF1ED760)
+                            contentDescription = if (showPeerPlaying) "Ask to Join" else "Jam",
+                            tint = if (showPeerPlaying) Color(0xFF1ED760)
                                 else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(24.dp))
-                        if (activePeerInvite != null) {
+                        if (showPeerPlaying) {
                             Text("Jam", color = Color(0xFF1ED760),
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.SemiBold)
@@ -1047,20 +1149,21 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
         when (subpage) {
             0 -> {
                 if (currentlyListening.isNotEmpty()) {
-                    Row(Modifier.fillMaxWidth().clickable { showActivity = true }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(
-                            "▮▮▮", color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.labelSmall
-                        )
+                    Box(Modifier.fillMaxWidth().clickable { showActivity = true }
+                        .padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        // Keep text centered within the full chat width, separately
+                        // from the animated activity bars and dropdown chevron.
                         Text(currentlyListening.take(2).joinToString(", ") { it.name } +
                                 (if (currentlyListening.size > 2) " +${currentlyListening.size - 2}" else "") +
                                 " listening", color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f),
-                            maxLines = 1)
-                        Text("⌄", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 40.dp)
+                                .align(Alignment.Center),
+                            textAlign = TextAlign.Center, maxLines = 1,
+                            overflow = TextOverflow.Ellipsis)
+                        Box(Modifier.align(Alignment.CenterStart)) { LiveBars() }
+                        Text("⌄", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.align(Alignment.CenterEnd))
                     }
                 } else if (participants.size > 1) {
                     TextButton(
@@ -1204,6 +1307,8 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
                             }
                             MessageBubble(
                                 message, sharedDetails[message.shareUri],
+                                trackPreview = chatTrackPreview,
+                                onPreviewError = navigator::showMessage,
                                 participants = participants,
                                 isDirectChat = (page?.groupMemberCount ?: participants.size) == 2,
                                 attachedActivities = activitiesByParent[message.id].orEmpty(),
@@ -1374,7 +1479,16 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
-                                            ChatSharedArtwork(attachmentArtwork, 48.dp)
+                                            Box(Modifier.size(48.dp)) {
+                                                ChatSharedArtwork(attachmentArtwork, 48.dp)
+                                                if (music.type == MediaType.TRACK) {
+                                                    SpotifySongPreviewOverlay(
+                                                        controller = chatTrackPreview,
+                                                        uri = music.uri,
+                                                        modifier = Modifier.matchParentSize(),
+                                                        onError = navigator::showMessage)
+                                                }
+                                            }
                                             Column(Modifier.weight(1f)) {
                                                 Text(
                                                     music.name, maxLines = 2,
@@ -1689,9 +1803,15 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
             )
         }
     }
-    incomingJoinUrl?.let { invitation ->
+    if (incomingJoinUrl != null || showAskToJoinForListener) {
+        val invitation = incomingJoinUrl
         AlertDialog(
-            onDismissRequest = { if (!askToJoinBusy) incomingJoinUrl = null },
+            onDismissRequest = {
+                if (!askToJoinBusy) {
+                    incomingJoinUrl = null
+                    showAskToJoinForListener = false
+                }
+            },
             title = {
                 Text("Want to Jam with ${directPeer?.displayName?.takeIf { it.isNotBlank() }
                     ?: directPeer?.username ?: "them"}?",
@@ -1726,26 +1846,83 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
                         askToJoinBusy = true
                         askToJoinFeedback = null
                         val choice = listenOnThisPhone
+                        val peerUsername = directPeer?.username
                         scope.launch {
                             try {
-                                val result = graph.rpc.call<JamApprovalRequestResult>(
-                                    "catalog.jamAskToJoin", buildJsonObject {
-                                        put("invitationUrl", invitation)
-                                        put("listenOnThisPhone", choice)
-                                        put("discoveryMethod", joinDiscoveryMethod)
-                                        put("joinAttemptId", UUID.randomUUID().toString())
-                                    })
+                                // The official listener flow uses an opaque, server-issued
+                                // discovery token. The native layer looks it up and submits
+                                // it directly, without requiring a 22-character Jam link.
+                                // Explicit share links retain their existing verified path.
+                                val result = if (showAskToJoinForListener && !peerUsername.isNullOrBlank()) {
+                                    withTimeoutOrNull(25_000L) {
+                                        graph.rpc.call<JamApprovalRequestResult>(
+                                            "catalog.jamAskToJoinListener", buildJsonObject {
+                                                put("username", peerUsername)
+                                                put("listenOnThisPhone", choice)
+                                                put("joinAttemptId", UUID.randomUUID().toString())
+                                            })
+                                    } ?: JamApprovalRequestResult(result = "unverified")
+                                } else {
+                                    val tokenUrl = invitation
+                                    if (tokenUrl == null) {
+                                        askToJoinFeedback = "No valid Jam invitation is available."
+                                        return@launch
+                                    }
+                                    graph.rpc.call<JamApprovalRequestResult>(
+                                        "catalog.jamAskToJoin", buildJsonObject {
+                                            put("invitationUrl", tokenUrl)
+                                            put("listenOnThisPhone", choice)
+                                            put("discoveryMethod", joinDiscoveryMethod)
+                                            put("joinAttemptId", UUID.randomUUID().toString())
+                                        })
+                                }
                                 when (result.result) {
                                     "pending" -> {
+                                        val host = peerUsername
+                                        val account = selfUsername
+                                        if (!host.isNullOrBlank() && !account.isNullOrBlank()) {
+                                            JamOutgoingRequestState.begin(account, host,
+                                                directPeer?.displayName.orEmpty(), directPeer?.avatarUrl)
+                                        }
                                         incomingJoinUrl = null
+                                        showAskToJoinForListener = false
                                         navigator.showMessage("Ask to Join sent. Waiting for host approval.")
                                     }
                                     "ended" -> {
                                         incomingJoinUrl = null
+                                        showAskToJoinForListener = false
                                         showEndedJamDialog = true
                                     }
-                                    "server-acknowledged" ->
-                                        askToJoinFeedback = "Spotify accepted the request, but its pending status isn't confirmed."
+                                    "server-acknowledged" -> {
+                                        // The official response may omit the nested request.
+                                        // Confirm with an independent read before showing Waiting.
+                                        val host = peerUsername
+                                        val account = selfUsername
+                                        var pendingConfirmed = false
+                                        if (!host.isNullOrBlank()) {
+                                            for (attempt in 0 until 3) {
+                                                if (pendingConfirmed) break
+                                                if (attempt != 0) delay(900L)
+                                                val check = withTimeoutOrNull(4_000L) {
+                                                    graph.rpc.call<JamOutgoingStatus>(
+                                                        "catalog.jamOutgoingStatus", buildJsonObject {
+                                                            put("hostUsername", host)
+                                                        })
+                                                }
+                                                if (check?.result == "pending") pendingConfirmed = true
+                                            }
+                                        }
+                                        if (pendingConfirmed && !account.isNullOrBlank() && !host.isNullOrBlank()) {
+                                            JamOutgoingRequestState.begin(account, host,
+                                                directPeer?.displayName.orEmpty(), directPeer?.avatarUrl)
+                                            incomingJoinUrl = null
+                                            showAskToJoinForListener = false
+                                        } else askToJoinFeedback = "Spotify acknowledged the request, but its pending status could not be verified. Don't retry until you check the host's status."
+                                    }
+                                    "no-token" ->
+                                        askToJoinFeedback = "Spotify didn't return a listening-activity join token for this person. They may need to enable listening activity or be actively playing."
+                                    "lookup-unverified" ->
+                                        askToJoinFeedback = "Couldn't verify the listener's join token. Please try again after checking their listening activity."
                                     "request-rejected" ->
                                         askToJoinFeedback = "Spotify rejected the join request (HTTP ${result.httpStatus ?: "unknown"})."
                                     else -> askToJoinFeedback = "Could not confirm the request. Check before trying again."
@@ -1767,7 +1944,10 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
             },
             dismissButton = {
                 TextButton(enabled = !askToJoinBusy,
-                    onClick = { incomingJoinUrl = null }) { Text("Cancel") }
+                    onClick = {
+                        incomingJoinUrl = null
+                        showAskToJoinForListener = false
+                    }) { Text("Cancel") }
             },
         )
     }
@@ -1798,7 +1978,11 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
         )
     }
     if (showJam) {
+        // The Jam pages scroll internally. Disable sheet swipes so fast list
+        // flings cannot move the sheet and pinned controls simultaneously.
+        val jamSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
         ModalBottomSheet(onDismissRequest = { showJam = false },
+            sheetState = jamSheetState, sheetGesturesEnabled = false,
             containerColor = JamUi.background) {
             val user = graph.engine.user.collectAsStateWithLifecycle().value
             ChatJamStatusSheet(
@@ -1940,13 +2124,14 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
         }
     }
     if (showMusicPicker) {
-        ModalBottomSheet(onDismissRequest = { showMusicPicker = false }) {
-            ChatMusicPicker(onSelect = { item ->
+        ModalBottomSheet(onDismissRequest = { showMusicPicker = false; chatTrackPreview.stop() }) {
+            ChatMusicPicker(preview = chatTrackPreview, onSelect = { item ->
                 attachedMusic = item
                 attachedGif = null
                 attachedSticker = null
                 sendWarning = null
                 showMusicPicker = false
+                chatTrackPreview.stop()
             })
         }
     }
@@ -2208,6 +2393,8 @@ private fun ChatJumpToLatest(
 private fun MessageBubble(
     message: HistoryMessage,
     media: ChatSharedMedia?,
+    trackPreview: SpotifyTrackPreviewController,
+    onPreviewError: (String) -> Unit,
     participants: List<HistoryParticipant>,
     isDirectChat: Boolean,
     attachedActivities: List<HistoryMessage>,
@@ -2323,6 +2510,8 @@ private fun MessageBubble(
             }
             if (jamInviteUrl != null) {
                 JamConversationInviteCard(
+                    hostAvatarUrl = message.senderAvatarUrl,
+                    hostName = message.senderName,
                     onClick = { if (onMessageTap()) onJamInvitationTap(jamInviteUrl) },
                     onLongClick = onLongPress,
                 )
@@ -2364,7 +2553,17 @@ private fun MessageBubble(
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            ChatSharedArtwork(media, 82.dp)
+                            Box(Modifier.size(82.dp)) {
+                                ChatSharedArtwork(media, 82.dp)
+                                val trackUri = (media?.canonicalUri ?: shareUri)
+                                    .takeIf { kind == "track" }
+                                if (trackUri != null) {
+                                    SpotifySongPreviewOverlay(
+                                        controller = trackPreview, uri = trackUri,
+                                        modifier = Modifier.matchParentSize(),
+                                        onError = onPreviewError)
+                                }
+                            }
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(media?.title ?: (message.contentLabel ?: "Shared music"),
                                     fontWeight = FontWeight.SemiBold, maxLines = 2,
@@ -2547,8 +2746,12 @@ private fun ChatMessageOptions(
 
 /** Browses Spotify music to attach as a native tracked-share contribution. */
 @Composable
-private fun ChatMusicPicker(onSelect: (MediaRef) -> Unit) {
+private fun ChatMusicPicker(
+    preview: SpotifyTrackPreviewController,
+    onSelect: (MediaRef) -> Unit,
+) {
     val graph = rememberAppGraph()
+    val navigator = LocalAppNavigator.current
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("All") }
     var results by remember { mutableStateOf<List<MediaRef>>(emptyList()) }
@@ -2612,10 +2815,18 @@ private fun ChatMusicPicker(onSelect: (MediaRef) -> Unit) {
                             .padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             val art = item.images.best(120)
-                            if (art != null) AsyncImage(art, contentDescription = null,
-                                modifier = Modifier.size(48.dp).clip(RoundedCornerShape(5.dp)),
-                                contentScale = ContentScale.Crop)
-                            else Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant))
+                            Box(Modifier.size(48.dp).clip(RoundedCornerShape(5.dp))) {
+                                if (art != null) AsyncImage(art, contentDescription = null,
+                                    modifier = Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+                                else Box(Modifier.matchParentSize()
+                                    .background(MaterialTheme.colorScheme.surfaceVariant))
+                                if (item.type == MediaType.TRACK) {
+                                    SpotifySongPreviewOverlay(
+                                        controller = preview, uri = item.uri,
+                                        modifier = Modifier.matchParentSize(),
+                                        onError = navigator::showMessage)
+                                }
+                            }
                             Column(Modifier.weight(1f)) {
                                 Text(item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text("${item.type.name.lowercase().replaceFirstChar(Char::uppercase)} · ${item.subtitle.orEmpty()}",

@@ -73,6 +73,10 @@ import com.taehagen.spotifygood.ui.components.rememberFastScrollDatePattern
 import com.taehagen.spotifygood.ui.components.OfflineBanner
 import com.taehagen.spotifygood.ui.components.PartialContentNotice
 import com.taehagen.spotifygood.ui.components.PlayFab
+import com.taehagen.spotifygood.ui.components.rememberAppGraph
+import com.taehagen.spotifygood.playback.ShuffleMode
+import com.taehagen.spotifygood.playback.shuffleMode
+import com.taehagen.spotifygood.ui.screens.album.ShuffleButton
 import com.taehagen.spotifygood.ui.components.TrackRow
 import com.taehagen.spotifygood.ui.navigation.LocalAppNavigator
 import com.taehagen.spotifygood.ui.navigation.MediaActionTarget
@@ -83,6 +87,10 @@ internal fun LikedSongsContent(contentPadding: PaddingValues, modifier: Modifier
     val viewModel = appViewModel { graph -> LikedSongsViewModel(graph) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
+    val graph = rememberAppGraph()
+    val shuffleSnapshot by graph.playback.snapshot.collectAsStateWithLifecycle()
+    val queuedShuffle by graph.player.queuedShuffleMode.collectAsStateWithLifecycle()
+    val selectedShuffle = queuedShuffle ?: shuffleSnapshot.shuffleMode
     val resources = LocalResources.current
     val listState = rememberLazyListState()
     var confirmRemove by rememberSaveable { mutableStateOf(false) }
@@ -134,6 +142,8 @@ internal fun LikedSongsContent(contentPadding: PaddingValues, modifier: Modifier
                             if (state.isDownloaded) confirmRemove = true else viewModel.setDownloaded(true, likedName)
                         },
                         onShuffle = viewModel::shuffle,
+                        shuffle = selectedShuffle != ShuffleMode.OFF,
+                        smart = selectedShuffle == ShuffleMode.SMART,
                         onPlay = viewModel::playOrToggle,
                     )
                 }
@@ -334,6 +344,8 @@ private fun LikedActions(
     state: LikedSongsUiState,
     onToggleDownload: () -> Unit,
     onShuffle: () -> Unit,
+    shuffle: Boolean,
+    smart: Boolean,
     onPlay: () -> Unit,
 ) {
     Row(
@@ -362,9 +374,7 @@ private fun LikedActions(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        IconButton(onClick = onShuffle) {
-            Icon(Icons.Rounded.Shuffle, contentDescription = stringResource(R.string.browse_shuffle_play))
-        }
+        ShuffleButton(shuffle = shuffle, smart = smart, onClick = onShuffle)
         Spacer(Modifier.size(8.dp))
         PlayFab(
             isPlaying = state.listIsCurrent && state.nowPlaying.isPlaying,

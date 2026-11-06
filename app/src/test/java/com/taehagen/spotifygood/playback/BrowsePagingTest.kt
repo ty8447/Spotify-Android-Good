@@ -1,6 +1,7 @@
 package com.taehagen.spotifygood.playback
 
 import com.taehagen.spotifygood.playback.BrowsePaging.Request
+import com.taehagen.spotifygood.data.LibraryPin
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -84,5 +85,35 @@ class BrowsePagingTest {
         assertEquals(BrowsePaging.Fetched(emptyList<Int>(), 800), BrowsePaging.fetchWindow(900, 200, 500, fetch))
         // More than one call's limit.
         assertEquals((0 until 700).toList(), BrowsePaging.fetchWindow(0, 700, 500, fetch).items)
+    }
+
+    @Test
+    fun androidAutoShowsOneLikedSongsInItsPinnedPosition() {
+        val pins = listOf(
+            LibraryPin("PLAYLIST", "spotify:playlist:first", "First"),
+            LibraryPin("LIKED_SONGS", "spotify:user:alice:collection", "Liked Songs"),
+            LibraryPin("PLAYLIST", "spotify:playlist:second", "Second"),
+            LibraryPin("LIKED_SONGS", "spotify:collection:tracks", "Liked Songs"),
+        )
+        val result = LibraryTree.carLibraryPinOrder(pins)
+        assertEquals(listOf(pins[0], pins[1], pins[2]), result)
+    }
+
+    @Test
+    fun androidAutoAddsTheBuiltInLikedSongsOnlyWhenNotPinned() {
+        val pins = listOf(LibraryPin("PLAYLIST", "spotify:playlist:first", "First"))
+        assertEquals(listOf(pins[0], null), LibraryTree.carLibraryPinOrder(pins))
+        assertEquals(listOf(null), LibraryTree.carLibraryPinOrder(emptyList()))
+    }
+
+    @Test
+    fun androidAutoRecognizesUriOnlyPinMetadataAndLikedAliases() {
+        val unresolved = LibraryPin("PLAYLIST", "spotify:playlist:123", "spotify:playlist:123")
+        assertEquals(true, LibraryTree.pinNeedsTitle(unresolved))
+        assertEquals(false, LibraryTree.pinNeedsTitle(unresolved.copy(name = "Road Trip")))
+        assertEquals(false, LibraryTree.carHasTitle("spotify:playlist:123", "spotify:playlist:123"))
+        for (uri in listOf("spotify:user:alice:collection", "spotify:collection:tracks", "spotify:collection", LibraryTree.LIKED)) {
+            assertEquals(true, LibraryTree.isLikedSongsMediaId(uri))
+        }
     }
 }

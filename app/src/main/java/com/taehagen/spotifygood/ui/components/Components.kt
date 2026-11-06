@@ -51,6 +51,7 @@ import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Podcasts
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -602,6 +603,7 @@ fun MediaRow(
     subtitle: String? = ref.subtitle,
     onMoreClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
+    pinned: Boolean = false,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val moreLabel = stringResource(R.string.shell_cd_more_options_for, ref.name)
@@ -627,14 +629,19 @@ fun MediaRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (!subtitle.isNullOrBlank()) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            if (pinned || !subtitle.isNullOrBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (pinned) {
+                        Icon(Icons.Rounded.PushPin, contentDescription = "Pinned",
+                            tint = Color(0xFF1ED760), modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    if (!subtitle.isNullOrBlank()) {
+                        Text(subtitle, style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
         }
         trailing?.invoke()
@@ -653,6 +660,7 @@ fun MediaCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     size: Dp = 150.dp,
+    pinned: Boolean = false,
     onLongClick: (() -> Unit)? = null,
 ) {
     val isArtist = ref.type == MediaType.ARTIST
@@ -684,15 +692,22 @@ fun MediaCard(
             overflow = TextOverflow.Ellipsis,
             textAlign = if (isArtist) TextAlign.Center else TextAlign.Start,
         )
-        if (!ref.subtitle.isNullOrBlank()) {
-            Text(
-                text = ref.subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = if (isArtist) TextAlign.Center else TextAlign.Start,
-            )
+        if (pinned || !ref.subtitle.isNullOrBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (pinned) {
+                    Icon(Icons.Rounded.PushPin, contentDescription = "Pinned",
+                        tint = Color(0xFF1ED760), modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                }
+                if (!ref.subtitle.isNullOrBlank()) Text(
+                    text = ref.subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = if (isArtist) TextAlign.Center else TextAlign.Start,
+                )
+            }
         }
     }
 }

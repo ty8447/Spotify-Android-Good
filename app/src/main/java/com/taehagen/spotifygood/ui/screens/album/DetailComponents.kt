@@ -351,43 +351,55 @@ internal fun MoreButton(onClick: () -> Unit, modifier: Modifier = Modifier, labe
     }
 }
 
+/** One three-state mode control, shared with the Now Playing shuffle cycle. */
 @Composable
-internal fun ShuffleButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val state = stringResource(if (active) R.string.detail_state_on else R.string.detail_state_off)
-    IconButton(onClick = onClick, modifier = modifier.semantics { stateDescription = state }) {
-        Icon(
-            Icons.Rounded.Shuffle,
-            contentDescription = stringResource(R.string.detail_shuffle),
-            tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(28.dp),
-        )
-    }
-}
-
-@Composable
-internal fun SmartShuffleButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val state = stringResource(if (active) R.string.detail_state_on else R.string.detail_state_off)
+internal fun ShuffleButton(
+    shuffle: Boolean,
+    smart: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val state = stringResource(
+        when {
+            smart -> R.string.player_shuffle_state_smart
+            shuffle -> R.string.player_shuffle_state_on
+            else -> R.string.player_shuffle_state_off
+        },
+    )
+    val active = shuffle || smart
     val tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     IconButton(onClick = onClick, modifier = modifier.semantics { stateDescription = state }) {
         Box(Modifier.size(28.dp)) {
             Icon(
                 Icons.Rounded.Shuffle,
-                contentDescription = stringResource(R.string.detail_smart_shuffle),
+                contentDescription = stringResource(R.string.detail_shuffle),
                 tint = tint,
-                modifier = Modifier
-                    .size(24.dp)
-                    .align(Alignment.BottomStart),
+                modifier = Modifier.size(28.dp),
             )
-            Icon(
-                Icons.Rounded.AutoAwesome,
-                contentDescription = null,
-                tint = tint,
-                modifier = Modifier
-                    .size(12.dp)
-                    .align(Alignment.TopEnd),
-            )
+            if (smart) {
+                Icon(
+                    Icons.Rounded.AutoAwesome,
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(12.dp).align(Alignment.TopEnd),
+                )
+            }
         }
     }
+}
+
+/**
+ * Compatibility for artist-detail actions still using the older `active` argument.
+ * Album and playlist pages use the three-state overload above.
+ * Keep this until ArtistScreen is migrated to the shared shuffle state.
+ */
+@Composable
+internal fun ShuffleButton(
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ShuffleButton(shuffle = active, smart = false, onClick = onClick, modifier = modifier)
 }
 
 /** Follow toggle; disabled while [following] is unknown (null). */

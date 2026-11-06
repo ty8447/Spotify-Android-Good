@@ -1,5 +1,7 @@
 package com.taehagen.spotifygood.playback
 
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
+
 import android.content.Context
 import android.content.Intent
 import android.media.AudioDeviceInfo
@@ -78,13 +80,20 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
     // Keep this independent of the focus callback so calls of any duration are supported.
     private var callModeActive = false
     private var resumeAfterCall = false
-    private val resumeCall = Runnable {
+    private val resumeCall: Runnable = Runnable {
         if (!callModeActive && resumeAfterCall &&
             audioManager.mode == AudioManager.MODE_NORMAL &&
             graph.playback.snapshot.value.source == PlaybackSource.LOCAL
         ) {
+            if (!focus.hasFocus) {
+                // A phone call can end before Android sends GAIN. Do not restart audio into a
+                // live focus owner; the focus callback will finish recovery when it arrives.
+                DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "call_resume_waiting_for_focus")
+                return@Runnable
+            }
             resumeAfterCall = false
             Log.i(TAG, "Call finished: restoring interrupted local playback")
+            DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "call_end_resume")
             graph.player.resume(user = false)
         }
     }
@@ -100,10 +109,12 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
         if (inCall) {
             if (!callModeActive) {
                 val snapshot = graph.playback.snapshot.value
-                resumeAfterCall = snapshot.source == PlaybackSource.LOCAL &&
+                resumeAfterCall = (snapshot.source == PlaybackSource.LOCAL &&
                     snapshot.track != null &&
-                    (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.LOADING)
+                    (snapshot.status == PlaybackStatus.PLAYING || snapshot.status == PlaybackStatus.LOADING)) ||
+                    focus.isWaitingForGain
                 Log.i(TAG, "Call mode entered: resumeAfterCall=$resumeAfterCall")
+                DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "call_mode_entered", "resume=$resumeAfterCall")
                 if (resumeAfterCall) graph.player.pause(user = false)
             }
             callModeActive = true
@@ -133,20 +144,41 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
     private val focus = AudioFocusController(
         app,
         object : AudioFocusController.Callbacks {
-            override fun pauseForFocus() = graph.player.pause(user = false)
+            override fun pauseForFocus() {
+                // A delayed/failed focus request during a cold start must not enqueue player.pause
+                // when nothing is playing. Otherwise the pause races the engine's CONNECTING state.
+                if (!isPlayingLocally()) {
+                    DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "focus_pause_skipped_idle")
+                    return
+                }
+                DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "focus_pause")
+                graph.player.pause(user = false)
+            }
             override fun resumeAfterFocus() {
                 if (!callModeActive && audioManager.mode == AudioManager.MODE_NORMAL) {
+                    resumeAfterCall = false
+                    main.removeCallbacks(resumeCall)
+                    DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "focus_resume")
                     graph.player.resume(user = false)
+                } else if (callModeActive) {
+                    // GAIN can arrive while Android is still reporting the call route. Keep
+                    // the resume intent until MODE_NORMAL and the route settle delay.
+                    resumeAfterCall = true
+                    DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "focus_gain_deferred_call")
                 }
             }
-            override fun setDuck(ducked: Boolean) =
-                graph.audioSink.setDuckVolume(if (ducked) AudioFocusController.DUCK_VOLUME else 1f)
+            override fun setDuck(ducked: Boolean) {
+                val gain = if (ducked) AudioFocusController.DUCK_VOLUME else 1f
+                graph.audioSink.setDuckVolume(gain)
+                DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "duck_gain_changed", "gain=$gain")
+            }
             override fun isSpeech(): Boolean = graph.playback.snapshot.value.track?.isEpisode == true
             override fun isPlayingLocally(): Boolean = sinkActive || graph.playback.snapshot.value.isLocallyActive()
         },
     )
     private val noisy = BecomingNoisyReceiver(app) {
         // The output went away: pause, and a pending focus resume must not undo it later.
+        DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "audio", "noisy_output_lost")
         focus.cancelPendingResume()
         resumeAfterCall = false
         main.removeCallbacks(resumeCall)
@@ -373,6 +405,7 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
     fun refuseBackgroundPlayback() {
         if (refusedThisActivation) return
         refusedThisActivation = true
+        DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "audio", "background_start_refused")
         graph.player.pause(user = false, deliberate = true)
         ResumeAlert.post(app, graph.playback.snapshot.value.track?.name)
     }
@@ -398,7 +431,9 @@ class PlaybackCoordinator private constructor(private val app: App) : AudioSinkB
             audioManager.mode == AudioManager.MODE_IN_CALL
         ) {
             if (!callModeActive) onAudioModeChanged(audioManager.mode)
-            if (!resumeAfterCall) graph.player.pause(user = false)
+            // Even if we intend to resume after the call, audio starting during it must be
+            // paused now. The resume intent is tracked separately from the sink state.
+            graph.player.pause(user = false)
             return
         }
         main.removeCallbacks(abandonFocus)

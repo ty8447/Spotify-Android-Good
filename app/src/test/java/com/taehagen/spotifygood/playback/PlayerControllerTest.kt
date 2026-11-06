@@ -109,6 +109,30 @@ class PlayerControllerTest {
     }
 
     @Test
+    fun choosingShuffleBeforePlaybackDoesNotStartMusicButAppliesToPlay() = runTest {
+        val h = Harness(this, Env(EngineReach.ONLINE))
+        assertTrue(h.controller.cycleShuffleAsync(allowSmartWithoutContext = true).await())
+        assertEquals(ShuffleMode.SHUFFLE, h.controller.queuedShuffleMode.value)
+        assertTrue(h.calls.isEmpty())
+        assertTrue(h.controller.cycleShuffleAsync(allowSmartWithoutContext = true).await())
+        assertEquals(ShuffleMode.SMART, h.controller.queuedShuffleMode.value)
+        assertTrue(h.controller.playAsync(PlayRequest(contextUri = playlist)).await())
+        assertEquals(listOf("player.load"), h.methods())
+        assertEquals("true", h.calls.single().second["shuffle"]?.jsonPrimitive?.content)
+        assertEquals("true", h.calls.single().second["smartShuffle"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun albumShuffleBeforePlaybackSkipsUnsupportedSmartMode() = runTest {
+        val h = Harness(this, Env(EngineReach.ONLINE))
+        assertTrue(h.controller.cycleShuffleAsync(allowSmartWithoutContext = false).await())
+        assertEquals(ShuffleMode.SHUFFLE, h.controller.queuedShuffleMode.value)
+        assertTrue(h.controller.cycleShuffleAsync(allowSmartWithoutContext = false).await())
+        assertEquals(ShuffleMode.OFF, h.controller.queuedShuffleMode.value)
+        assertTrue(h.calls.isEmpty())
+    }
+
+    @Test
     fun onlineLoadsAreSentUnchanged() = runTest {
         val h = Harness(this, Env(EngineReach.ONLINE, OfflineMembers(listOf(t(1)), setOf(t(1)))))
         assertTrue(h.controller.playAsync(PlayRequest(contextUri = playlist)).await())

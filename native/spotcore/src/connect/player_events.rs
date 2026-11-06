@@ -216,8 +216,24 @@ pub(crate) fn on_player_event(event: PlayerEvent) {
                 hub::publish();
             }
         }
-        PlayerEvent::Paused { .. } | PlayerEvent::Stopped { .. } => STATE.lock().loading = None,
+        PlayerEvent::Paused { .. } => STATE.lock().loading = None,
+        PlayerEvent::Stopped { .. } => {
+            let offline_queue = offline::is_active();
+            events::emit(events::PLAYBACK_SIGNAL, &serde_json::json!({
+                "kind": "playerStopped", "offlineQueue": offline_queue,
+                "network": engine::network_available()
+            }));
+            STATE.lock().loading = None;
+        }
         PlayerEvent::Unavailable { reason, track_id, play_request_id } => {
+            let offline_queue = offline::is_active();
+            let current_load = STATE.lock().loading.as_ref()
+                .is_some_and(|(id, uri)| id == play_request_id && uri == track_id);
+            events::emit(events::PLAYBACK_SIGNAL, &serde_json::json!({
+                "kind": "unavailable", "reason": format!("{reason:?}"),
+                "offlineQueue": offline_queue, "currentLoad": current_load,
+                "network": engine::network_available()
+            }));
             log::info!("unavailable: {} ({reason:?})", track_id.to_uri().unwrap_or_default());
             // The offline queue skips what it can't play itself (a queued track that isn't
             // downloaded) and reports its own end: not Spirc's skip chain, no brake.

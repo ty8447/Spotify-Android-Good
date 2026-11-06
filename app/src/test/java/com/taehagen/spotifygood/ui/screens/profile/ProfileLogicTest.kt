@@ -15,6 +15,15 @@ import org.junit.Test
 
 class ProfileLogicTest {
     @Test
+    fun followVisibilityNeverInventsPermissionWhenCountsAndFlagMissing() {
+        assertFalse(profileHasVisibleFollows(User(username = "hidden", showFollows = false,
+            followersCount = 10, followingCount = 5)))
+        assertFalse(profileHasVisibleFollows(User(username = "unconfirmed")))
+        assertTrue(profileHasVisibleFollows(User(username = "visible", showFollows = true)))
+        assertFalse(profileHasVisibleFollows(User(username = "counted", followersCount = 0)))
+    }
+
+    @Test
     fun ownedPlaylistsComeFromTheWholeRootlist() {
         val rootlist = Rootlist(
             listOf(

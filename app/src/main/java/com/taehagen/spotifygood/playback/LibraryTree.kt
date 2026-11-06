@@ -15,6 +15,12 @@ import androidx.media3.session.MediaLibraryService.LibraryParams
 import com.taehagen.spotifygood.AppGraph
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.data.RecentSearch
+import com.taehagen.spotifygood.data.LibraryPins
+import com.taehagen.spotifygood.data.LibraryPin
+import com.taehagen.spotifygood.data.isLikedSongsPin
+import com.taehagen.spotifygood.ui.screens.library.LibraryItem
+import com.taehagen.spotifygood.ui.screens.library.LibraryItemKind
+import com.taehagen.spotifygood.ui.screens.library.toLibraryItems
 import com.taehagen.spotifygood.data.Resource
 import com.taehagen.spotifygood.data.dataOrNull
 import com.taehagen.spotifygood.data.needsMosaic
@@ -29,11 +35,15 @@ import com.taehagen.spotifygood.model.Image
 import com.taehagen.spotifygood.model.MediaRef
 import com.taehagen.spotifygood.model.MediaType
 import com.taehagen.spotifygood.model.PlaylistRef
+import com.taehagen.spotifygood.model.RootlistEntry
 import com.taehagen.spotifygood.model.SearchResults
 import com.taehagen.spotifygood.model.ShowRef
 import com.taehagen.spotifygood.model.Track
 import com.taehagen.spotifygood.model.best
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.onEach
@@ -168,8 +178,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             ROOT_OFFLINE -> listOf(folder(DOWNLOADS, R.string.playback_tab_downloads, R.drawable.pb_ic_auto_downloads))
             ROOT_RECENT -> recentItem()?.let(::listOf).orEmpty()
             HOME -> home()
-            LIBRARY -> listOf(
-                likedFolder(),
+            LIBRARY -> pinnedItems() + listOf(
                 // "Add to playlist" at the top of the Library tab adds the currently playing track.
                 folder(ADD_TO_PLAYLIST, R.string.playback_add_to_playlist, R.drawable.pb_ic_auto_add, listStyle = true),
                 folder(PLAYLISTS, R.string.playback_playlists, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS),
@@ -179,13 +188,139 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             )
             BROWSE -> browse()
             ADD_TO_PLAYLIST -> addToPlaylistTargets()
-            else -> artistChildren(parentId)
+            else -> if (parentId.startsWith(PIN_FOLDER_PREFIX)) pinnedFolderChildren(parentId) else artistChildren(parentId)
         }?.take(MAX_ITEMS)
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         Log.w(TAG, "children($parentId) failed", e)
         null
+    }
+
+    /**
+     * Android Auto has its own browse tree. Include the built-in Liked Songs only once, at its
+     * pinned position if pinned; use the account cache without modifying its order or writes.
+     * Account pins store only URIs, so resolve missing titles for the car browser before rendering.
+     */
+    private suspend fun pinnedItems(): List<MediaItem> {
+        val pins = LibraryPins(context).read(graph.engine.user.value?.username)
+        val slots = carLibraryPinOrder(pins)
+        val needsPlaylistNames = slots.any { pin -> pin != null && pin.kind == "PLAYLIST" && pinNeedsTitle(pin) }
+        val rootPlaylists: Map<String, RootlistEntry> = if (needsPlaylistNames) {
+            try {
+                graph.library.playlists().cachedOrSettled()?.flatPlaylists().orEmpty()
+                    .mapNotNull { entry -> entry.uri?.let { it to entry } }.toMap()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Pinned playlist rootlist unavailable", e)
+                emptyMap()
+            }
+        } else emptyMap()
+        // Independent catalog lookups run concurrently, so several uncached pins cannot stall
+        // the Android Auto browse response one network timeout apiece.
+        return coroutineScope {
+            slots.map { slot -> async {
+                when {
+                    slot == null || slot.isLikedSongsPin() -> likedFolder()
+                    else -> pinnedMediaItem(resolvePinForCar(slot, rootPlaylists))
+                }
+            } }.awaitAll().filterNotNull()
+        }
+    }
+
+    private suspend fun resolvePinForCar(pin: LibraryPin, root: Map<String, RootlistEntry>): LibraryPin {
+        if (!pinNeedsTitle(pin)) return pin
+        try {
+            when (pin.kind) {
+                "PLAYLIST" -> {
+                    val entry = root[pin.id]
+                    if (entry != null && carHasTitle(entry.name, pin.id)) {
+                        return pin.copy(
+                            name = entry.name,
+                            creator = entry.owner?.displayName ?: entry.owner?.username ?: pin.creator,
+                            images = entry.images.ifEmpty { pin.images },
+                        )
+                    }
+                    graph.catalog.playlist(pin.id, 1).cachedOrSettled()?.let { playlist ->
+                        if (carHasTitle(playlist.name, pin.id)) return pin.copy(
+                            name = playlist.name,
+                            creator = playlist.owner?.displayName ?: playlist.owner?.username ?: pin.creator,
+                            images = playlist.images.ifEmpty { pin.images },
+                        )
+                    }
+                }
+                "ALBUM" -> graph.catalog.album(pin.id).cachedOrSettled()?.let { album ->
+                    if (carHasTitle(album.name, pin.id)) return pin.copy(
+                        name = album.name,
+                        creator = album.artists.joinToString { it.name }.ifEmpty { pin.creator },
+                        images = album.images.ifEmpty { pin.images },
+                    )
+                }
+                "ARTIST" -> graph.catalog.artist(pin.id).cachedOrSettled()?.let { artist ->
+                    if (carHasTitle(artist.name, pin.id)) return pin.copy(
+                        name = artist.name, images = artist.images.ifEmpty { pin.images })
+                }
+                "SHOW" -> graph.catalog.show(pin.id).cachedOrSettled()?.let { show ->
+                    if (carHasTitle(show.name, pin.id)) return pin.copy(
+                        name = show.name, creator = show.publisher ?: pin.creator,
+                        images = show.images.ifEmpty { pin.images })
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Pinned item metadata unavailable (${pin.kind})", e)
+        }
+        // Don't expose a raw spotify:playlist:... URI to the driver when offline/unavailable.
+        return pin.copy(name = when (pin.kind) {
+            "PLAYLIST" -> context.getString(R.string.playback_playlists)
+            "ALBUM" -> context.getString(R.string.playback_albums)
+            "ARTIST" -> context.getString(R.string.playback_artists)
+            "SHOW" -> context.getString(R.string.playback_podcasts)
+            else -> "Pinned item"
+        })
+    }
+
+    private fun pinnedMediaItem(pin: LibraryPin): MediaItem? {
+        if (pin.kind != "FOLDER") return pin.ref()?.let { mediaRefItem(it, "Pinned") }
+        return MediaItem.Builder().setMediaId(PIN_FOLDER_PREFIX + pin.id).setMediaMetadata(
+            MediaMetadata.Builder().setTitle(pin.name).setIsBrowsable(true)
+                .setIsPlayable(false).setMediaType(MediaMetadata.MEDIA_TYPE_FOLDER_PLAYLISTS).build()
+        ).build()
+    }
+
+    /** Pinned nested folders remain browsable even though they aren't Spotify play contexts. */
+    private suspend fun pinnedFolderChildren(parentId: String): List<MediaItem> {
+        val targetId = parentId.removePrefix(PIN_FOLDER_PREFIX)
+        val root = graph.library.playlists().settle()?.toLibraryItems().orEmpty()
+        fun find(items: List<LibraryItem>): LibraryItem? {
+            for (item in items) {
+                if (item.kind != LibraryItemKind.FOLDER) continue
+                if (item.id == targetId) return item
+                find(item.children)?.let { return it }
+            }
+            return null
+        }
+        return find(root)?.children.orEmpty().mapNotNull { item ->
+            pinnedMediaItem(LibraryPin(item.kind.name, item.id, item.name, item.creator))
+        }
+    }
+
+    /** Resolve a nested virtual folder by its saved rootlist id. */
+    private suspend fun pinnedFolderItem(mediaId: String): MediaItem? {
+        val id = mediaId.removePrefix(PIN_FOLDER_PREFIX)
+        val root = graph.library.playlists().settle()?.toLibraryItems().orEmpty()
+        fun find(items: List<LibraryItem>): LibraryItem? {
+            for (item in items) {
+                if (item.kind != LibraryItemKind.FOLDER) continue
+                if (item.id == id) return item
+                find(item.children)?.let { return it }
+            }
+            return null
+        }
+        val folder = find(root) ?: return null
+        return pinnedMediaItem(LibraryPin("FOLDER", folder.id, folder.name))
     }
 
     private suspend fun home(): List<MediaItem> {
@@ -196,7 +331,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         val sections = graph.home.home().settle()?.sections.orEmpty()
             .take(HOME_SECTIONS)
             .flatMap { section -> section.items.take(HOME_SECTION_ITEMS).mapNotNull { mediaRefItem(it, section.title) } }
-        return (recent + sections).distinctBy { it.mediaId }
+        return (recent + sections).distinctBy { if (isLikedSongsMediaId(it.mediaId)) LIKED else it.mediaId }
     }
 
     private suspend fun browse(): List<MediaItem> {
@@ -309,7 +444,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
      */
     suspend fun browsesDownloads(parentId: String): Boolean {
         val listId = BrowsePaging.listIdOf(parentId)
-        return isOffline() && OfflineTree.mayBeCollection(listId) && OfflineTree.collectionOf(listId, downloadedCollections()) != null
+        return OfflineTree.mayBeCollection(listId) && OfflineTree.collectionOf(listId, downloadedCollections()) != null
     }
 
     /**
@@ -322,27 +457,9 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         if (listId == DOWNLOADS) return downloadsTab()
         if (!OfflineTree.mayBeCollection(listId)) return null
         val collection = OfflineTree.collectionOf(listId, downloadedCollections()) ?: return null
-        val downloads = collectionSource(collection)
-        if (isOffline()) return downloads
-        val catalog = try {
-            catalogSource(listId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Catalog copy of $listId failed", e)
-            null
-        } ?: return downloads
-        return Source { from, count ->
-            val rows = try {
-                catalog.load(from, count)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Catalog rows of $listId failed, listing the downloads", e)
-                null
-            }
-            rows?.takeIf { it.total > 0 } ?: downloads.load(from, count)
-        }
+        // The download-backed context is always local-first. A network that reports
+        // connected but cannot transfer data must not block Android Auto's Downloads tree.
+        return collectionSource(collection)
     }
 
     /** The Downloads tab, grouped as the app's Downloads screen ([OfflineTree.tab]). */
@@ -499,7 +616,12 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             ALBUMS -> folder(ALBUMS, R.string.playback_albums, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_ALBUMS)
             ARTISTS -> folder(ARTISTS, R.string.playback_artists, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_ARTISTS)
             PODCASTS -> folder(PODCASTS, R.string.playback_podcasts, mediaType = MediaMetadata.MEDIA_TYPE_FOLDER_PODCASTS)
-            else -> BrowsePaging.parseMore(mediaId)?.let { moreItem(it.parentId, it.offset) } ?: lookup(mediaId)
+            else -> if (mediaId.startsWith(PIN_FOLDER_PREFIX)) {
+                LibraryPins(context).read(graph.engine.user.value?.username)
+                    .firstOrNull { it.kind == "FOLDER" && PIN_FOLDER_PREFIX + it.id == mediaId }
+                    ?.let(::pinnedMediaItem)
+                    ?: pinnedFolderItem(mediaId)
+            } else BrowsePaging.parseMore(mediaId)?.let { moreItem(it.parentId, it.offset) } ?: lookup(mediaId)
         }
     } catch (e: CancellationException) {
         throw e
@@ -517,6 +639,13 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             is MediaIds.Parsed.Plain -> parsed.uri
             MediaIds.Parsed.Invalid -> return null
         }
+        // Android Auto requests the selected row again through onGetItem. Serve stored
+        // download metadata without making a Spotify catalog request.
+        if (parsed is MediaIds.Parsed.Downloaded || (parsed is MediaIds.Parsed.InContext && browsesDownloads(contextUri ?: ""))) {
+            val stored = storedDownloads(listOf(uri))[uri]
+            if (stored != null) return downloadedItem(stored, contextUri, group = null,
+                filter = explicitFilter())?.withId(mediaId)
+        }
         return when {
             uri.startsWith("spotify:track:") ->
                 graph.catalog.tracks(listOf(uri)).firstOrNull()?.let { trackItem(it, contextUri) }?.withId(mediaId)
@@ -528,7 +657,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
             }
             uri.startsWith("spotify:artist:") -> graph.catalog.artist(uri).settle()?.let { a -> artistItem(ArtistRef(a.uri, a.name, a.images)) }
             uri.startsWith("spotify:show:") -> graph.catalog.show(uri).settle()?.let { showItem(it.toRef()) }
-            uri.endsWith(":collection") -> likedFolder()
+            isLikedSongsMediaId(uri) -> likedFolder()
             else -> null
         }
     }
@@ -619,7 +748,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         if (local != null && local.strength >= VoiceMatch.Strength.LOOSE) local.candidate.value()?.let { return listOf(it) }
         if (!offline) {
             val found = try {
-                catalogVoiceQuery(request.text, request.focus)
+                catalogVoiceQuery(request.text, request.catalogFocus)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -873,7 +1002,8 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         MediaType.PLAYLIST -> contextItem(ref.uri, ref.name, ref.subtitle, ref.images, MediaMetadata.MEDIA_TYPE_PLAYLIST, group)
         MediaType.ARTIST -> contextItem(ref.uri, ref.name, ref.subtitle, ref.images, MediaMetadata.MEDIA_TYPE_ARTIST, group)
         MediaType.SHOW -> contextItem(ref.uri, ref.name, ref.subtitle, ref.images, MediaMetadata.MEDIA_TYPE_PODCAST, group)
-        MediaType.COLLECTION -> contextItem(ref.uri, ref.name, ref.subtitle, ref.images, MediaMetadata.MEDIA_TYPE_PLAYLIST, group)
+        MediaType.COLLECTION -> if (isLikedSongsMediaId(ref.uri)) likedFolder() else
+            contextItem(ref.uri, ref.name, ref.subtitle, ref.images, MediaMetadata.MEDIA_TYPE_PLAYLIST, group)
     }
 
     private fun albumItem(album: AlbumRef, group: String? = null) = contextItem(
@@ -1066,6 +1196,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         const val ROOT_RECENT = "root:recent"
         const val HOME = "tab:home"
         const val LIBRARY = "tab:library"
+        private const val PIN_FOLDER_PREFIX = "pin:folder:"
         const val DOWNLOADS = "tab:downloads"
         const val BROWSE = "tab:browse"
         const val LIKED = "library:liked"
@@ -1084,6 +1215,27 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
          * cached it.
          */
         fun likedMediaId(likedContextUri: String?): String = likedContextUri ?: LIKED
+
+        /** URI aliases for the one Liked Songs collection. Also used by Home deduplication. */
+        internal fun isLikedSongsMediaId(id: String): Boolean = id == LIKED ||
+            id.endsWith(":collection") || id == "spotify:collection:tracks" || id == "spotify:collection"
+
+        /** Null represents the unpinned built-in Liked Songs row, always visible exactly once. */
+        internal fun carLibraryPinOrder(pins: List<LibraryPin>): List<LibraryPin?> {
+            val seen = HashSet<String>()
+            val ordered = pins.mapNotNull { pin ->
+                val identity = if (pin.isLikedSongsPin()) LIKED else pin.id
+                if (seen.add(identity)) pin else null
+            }
+            return if (LIKED in seen) ordered else ordered + listOf(null)
+        }
+
+        /** A synchronized pin may have only its URI until the catalog/rootlist resolves it. */
+        internal fun pinNeedsTitle(pin: LibraryPin): Boolean =
+            !carHasTitle(pin.name, pin.id)
+
+        internal fun carHasTitle(name: String?, uri: String): Boolean =
+            !name.isNullOrBlank() && name != uri && !name.startsWith("spotify:")
 
         /** A catalog item whose metadata failed to load is a uri-only placeholder without a name. */
         fun isPlaceholder(name: String?): Boolean = name.isNullOrBlank()

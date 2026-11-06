@@ -137,8 +137,15 @@ internal class PlayerViewModel(graph: AppGraph) : ViewModel(), PlayerCommands {
     private var resumeJob: Job? = null
 
     /** What the player surfaces show: the engine's snapshot, or the last-session placeholder. */
-    val snapshot: StateFlow<PlaybackSnapshot> = combine(playback.snapshot, resumePlaceholder, resuming, ::displaySnapshot)
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), playback.snapshot.value)
+    val snapshot: StateFlow<PlaybackSnapshot> = combine(
+        playback.snapshot, resumePlaceholder, resuming, player.queuedShuffleMode,
+    ) { real, placeholder, resuming, queued ->
+        val shown = displaySnapshot(real, placeholder, resuming)
+        if (real.track == null && queued != null) shown.copy(
+            shuffle = queued != com.taehagen.spotifygood.playback.ShuffleMode.OFF,
+            smartShuffle = queued == com.taehagen.spotifygood.playback.ShuffleMode.SMART,
+        ) else shown
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), playback.snapshot.value)
 
     /** True while the mini player has something to show (a loaded item or the placeholder). */
     val hasContent: StateFlow<Boolean> = snapshot

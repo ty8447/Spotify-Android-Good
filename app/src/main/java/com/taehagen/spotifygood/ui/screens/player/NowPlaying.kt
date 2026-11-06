@@ -105,6 +105,7 @@ import com.taehagen.spotifygood.model.TrackProvider
 import com.taehagen.spotifygood.model.best
 import com.taehagen.spotifygood.playback.PodcastSpeeds
 import com.taehagen.spotifygood.playback.SleepTimerState
+import com.taehagen.spotifygood.playback.shuffleMode
 import com.taehagen.spotifygood.ui.screens.menu.JamGlobalState
 import com.taehagen.spotifygood.ui.screens.menu.JamAvatar
 import com.taehagen.spotifygood.ui.components.rememberAppGraph
@@ -126,7 +127,6 @@ internal fun NowPlayingContent(onCollapse: () -> Unit, modifier: Modifier = Modi
     // The downloaded cover while offline, so there is artwork without a network.
     val artwork by viewModel.artwork.collectAsStateWithLifecycle()
     val remoteVolumeSupported by viewModel.remoteVolumeSupported.collectAsStateWithLifecycle()
-    val lyricsPreview by viewModel.lyricsPreview.collectAsStateWithLifecycle()
     // Ungated by the preview setting: decides whether the lyrics button can open anything.
     val lyricsState by viewModel.lyrics.collectAsStateWithLifecycle()
     val sleepTimer by viewModel.sleepTimerState.collectAsStateWithLifecycle()
@@ -162,7 +162,7 @@ internal fun NowPlayingContent(onCollapse: () -> Unit, modifier: Modifier = Modi
                     liked = liked,
                     indicator = indicator,
                     remoteVolumeSupported = remoteVolumeSupported,
-                    lyrics = (lyricsPreview as? LyricsState.Loaded)?.lyrics,
+                    lyrics = (lyricsState as? LyricsState.Loaded)?.takeIf { it.trackUri == track.uri }?.lyrics,
                     lyricsUnavailable = lyricsState == LyricsState.Unavailable,
                     lyricsFallbackColor = artworkColor,
                     sleepTimer = sleepTimer,
@@ -352,11 +352,22 @@ internal fun NowPlayingBody(
         }
     }
 
+    val infoCards: @Composable (besideArtwork: Boolean) -> Unit = { besideArtwork ->
+        SongInformationCards(
+            track = track,
+            onOpenUri = openAndCollapse,
+            modifier = Modifier
+                .padding(bottom = 24.dp)
+                .playerDetailsMotion(sheet, besideArtwork),
+        )
+    }
+
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
+        if (cinematic == null) AmbientAlbumBackdrop(lyricsFallbackColor.value, Modifier.fillMaxSize())
         CinematicAtmosphere(cinematic)
         val wide = maxWidth > maxHeight && maxWidth >= 600.dp
         // Too short to give the artwork a useful share of one screen (split screen, huge fonts:
@@ -389,6 +400,7 @@ internal fun NowPlayingBody(
                     ) {
                         details(true)
                         lyricsCard(true)
+                        infoCards(true)
                     }
                 }
             }
@@ -408,6 +420,7 @@ internal fun NowPlayingBody(
                 )
                 details(false)
                 lyricsCard(false)
+                infoCards(false)
             }
             else -> {
                 // The first screen holds artwork + controls; the lyrics card follows when scrolling.
@@ -433,6 +446,7 @@ internal fun NowPlayingBody(
                         Spacer(Modifier.height(8.dp))
                     }
                     lyricsCard(false)
+                    infoCards(false)
                 }
             }
         }
@@ -864,6 +878,9 @@ private fun TransportControls(
     onSeekBy: (deltaMs: Long) -> Unit,
 ) {
     val restrictions = snapshot.restrictions
+    val graph = rememberAppGraph()
+    val pendingShuffleMode by graph.player.queuedShuffleMode.collectAsStateWithLifecycle()
+    val displayedShuffleMode = pendingShuffleMode ?: snapshot.shuffleMode
     // Podcasts: skip back / forward 15 s next to play/pause instead of shuffle and repeat.
     val episode = snapshot.track?.isEpisode == true
     val skipSize = if (episode) 32.dp else 40.dp
@@ -874,8 +891,8 @@ private fun TransportControls(
     ) {
         if (!episode) {
             ShuffleButton(
-                shuffle = snapshot.shuffle,
-                smart = snapshot.smartShuffle,
+                shuffle = displayedShuffleMode != com.taehagen.spotifygood.playback.ShuffleMode.OFF,
+                smart = displayedShuffleMode == com.taehagen.spotifygood.playback.ShuffleMode.SMART,
                 enabled = restrictions.canToggleShuffle,
                 onClick = onShuffle,
             )

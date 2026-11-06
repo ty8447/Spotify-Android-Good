@@ -77,6 +77,10 @@ import com.taehagen.spotifygood.ui.components.MediaRow
 import com.taehagen.spotifygood.ui.components.OfflineBanner
 import com.taehagen.spotifygood.ui.components.SectionHeader
 import com.taehagen.spotifygood.ui.components.TrackRow
+import com.taehagen.spotifygood.ui.components.rememberAppGraph
+import com.taehagen.spotifygood.playback.ShuffleMode
+import com.taehagen.spotifygood.playback.shuffleMode
+import com.taehagen.spotifygood.ui.screens.album.ShuffleButton
 import com.taehagen.spotifygood.ui.navigation.AppNavigator
 import com.taehagen.spotifygood.ui.navigation.LocalAppNavigator
 import com.taehagen.spotifygood.ui.navigation.MediaActionTarget
@@ -104,6 +108,10 @@ internal fun DownloadsContent(contentPadding: PaddingValues, modifier: Modifier 
     val viewModel = appViewModel { graph -> DownloadsViewModel(graph) }
     val state by viewModel.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
+    val graph = rememberAppGraph()
+    val snapshot by graph.playback.snapshot.collectAsStateWithLifecycle()
+    val queuedMode by graph.player.queuedShuffleMode.collectAsStateWithLifecycle()
+    val selected = queuedMode ?: snapshot.shuffleMode
     val resources = LocalResources.current
     var menuOpen by remember { mutableStateOf(false) }
     var pendingRemoval by remember { mutableStateOf<PendingRemoval?>(null) }
@@ -118,6 +126,10 @@ internal fun DownloadsContent(contentPadding: PaddingValues, modifier: Modifier 
             title = stringResource(R.string.browse_library_downloads),
             onBack = navigator::back,
             actions = {
+                ShuffleButton(
+                    shuffle = selected != ShuffleMode.OFF, smart = selected == ShuffleMode.SMART,
+                    onClick = viewModel::cycleShuffle,
+                )
                 Box {
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.browse_more_options))

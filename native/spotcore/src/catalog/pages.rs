@@ -1,6 +1,7 @@
 //! `catalog.tracks`, `catalog.episodes`, `catalog.album`, `catalog.artist`, `catalog.show`.
 
 use super::metadata::{self, AlbumMeta, Fetched, ShowMeta};
+use super::http;
 use super::played;
 use super::util::{parse_kind, UriKind};
 use crate::engine;
@@ -11,6 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use librespot_protocol::{extension_kind::ExtensionKind, metadata as pm};
 
 /// Upper bound for a single `catalog.tracks` / `catalog.episodes` call.
 const MAX_URIS: usize = 1000;
@@ -41,6 +43,27 @@ struct PageArgs {
 
 fn default_show_limit() -> u32 {
     50
+}
+
+fn safe_preview_id(file_id: &[u8]) -> Option<String> {
+    if file_id.len() == 20 { Some(hex::encode(file_id)) } else { None }
+}
+
+/// Resolve a real Spotify preview file ID on demand. This NEVER starts normal
+/// playback or changes a Jam queue. Some tracks have no preview files; in
+/// that case the response explicitly contains null.
+pub(crate) async fn track_preview(args: Value) -> AppResult<Value> {
+    let a: UriArgs = parse_args(args)?;
+    let uri = parse_kind(&a.uri, UriKind::Track)
+        .ok_or_else(|| AppError::invalid("not a track uri"))?.uri();
+    let session = engine::session()?;
+    let reply = metadata::fetch_extended(&session, ExtensionKind::TRACK_V4, &[uri]).await?;
+    let preview_id = reply.found.values().find_map(|raw| {
+        let track = http::proto::<pm::Track>(raw).ok()?;
+        track.preview.iter().find_map(|file| safe_preview_id(file.file_id()))
+    });
+    Ok(json!({"previewUrl": preview_id.map(|id|
+        format!("https://p.scdn.co/mp3-preview/{id}")) }))
 }
 
 pub(crate) async fn tracks(args: Value) -> AppResult<Value> {
@@ -314,5 +337,18 @@ pub(crate) mod tests {
         assert!(!s.episodes[1].playable);
         let s = show_page(&meta, 10, 4, &page, &fetched::<Episode>(&[], &[]));
         assert!(!s.partial && s.episodes.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod preview_id_tests {
+    use super::safe_preview_id;
+
+    #[test]
+    fn only_twenty_byte_preview_file_ids_are_accepted() {
+        assert_eq!(safe_preview_id(&[0xab; 20]).as_deref(),
+            Some("abababababababababababababababababababab"));
+        assert!(safe_preview_id(&[0xab; 19]).is_none());
+        assert!(safe_preview_id(&[0xab; 21]).is_none());
     }
 }

@@ -14,14 +14,32 @@ internal object JamInviteLinks {
     private const val CANONICAL_PREFIX = "https://open.spotify.com/socialsession/"
     private const val SHORT_PREFIX = "https://spotify.link/"
 
+    private fun canonicalFromToken(token: String?): String? {
+        val clean = token?.trim()?.substringBefore('?')?.substringBefore('#') ?: return null
+        return if (clean.length == 22 && clean.all { it.isAsciiLetterOrDigit() }) {
+            CANONICAL_PREFIX + clean
+        } else null
+    }
+
     private var observedSessionLink by mutableStateOf<String?>(null)
     private var observedShortLink by mutableStateOf<String?>(null)
 
     fun canonical(url: String?): String? {
         val value = url?.trim() ?: return null
-        if (!value.startsWith(CANONICAL_PREFIX)) return null
-        val token = value.removePrefix(CANONICAL_PREFIX)
-        return value.takeIf { token.length == 22 && token.all { it.isAsciiLetterOrDigit() } }
+        return when {
+            value.startsWith(CANONICAL_PREFIX) -> canonicalFromToken(
+                value.removePrefix(CANONICAL_PREFIX).substringBefore('/'))
+            value.startsWith("spotify:socialsession:") -> canonicalFromToken(
+                value.removePrefix("spotify:socialsession:").substringBefore('/'))
+            "/socialsession/" in value -> canonicalFromToken(
+                value.substringAfter("/socialsession/").substringBefore('/'))
+            else -> null
+        }
+    }
+
+    /** The protobuf tracked share uses an opaque native session URI, not an HTTP link. */
+    fun sessionUri(canonicalUrl: String?): String? = canonical(canonicalUrl)?.let { url ->
+        "spotify:socialsession:" + url.removePrefix(CANONICAL_PREFIX)
     }
 
     fun short(url: String?): String? {
@@ -65,14 +83,11 @@ internal object JamInviteLinks {
     /** A tracked Spotify share can carry the Jam URI instead of a text contribution. */
     fun fromMessage(text: String?, shareUri: String?): String? {
         fromMessage(text)?.let { return it }
+        canonical(shareUri)?.let { return it }
         val value = shareUri?.trim() ?: return null
-        if (value.startsWith("spotify:socialsession:")) {
-            val token = value.removePrefix("spotify:socialsession:")
-            return canonical(CANONICAL_PREFIX + token)
-        }
         // A generic spotify.link share may instead be a song/album/playlist.
         // Never classify those links as Jams without explicit Jam text.
-        return canonical(value) ?: if (text?.trim()?.startsWith(CARD_PREFIX) == true) short(value) else null
+        return if (text?.trim()?.startsWith(CARD_PREFIX) == true) short(value) else null
     }
 
     /** Prefix is intentional: an unrelated spotify.link music URL is not a Jam card. */

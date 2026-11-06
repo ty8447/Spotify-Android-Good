@@ -1,5 +1,7 @@
 package com.taehagen.spotifygood.nativebridge
 
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
+
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
@@ -131,6 +133,7 @@ class AudioSinkBridge(context: Context) {
             true
         } catch (t: Throwable) {
             Log.e(TAG, "AudioTrack start failed", t)
+            DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "audio", "sink_start_failed", t.javaClass.simpleName)
             false
         }
     }
@@ -144,6 +147,7 @@ class AudioSinkBridge(context: Context) {
             listener?.onSinkStopped()
         } catch (t: Throwable) {
             Log.e(TAG, "AudioTrack stop failed", t)
+            DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "audio", "sink_stop_failed", t.javaClass.simpleName)
         }
     }
 
@@ -174,11 +178,13 @@ class AudioSinkBridge(context: Context) {
             if (written >= bytes) return frames
             // ERROR_DEAD_OBJECT (route change, audio server restart) or invalid state: recreate once.
             Log.w(TAG, "AudioTrack write failed, recreating track")
+            DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "audio", "sink_write_failed_recreate")
             synchronized(lock) {
                 track?.let { releaseTrack(it) }
                 track = null
             }
         }
+        DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "audio", "sink_write_fatal")
         return -1
     }
 

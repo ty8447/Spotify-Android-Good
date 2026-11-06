@@ -2,6 +2,7 @@ package com.taehagen.spotifygood.ui.navigation
 
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.taehagen.spotifygood.model.AlbumRef
+import com.taehagen.spotifygood.data.LibraryPin
 import com.taehagen.spotifygood.model.ArtistRef
 import com.taehagen.spotifygood.model.Episode
 import com.taehagen.spotifygood.model.MediaRef
@@ -29,6 +30,8 @@ sealed interface Route {
     @Serializable data object Updates : Route
     @Serializable data object WhatsNew : Route
     @Serializable data object Messages : Route
+    /** Opens a composer without sending an invitation until Send is pressed. */
+    @Serializable data class NewDirectMessage(val username: String, val title: String) : Route
     @Serializable data class MessageConversation(val hierarchyId: String, val title: String) : Route
     @Serializable data object Activity : Route
     @Serializable data class Album(val uri: String) : Route
@@ -49,6 +52,8 @@ sealed interface Route {
 /** Something the action sheet can act on. */
 @Serializable
 sealed interface MediaActionTarget {
+    /** Library-only context: first pin/unpin, then the standard media actions. */
+    @Serializable data class LibraryPinTarget(val pin: LibraryPin, val media: MediaActionTarget? = null) : MediaActionTarget
     @Serializable
     data class TrackTarget(
         val track: Track,

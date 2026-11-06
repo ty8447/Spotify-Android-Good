@@ -37,6 +37,10 @@ use librespot_playback::mixer::Mixer;
 use route::{CommandKind, RouteInput, Target};
 use serde_json::Value;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// The newest requested selection; obsolete requests must not resume after reconnect.
+static LOAD_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// How long a playback command waits for a connect attempt in flight (below Kotlin's 15 s
 /// command timeout).
@@ -365,6 +369,8 @@ fn load_target(args: &LoadArgs, me: &str) -> Option<String> {
 }
 
 async fn load(args: LoadArgs) -> AppResult<Value> {
+    // Assign an order before any await, including a remote-device load.
+    let this_load = LOAD_SEQUENCE.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     if let Some(device) = load_target(&args, &hub::me()) {
         return load_on(&device, &args).await;
     }
@@ -373,8 +379,17 @@ async fn load(args: LoadArgs) -> AppResult<Value> {
     // go through: the restore doesn't run meanwhile, and stays if the load fails.
     let _hold = restore::hold();
     let wanted = Downloads::of(&args);
-    hold_while(|i| should_wait(CommandKind::Load, i, false) || wanted.await_session(i)).await;
-    let downloaded = Downloads::of(&args).play_offline(WaitInput::now());
+    // A Downloads tap never waits for Spotify Connect on a weak cellular connection.
+    // The offline queue verifies the files; an incomplete download cannot be streamed
+    // silently instead.
+    if !args.prefer_offline {
+        hold_while(|i| should_wait(CommandKind::Load, i, false) || wanted.await_session(i)).await;
+    }
+    // The initial request may have waited for service while a newer tap was submitted.
+    if LOAD_SEQUENCE.load(Ordering::SeqCst) != this_load {
+        return Err(AppError::unavailable("Playback selection superseded"));
+    }
+    let downloaded = if args.prefer_offline { wanted.any } else { Downloads::of(&args).play_offline(WaitInput::now()) };
     let local = explicit_local(
         args.local,
         engine::is_online(),
@@ -382,9 +397,13 @@ async fn load(args: LoadArgs) -> AppResult<Value> {
         hub::spirc().is_some(),
         hub::local_active_or_activating(),
     );
-    let target = match local {
-        Some(target) => target,
-        None => decide(CommandKind::Load, downloaded)?,
+    let target = if args.prefer_offline {
+        if downloaded { Target::Offline } else { return Err(AppError::unavailable("Not available offline")); }
+    } else {
+        match local {
+            Some(target) => target,
+            None => decide(CommandKind::Load, downloaded)?,
+        }
     };
     match target {
         Target::Local { activate } => {

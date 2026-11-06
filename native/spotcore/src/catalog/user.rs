@@ -50,6 +50,10 @@ pub(crate) struct Profile {
     pub recently_played_artists: Vec<PublicProfileArtist>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_follows: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_following: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follows_you: Option<bool>,
 }
 
 /// Only fields returned by the public profile endpoint; never local listening history.
@@ -170,6 +174,8 @@ pub(crate) fn parse_profile(body: &[u8], username: &str) -> AppResult<Profile> {
         public_playlist_saves: public_playlist_saves(&v),
         recently_played_artists: parse_public_artists(&v),
         show_follows: v.get("show_follows").or_else(|| v.get("showFollows")).and_then(Value::as_bool),
+        is_following: v.get("is_following").or_else(|| v.get("isFollowing")).and_then(Value::as_bool),
+        follows_you: v.get("follows_you").or_else(|| v.get("followsYou")).and_then(Value::as_bool),
     })
 }
 
@@ -495,7 +501,8 @@ pub(crate) async fn rpc(args: Value) -> AppResult<Value> {
             log::info!("own profile lookup failed: {e}");
             Profile { user: User { username: username.clone(), ..Default::default() },
                 public_playlists: Vec::new(), public_playlist_saves: HashMap::new(),
-                recently_played_artists: Vec::new(), show_follows: None }
+                recently_played_artists: Vec::new(), show_follows: None,
+                is_following: None, follows_you: None }
         }
         Err(e) => return Err(e),
     };

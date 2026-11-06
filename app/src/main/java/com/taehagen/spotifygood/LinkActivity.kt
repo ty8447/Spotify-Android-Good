@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
 
 /**
  * Entry point for requests from outside the launcher: the `spotifygood://auth` login redirect,
@@ -31,6 +32,26 @@ import android.util.Log
 class LinkActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState == null &&
+            intent.action == MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH &&
+            intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY == 0
+        ) {
+            // Diagnostic evidence of actual assistant-to-app routing. Never store the
+            // user's spoken query, media names, tokens or raw intent extras.
+            try {
+                val hasText = !intent.getStringExtra(SearchManager.QUERY).isNullOrBlank()
+                val hasMediaHints = listOf(
+                    MediaStore.EXTRA_MEDIA_ARTIST, MediaStore.EXTRA_MEDIA_ALBUM,
+                    MediaStore.EXTRA_MEDIA_TITLE, MainActivity.EXTRA_MEDIA_PLAYLIST,
+                ).any { intent.hasExtra(it) }
+                DiagnosticLogs.record(
+                    DiagnosticLogs.Level.INFO, "voice", "legacy_intent_received",
+                    "query_present=$hasText,media_hints=$hasMediaHints",
+                )
+            } catch (_: RuntimeException) {
+                DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "voice", "intent_extras_unreadable")
+            }
+        }
         if (savedInstanceState == null) {
             // A relaunch from history replays an old request: only bring the app up.
             val fromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0

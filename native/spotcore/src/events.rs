@@ -9,6 +9,8 @@ pub const PLAYBACK: &str = "playback";
 pub const DEVICES: &str = "devices";
 pub const QUEUE_METADATA: &str = "queueMetadata";
 pub const DOWNLOAD: &str = "download";
+/// Privacy-safe playback/handoff diagnostic. No URIs or playback keys.
+pub const PLAYBACK_SIGNAL: &str = "playbackSignal";
 pub const ERROR: &str = "error";
 /// Library changes made elsewhere (catalog::push).
 pub const PLAYLIST_CHANGED: &str = "playlistChanged";

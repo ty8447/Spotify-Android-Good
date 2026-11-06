@@ -161,15 +161,12 @@ fun ProfileMenu(onClosed: () -> Unit) {
     val user by rememberAppGraph().engine.user.collectAsStateWithLifecycle()
     val activity = LocalActivity.current
     val scope = rememberCoroutineScope()
-    @Suppress("UNCHECKED_CAST")
-    val updatesVm = appViewModel<FeedViewModel<*>>(key = "menu:updates-count") {
-        FeedViewModel(it) { graph -> graph.catalog.notifications() }
-    } as FeedViewModel<SpotifyNotification>
-    val updatesState by updatesVm.state.collectAsStateWithLifecycle()
-    AutoRefresh(updatesVm, 30_000)
-    val unreadUpdates = updatesState.items.count { it.isNew }
+    // The signed-in scaffold keeps this count fresh even when the drawer is closed.
+    // Do not start a second notifications poller just to draw this badge.
+    val unreadUpdates = UpdatesUnreadState.unreadCount
     val unreadChats = ChatUnreadStates.counts.values.sum()
     var showNewMessage by remember { androidx.compose.runtime.mutableStateOf(false) }
+    var showInviteFriends by remember { androidx.compose.runtime.mutableStateOf(false) }
     var selectedFriend by androidx.compose.runtime.remember {
         androidx.compose.runtime.mutableStateOf<FriendActivity?>(null)
     }
@@ -227,6 +224,10 @@ fun ProfileMenu(onClosed: () -> Unit) {
                     Box(Modifier.size(56.dp)) {
                         Artwork(user?.images?.best(96), null, Modifier.size(52.dp), CircleShape,
                             Icons.Rounded.Person, avatarName = user?.let { it.displayName ?: it.username })
+                        if (unreadUpdates > 0) {
+                            Surface(color = Color(0xFF2188FF), shape = CircleShape,
+                                modifier = Modifier.size(11.dp).align(Alignment.TopEnd).offset(2.dp, (-2).dp)) {}
+                        }
                         if (unreadChats > 0) {
                             Box(Modifier.align(Alignment.BottomEnd).offset(3.dp, 3.dp)) {
                                 ChatUnreadBadge(unreadChats)
@@ -342,13 +343,25 @@ fun ProfileMenu(onClosed: () -> Unit) {
     if (showAudienceSettings) {
         ActivityAudienceDialog(
             onDismiss = { showAudienceSettings = false },
-            onAddFriends = {
-                showAudienceSettings = false
-                go { navigator.navigate(Route.Search) }
-            },
+            onAddFriends = { showInviteFriends = true },
             onViewFollowers = {
                 showAudienceSettings = false
                 go { navigator.navigate(Route.SocialPeople("followers")) }
+            },
+        )
+    }
+    if (showInviteFriends) {
+        InviteFriendsMessagesSheet(
+            onDismiss = { showInviteFriends = false },
+            onOpenChat = { id, title ->
+                showInviteFriends = false
+                showAudienceSettings = false
+                go { navigator.navigate(Route.MessageConversation(id, title)) }
+            },
+            onProfile = { username ->
+                showInviteFriends = false
+                showAudienceSettings = false
+                go { navigator.navigate(Route.Profile(username)) }
             },
         )
     }
@@ -417,13 +430,24 @@ class FeedViewModel<T>(private val graph: AppGraph, private val load: suspend (A
         refresh()
     }
 
+    private var refreshJob: kotlinx.coroutines.Job? = null
+
     fun refresh() {
+        if (refreshJob?.isActive == true) return // Don't overlap polling, retries or manual refresh.
         _state.update { it.copy(loading = true, error = null) }
-        viewModelScope.launch {
-            graph.awaitConnectingSession()
-            attempt { load(graph) }
-                .onSuccess { _state.value = FeedState(it, loading = false) }
-                .onFailure { e -> _state.update { it.copy(loading = false, error = e.toBrowseError()) } }
+        refreshJob = viewModelScope.launch {
+            try {
+                val items = retryChatRead {
+                    graph.awaitConnectingSession()
+                    load(graph)
+                }
+                _state.value = FeedState(items, loading = false)
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (failure: Exception) {
+                // Keep the previous list until a successful refresh.
+                _state.update { it.copy(loading = false, error = failure.toBrowseError()) }
+            }
         }
     }
 }
@@ -601,7 +625,10 @@ class UpdatesViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch {
             graph.awaitConnectingSession()
             attempt { graph.catalog.notifications() }
-                .onSuccess { _state.value = FeedState(it, loading = false) }
+                .onSuccess {
+                    _state.value = FeedState(it, loading = false)
+                    UpdatesUnreadState.update(it)
+                }
                 .onFailure { e -> _state.update { it.copy(loading = false, error = e.toBrowseError()) } }
         }
     }
@@ -654,6 +681,7 @@ class UpdatesViewModel(private val graph: AppGraph) : ViewModel() {
                 action()
                 val fresh = graph.catalog.notifications()
                 _state.value = FeedState(fresh, loading = false)
+                UpdatesUnreadState.update(fresh)
             } catch (e: Exception) {
                 _message.value = e.message ?: "Could not update notification"
             } finally {
@@ -809,7 +837,11 @@ private fun AutoRefresh(vm: FeedViewModel<*>, periodMs: Long = 10_000) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(vm, lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) { delay(periodMs); vm.refresh() }
+            while (true) {
+                delay(periodMs)
+                // Once all 4 automatic attempts have failed, let Retry be user-driven.
+                if (vm.state.value.error == null) vm.refresh()
+            }
         }
     }
 }
@@ -835,20 +867,40 @@ private data class GroupActivityPreview(
     val title: String get() = chat.displayTitle.ifBlank { chat.groupName ?: "Group chat" }
 }
 
+/** Group activity is fetched separately from the friend feed. Expose terminal errors
+ * to the drawer/activity screen instead of silently returning an empty list.
+ */
+private class GroupActivityLoad(
+    val groups: List<GroupActivityPreview>,
+    val loading: Boolean,
+    val failed: Boolean,
+    val retry: () -> Unit,
+)
+
 @Composable
-private fun rememberGroupActivityPreviews(): List<GroupActivityPreview> {
+private fun rememberGroupActivityPreviews(): GroupActivityLoad {
     val graph = rememberAppGraph()
     val selfUsername = graph.engine.user.collectAsStateWithLifecycle().value?.username
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var groups by remember(selfUsername) {
         androidx.compose.runtime.mutableStateOf<List<GroupActivityPreview>>(emptyList())
     }
-    LaunchedEffect(graph, selfUsername, lifecycle) {
-        if (selfUsername.isNullOrBlank()) return@LaunchedEffect
+    var loading by remember(selfUsername) { androidx.compose.runtime.mutableStateOf(true) }
+    var failed by remember(selfUsername) { androidx.compose.runtime.mutableStateOf(false) }
+    var retry by remember(selfUsername) { androidx.compose.runtime.mutableIntStateOf(0) }
+    LaunchedEffect(graph, selfUsername, lifecycle, retry) {
+        if (selfUsername.isNullOrBlank()) {
+            loading = false
+            return@LaunchedEffect
+        }
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
+                loading = true
+                failed = false
                 try {
-                    val overview = graph.rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                    val overview = retryChatRead {
+                        graph.rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                    }
                     // Bound the number of background calls; never enumerate unrelated usernames.
                     val candidates = overview.conversations.asSequence()
                         .filter { it.hierarchyId.isNotBlank() && (it.isGroup || it.groupMemberCount > 2) }
@@ -863,12 +915,10 @@ private fun rememberGroupActivityPreviews(): List<GroupActivityPreview> {
                     for (chat in candidates) {
                         val usernames = chat.participants.map { it.username }
                             .filter(String::isNotBlank).distinct()
-                        val people = try {
+                        val people = retryChatRead {
                             graph.catalog.groupMemberActivity(usernames)
                                 .filter { it.username != selfUsername }
-                        } catch (cancel: CancellationException) {
-                            throw cancel
-                        } catch (_: Exception) { emptyList() }
+                        }
                         if (people.isNotEmpty()) found.add(GroupActivityPreview(chat, people))
                     }
                     groups = found.sortedWith(
@@ -877,13 +927,17 @@ private fun rememberGroupActivityPreviews(): List<GroupActivityPreview> {
                 } catch (cancel: CancellationException) {
                     throw cancel
                 } catch (_: Exception) {
-                    // Keep the last confirmed activity during transient overview errors.
+                    // Retain previously confirmed group activity and surface a Retry action.
+                    failed = true
+                } finally {
+                    loading = false
                 }
+                if (failed) break
                 delay(45_000)
             }
         }
     }
-    return groups
+    return GroupActivityLoad(groups, loading, failed, retry = { retry++ })
 }
 
 private data class ActivityGridEntry(
@@ -992,7 +1046,8 @@ private fun ActivityDrawerPreview(onOurActivity: () -> Unit, selfImage: String?,
     val state by vm.state.collectAsStateWithLifecycle()
     AutoRefresh(vm)
     val friends = state.items.byActivity()
-    val groups = rememberGroupActivityPreviews()
+    val groupFeed = rememberGroupActivityPreviews()
+    val groups = groupFeed.groups
     val entries = (friends.map { ActivityGridEntry(friend = it) } +
         groups.map { ActivityGridEntry(group = it) })
         .sortedWith(compareByDescending<ActivityGridEntry> { it.playing }
@@ -1003,9 +1058,16 @@ private fun ActivityDrawerPreview(onOurActivity: () -> Unit, selfImage: String?,
                 modifier = Modifier.weight(1f))
             TextButton(onClick = onViewMore) { Text("View more") }
         }
+        if ((state.error != null || groupFeed.failed) && entries.isNotEmpty()) {
+            TextButton(onClick = { vm.refresh(); groupFeed.retry() },
+                enabled = !state.loading && !groupFeed.loading) { Text("Retry activity refresh") }
+        }
         when {
-            state.loading && entries.isEmpty() -> Text("Loading activityâ€¦", style = MaterialTheme.typography.bodySmall)
-            state.error != null && entries.isEmpty() -> TextButton(onClick = vm::refresh) { Text("Retry activity") }
+            (state.loading || groupFeed.loading) && entries.isEmpty() ->
+                Text("Loading activity…", style = MaterialTheme.typography.bodySmall)
+            (state.error != null || groupFeed.failed) && entries.isEmpty() ->
+                TextButton(onClick = { vm.refresh(); groupFeed.retry() },
+                    enabled = !state.loading && !groupFeed.loading) { Text("Retry activity") }
             entries.isEmpty() -> Text("No friend activity yet", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             else -> {
@@ -1162,7 +1224,8 @@ fun ActivityScreen(contentPadding: PaddingValues) {
     } as FeedViewModel<FriendActivity>
     val state by vm.state.collectAsStateWithLifecycle()
     AutoRefresh(vm)
-    val groups = rememberGroupActivityPreviews()
+    val groupFeed = rememberGroupActivityPreviews()
+    val groups = groupFeed.groups
     // View More has the same active-first, newest-next order as the drawer grid.
     // Previously every group was displayed ahead of individuals regardless of recency.
     val entries = (groups.map { ActivityGridEntry(group = it) } +
@@ -1176,10 +1239,19 @@ fun ActivityScreen(contentPadding: PaddingValues) {
             navigationIcon = { IconButton(onClick = navigator::back) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
             } }, colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background))
+        if ((state.error != null || groupFeed.failed) &&
+            (state.items.isNotEmpty() || groups.isNotEmpty())) {
+            TextButton(onClick = { vm.refresh(); groupFeed.retry() },
+                enabled = !state.loading && !groupFeed.loading) {
+                Text("Couldn't refresh activity — Retry")
+            }
+        }
         when {
-            state.loading && state.items.isEmpty() && groups.isEmpty() -> LoadingState()
-            state.error != null && state.items.isEmpty() && groups.isEmpty() -> StateBox {
-                ErrorState(stringResource(state.error!!.messageRes()), onRetry = vm::refresh)
+            (state.loading || groupFeed.loading) && state.items.isEmpty() && groups.isEmpty() -> LoadingState()
+            (state.error != null || groupFeed.failed) && state.items.isEmpty() && groups.isEmpty() -> StateBox {
+                ErrorState("Couldn't load activity after 4 attempts", onRetry = {
+                    vm.refresh(); groupFeed.retry()
+                })
             }
             state.items.isEmpty() && groups.isEmpty() -> StateBox { EmptyState(title = "No friend activity yet") }
             else -> LazyColumn(contentPadding = contentPaddingWith(contentPadding)) {
@@ -1290,10 +1362,15 @@ private fun MessagesDrawerPreview(
     var latest by remember { androidx.compose.runtime.mutableStateOf<List<ConversationSummary>>(emptyList()) }
     var loading by remember { androidx.compose.runtime.mutableStateOf(true) }
     var failed by remember { androidx.compose.runtime.mutableStateOf(false) }
-    LaunchedEffect(rpc) {
+    var retryRequest by remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    LaunchedEffect(rpc, retryRequest) {
+        loading = latest.isEmpty()
+        failed = false
         while (true) {
             try {
-                val overview = rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                val overview = retryChatRead {
+                    rpc.call<MessageOverviewResult>("catalog.messagesOverview")
+                }
                 ChatUnreadStates.update(overview.conversations)
                 latest = overview.conversations.filter { it.hierarchyId.isNotBlank() }
                     .distinctBy { it.hierarchyId }
@@ -1307,6 +1384,8 @@ private fun MessagesDrawerPreview(
             } finally {
                 loading = false
             }
+            // After four failed calls don't silently spin forever: show Retry.
+            if (failed) break
             // Drawer is removed from composition when closed: polling stops with it.
             delay(15_000)
         }
@@ -1328,10 +1407,12 @@ private fun MessagesDrawerPreview(
         when {
             loading -> Text("Loading chats…", color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
-            failed -> Text("Couldn't load recent chats. Open Messages to retry.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.clickable(onClick = onViewAll).padding(8.dp))
+            failed -> Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Couldn't load recent chats after 4 attempts.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { retryRequest++ }) { Text("Retry chats") }
+            }
             latest.isEmpty() -> Text("No recent chats", color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
         }

@@ -842,6 +842,10 @@ class SpotifyEngine(
     // ---- native events ------------------------------------------------------------------------
 
     private fun onSessionEvent(event: SessionEvent) {
+        // A reconnect/new login may represent a different account. Invalidate every profile
+        // read (including any previously cached self profile) before the next lookup.
+        if (event.state == SessionState.CONNECTING || event.state == SessionState.STOPPED ||
+            event.state == SessionState.RECONNECTING) rpc.invalidateProfileReadCache()
         // The event woke the process: a grace that ran out in deep sleep applies now.
         checkIdleDeadlines()
         // Late events of a session we already stopped must not resurrect its state.

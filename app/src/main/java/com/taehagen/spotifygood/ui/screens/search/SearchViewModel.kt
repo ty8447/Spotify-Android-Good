@@ -281,10 +281,12 @@ class SearchViewModel(private val graph: AppGraph) : ViewModel() {
         queryText = text
         this.filter.value = filter
         immediate.tryEmit(text)
+        if (text.isNotBlank()) saveRecent(RecentSearch.Query(text.trim()))
     }
 
     fun selectFilter(value: SearchFilter) {
         filter.value = if (filter.value == value && value != SearchFilter.TOP) SearchFilter.TOP else value
+        queryText.trim().takeIf { it.isNotBlank() }?.let { saveRecent(RecentSearch.Query(it)) }
     }
 
     /**

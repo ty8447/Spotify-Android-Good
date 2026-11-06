@@ -1,6 +1,7 @@
 package com.taehagen.spotifygood.nativebridge
 
 import android.util.Log
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
 import com.taehagen.spotifygood.model.CollectionChangedPush
 import com.taehagen.spotifygood.model.DeviceList
 import com.taehagen.spotifygood.model.DownloadProgress
@@ -26,12 +27,28 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class QueueMetadataEvent(val tracks: List<Track> = emptyList(), val episodes: List<Episode> = emptyList())
 
+/** Fixed enum-like fields only. Native must never place a URI, key or server message here. */
+@Serializable
+private data class PlaybackSignalDiagnostic(
+    val kind: String = "unknown",
+    val reason: String = "none",
+    val offlineQueue: Boolean = false,
+    val currentLoad: Boolean = false,
+    val network: Boolean = true,
+    val downloadedCurrent: Boolean = false,
+    val fullyBuffered: Boolean = false,
+    val trackCount: Int = 0,
+    val streamedCurrent: Boolean = false,
+)
+
 /**
  * Fan-out of native events (docs/ARCHITECTURE.md §5). State-like events are exposed as
  * [StateFlow]s (latest value wins, replayed to new collectors), the rest as [SharedFlow]s with a
  * bounded buffer; `credentials` replays its latest value and `queueMetadata` its last few events.
  */
 class NativeEvents(private val json: Json) {
+    // Only used for in-memory deduplication. No track URI is written to the diagnostic log.
+    @Volatile private var lastPlaybackDiagnosticKey: String? = null
     private val _session = MutableStateFlow(SessionEvent())
     val session: StateFlow<SessionEvent> = _session.asStateFlow()
 
@@ -68,13 +85,59 @@ class NativeEvents(private val json: Json) {
     internal fun dispatch(type: String, payload: String) {
         try {
             when (type) {
-                "session" -> _session.value = json.decodeFromString<SessionEvent>(payload)
-                "playback" -> _playback.value = json.decodeFromString<PlaybackSnapshot>(payload)
+                "session" -> {
+                    val update = json.decodeFromString<SessionEvent>(payload)
+                    if (_session.value.state != update.state || _session.value.error?.code != update.error?.code) {
+                        DiagnosticLogs.record(if (update.error == null) DiagnosticLogs.Level.INFO else DiagnosticLogs.Level.WARN,
+                            "native", "session", "state=${update.state},error=${update.error?.code ?: "none"}")
+                    }
+                    _session.value = update
+                }
+                "playback" -> {
+                    val update = json.decodeFromString<PlaybackSnapshot>(payload)
+                    val dedupe = "${update.source}/${update.status}/${update.loading}/${update.offline}/${update.track?.uri}"
+                    if (lastPlaybackDiagnosticKey != dedupe) {
+                        val trackChanged = _playback.value.track?.uri != update.track?.uri
+                        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "state_changed",
+                            "source=${update.source},status=${update.status},loading=${update.loading},offline=${update.offline},trackChanged=$trackChanged,episode=${update.track?.isEpisode == true}")
+                        lastPlaybackDiagnosticKey = dedupe
+                    }
+                    _playback.value = update
+                }
                 "devices" -> _devices.value = json.decodeFromString<DeviceList>(payload)
                 "credentials" -> _credentials.tryEmit(json.decodeFromString<StoredCredentials>(payload))
                 "queueMetadata" -> _queueMetadata.tryEmit(json.decodeFromString<QueueMetadataEvent>(payload))
                 "download" -> _downloads.tryEmit(json.decodeFromString<DownloadProgress>(payload))
-                "error" -> _errors.tryEmit(json.decodeFromString<NativeErrorInfo>(payload))
+                "playbackSignal" -> {
+                    val signal = json.decodeFromString<PlaybackSignalDiagnostic>(payload)
+                    // Whitelist fields: never turn arbitrary native strings into diagnostics.
+                    val kind = signal.kind.takeIf { it in setOf("playerStopped", "unavailable", "offlineHandoff") }
+                        ?: "unknown"
+                    val reason = when (signal.reason) {
+                        "NotAvailable" -> "notAvailable"
+                        "NetworkError" -> "network"
+                        "KeyDenied" -> "keyDenied"
+                        "KeyTemporarilyDenied" -> "keyTemporary"
+                        "KeyThrottled" -> "keyThrottled"
+                        "DecodeError" -> "decode"
+                        "OfflineFileError" -> "offlineFile"
+                        "noSnapshot" -> "noSnapshot"
+                        "noEligibleTrack" -> "noEligibleTrack"
+                        "noPlayer" -> "noPlayer"
+                        "adopted" -> "adopted"
+                        "none" -> "none"
+                        else -> "other"
+                    }
+                    DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "nativePlayer", kind,
+                        "reason=$reason,offline=${signal.offlineQueue},loading=${signal.currentLoad}," +
+                            "network=${signal.network},downloaded=${signal.downloadedCurrent}," +
+                            "buffered=${signal.fullyBuffered},count=${signal.trackCount},streamed=${signal.streamedCurrent}")
+                }
+                "error" -> {
+                    val info = json.decodeFromString<NativeErrorInfo>(payload)
+                    DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "native", "error", "code=${info.code}")
+                    _errors.tryEmit(info)
+                }
                 "playlistChanged" -> _libraryPushes.tryEmit(json.decodeFromString<PlaylistChangedPush>(payload))
                 "rootlistChanged" -> _libraryPushes.tryEmit(json.decodeFromString<RootlistChangedPush>(payload))
                 "collectionChanged" -> _libraryPushes.tryEmit(json.decodeFromString<CollectionChangedPush>(payload))
@@ -82,6 +145,7 @@ class NativeEvents(private val json: Json) {
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Malformed $type event", t)
+            DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "native", "event_decode_failure", "event=$type,error=${t.javaClass.simpleName}")
         }
     }
 

@@ -66,6 +66,8 @@ internal class SpotifyPlayer(
     private val downloadedImage: (String) -> String? = { null },
     /** Cached display name of the playlist/album/station for Android Auto. */
     private val contextName: (String) -> String? = { null },
+    /** Fallback for native snapshots that omit the track's album until later metadata arrives. */
+    private val resolvedAlbum: (String) -> String? = { null },
     /** The error to publish while nothing plays (logged out, Premium, failed start), see [PlayerErrors]. */
     private val playerError: () -> PlaybackException? = { null },
     /** A controller retries (`prepare()`, e.g. Android Auto's retry): drop sticky errors. */
@@ -127,6 +129,7 @@ internal class SpotifyPlayer(
         val seekable: Boolean,
         /** Downloaded cover, preferred over the CDN url (part of the key: downloads come and go). */
         val imagePath: String?,
+        val albumTitle: String?,
     )
 
     private class CachedItem(val key: ItemKey, val data: MediaItemData)
@@ -314,6 +317,11 @@ internal class SpotifyPlayer(
                 durationMs = durationMs,
                 seekable = s.restrictions.canSeek,
                 imagePath = downloadedImage(entry.track.uri),
+                albumTitle = entry.track.album?.name?.takeIf(String::isNotBlank)
+                    ?: if (entry.track.isEpisode) entry.track.show?.name
+                    else resolvedAlbum(entry.track.uri)
+                        ?: contextUri?.takeIf { it.startsWith("spotify:album:") }
+                            ?.let { contextName(it) ?: s.context?.name },
             )
             val cached = itemCache[entry.uid]?.takeIf { it.key == key } ?: CachedItem(key, itemData(entry.uid, key))
             cache[entry.uid] = cached
@@ -339,7 +347,7 @@ internal class SpotifyPlayer(
             // releases render our notification, whose content text adds the subtitle instead
             // (the notification provider of PlaybackService), keeping the artist clean.
             .setArtist(if (Build.VERSION.SDK_INT >= DeviceLine.IN_ARTIST_SDK) DeviceLine.join(context, artist, deviceLine) else artist)
-            .setAlbumTitle(t.album?.name ?: t.show?.name)
+            .setAlbumTitle(key.albumTitle)
             // The downloaded cover works offline (notification, lock screen, Auto) and is the one
             // the download stored; the CDN url (best(300)) usually names a different image file.
             .setArtworkUri(artworkUri(context, key.imagePath) ?: artworkUri(context, t.imageUrl))
@@ -461,10 +469,21 @@ internal class SpotifyPlayer(
         // The stored session (playback resumption, "Tap to resume", "play something") comes back
         // with its shuffle / repeat: its item carries them (LibraryTree.resumeItem).
         val withModes = ResumeModes.applyTo(request, mediaItems.singleOrNull()?.requestMetadata?.extras)
+        // The Android Auto Downloads list marks items as downloaded. Do not route these
+        // selections through a stale online Spirc during weak/no cellular service.
+        val selected = mediaItems.getOrNull(startIndex.coerceIn(0, mediaItems.lastIndex))
+        val fromDownloads = selected?.let { item ->
+            val parsed = MediaIds.parse(item.mediaId)
+            parsed is MediaIds.Parsed.Downloaded ||
+                (parsed is MediaIds.Parsed.InContext && downloadedImage(parsed.trackUri) != null) ||
+                item.mediaMetadata.extras?.getLong(MediaConstants.EXTRAS_KEY_DOWNLOAD_STATUS) ==
+                MediaConstants.EXTRAS_VALUE_STATUS_DOWNLOADED
+        } == true
         // Media-session loads (Auto, Assistant, watches, resumption) play on this phone, never on
         // the pending Connect target nor on another active device: in a car, a speaker at home
         // would be wrong (and the stored session must not overwrite what it plays now).
-        return trackLoad(controller.playAsync(withModes, toPendingTarget = false, onThisPhone = true))
+        return trackLoad(controller.playAsync(withModes.copy(preferOffline = fromDownloads),
+            toPendingTarget = false, onThisPhone = true))
             .also { sessionLoad = it }
     }
 

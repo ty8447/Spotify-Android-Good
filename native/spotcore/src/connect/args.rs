@@ -30,6 +30,10 @@ pub(crate) struct LoadArgs {
     /// An explicit pull to this phone (a media-session resume): see `connect::load`.
     #[serde(default)]
     pub local: bool,
+    /// The user explicitly selected downloaded content: use the local offline queue even
+    /// when Android still reports a connection that cannot transfer data.
+    #[serde(default)]
+    pub prefer_offline: bool,
 }
 
 impl LoadArgs {

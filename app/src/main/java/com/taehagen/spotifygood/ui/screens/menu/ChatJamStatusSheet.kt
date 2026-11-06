@@ -30,6 +30,8 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Modifier
@@ -42,6 +44,16 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 @Serializable
+internal data class JamSessionMember(
+    val id: String = "",
+    val username: String = "",
+    val displayName: String = "",
+    val imageUrl: String? = null,
+    val isHost: Boolean = false,
+    val isSelf: Boolean = false,
+)
+
+@Serializable
 internal data class JamSessionSummary(
     val active: Boolean = false,
     val isSessionOwner: Boolean? = null,
@@ -50,6 +62,7 @@ internal data class JamSessionSummary(
     val isPaused: Boolean? = null,
     val queueOnlyMode: Boolean? = null,
     val memberCount: Int? = null,
+    val members: List<JamSessionMember> = emptyList(),
     val maxMemberCount: Int? = null,
 )
 
@@ -98,6 +111,15 @@ internal data class JamApprovalRequestResult(
 internal data class JamPeerLookupResult(
     val result: String = "unverified",
     val invitationUrl: String? = null,
+    // Spotify's DiscoveredToken.discovery_method accompanies this exact token.
+    val discoveryMethod: String? = null,
+)
+
+@Serializable
+internal data class JamKickMemberResult(
+    val result: String = "unverified",
+    val httpStatus: Int? = null,
+    val current: JamReadCheck? = null,
 )
 
 @Serializable
@@ -113,6 +135,14 @@ internal data class JamLeaveResult(
     val httpStatus: Int? = null,
     val current: JamReadCheck? = null,
 )
+
+/** A separate /devices/.../jam_status read is optional for starting a Jam.
+ * Only the authoritative current-session endpoint decides whether a session
+ * already exists. Never enable creation on an ambiguous/error response.
+ */
+internal fun jamConfirmedCanStart(current: JamReadCheck?): Boolean =
+    current?.result == "not-found" ||
+        (current?.result == "reply" && current.session?.active == false)
 
 private fun jamStartDescription(result: JamStartResult): String = when (result.result) {
     "active" -> "Your Jam is active. No invitation was sent from this conversation."
@@ -220,6 +250,10 @@ internal fun ChatJamStatusSheet(
     var pendingQueueOnlyMode by remember { mutableStateOf<Boolean?>(null) }
     var guestBusy by remember { mutableStateOf(false) }
     var guestFeedback by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    var memberToRemove by remember { mutableStateOf<JamSessionMember?>(null) }
+    var removingMember by remember { mutableStateOf(false) }
+    var removalError by remember { mutableStateOf<String?>(null) }
     // The invitation sheet overlays Jam details, rather than replacing the session view.
     var showShareSheet by remember { mutableStateOf(false) }
     var showQrDialog by remember { mutableStateOf(false) }
@@ -248,7 +282,9 @@ internal fun ChatJamStatusSheet(
                 snapshot = latest
                 onSessionChanged(null)
             }
-            // Transient errors do not invalidate the last confirmed session.
+            // Transient errors do not invalidate the last confirmed session;
+            // for an initial read retain the diagnostic so the user can retry.
+            if (snapshot == null) snapshot = latest
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (e: Exception) {
@@ -303,56 +339,18 @@ internal fun ChatJamStatusSheet(
                 inviteFeedback = "This Jam hasn't returned a shareable invitation link yet."
             } else {
                 JamInviteLinks.observeSpotifySessionLink(url, link.shortUrl)
+                // Native Campfire TrackedShare: exactly one contribution, no text fallback.
+                val uri = JamInviteLinks.sessionUri(url)
+                    ?: error("Invalid Jam session token")
                 val sent = graph.rpc.call<JamInvitationSendResult>(
-                    "catalog.sendTextMessage", buildJsonObject {
+                    "catalog.sendJamInvitation", buildJsonObject {
                         put("hierarchyId", target)
-                        put("text", JamInviteLinks.messageBody(url) ?: url)
+                        put("uri", uri)
                     })
                 if (sent.acknowledged) {
                     onInviteSent()
                     view = 0
-                    inviteFeedback = "Jam invitation sent to this conversation."
-                } else {
-                    inviteFeedback = "Delivery couldn't be confirmed. Check chat history before trying again."
-                }
-            }
-        } catch (cancel: CancellationException) {
-            throw cancel
-        } catch (_: Exception) {
-            inviteFeedback = "Invitation status is uncertain. Check chat history before trying again."
-        } finally {
-            sendingInvite = false
-        }
-    }
-
-    // Only an explicit Send invite tap reaches this path. Fetch the *current*
-    // bearer link immediately before sending; never retry the POST automatically.
-    LaunchedEffect(inviteAttempt) {
-        if (inviteAttempt == 0) return@LaunchedEffect
-        val target = conversationId?.takeIf { it.isNotBlank() } ?: return@LaunchedEffect
-        sendingInvite = true
-        inviteFeedback = null
-        try {
-            val link = graph.rpc.call<JamInvitationLink>(
-                "catalog.jamInvitationLink", buildJsonObject {})
-            val url = link.url?.takeIf {
-                link.result == "ready" &&
-                    it.startsWith("https://open.spotify.com/socialsession/") &&
-                    it.substringAfterLast('/').length == 22 &&
-                    it.substringAfterLast('/').all { ch -> ch.isLetterOrDigit() && ch.code < 128 }
-            }
-            if (url == null) {
-                inviteFeedback = "This Jam hasn't returned a shareable invitation link yet."
-            } else {
-                val sent = graph.rpc.call<JamInvitationSendResult>(
-                    "catalog.sendTextMessage", buildJsonObject {
-                        put("hierarchyId", target)
-                        put("text", url)
-                    })
-                if (sent.acknowledged) {
-                    onInviteSent()
-                    view = 0
-                    inviteFeedback = "Jam invitation sent to this conversation."
+                    inviteFeedback = "Jam invitation card sent to this conversation."
                 } else {
                     inviteFeedback = "Delivery couldn't be confirmed. Check chat history before trying again."
                 }
@@ -468,25 +466,6 @@ internal fun ChatJamStatusSheet(
         }
     }
 
-    // Request the real shareable link only while the invite sheet is open.
-    LaunchedEffect(showShareSheet, graph.rpc) {
-        shareUrl = null
-        if (showShareSheet) {
-            try {
-                val link = graph.rpc.call<JamInvitationLink>(
-                    "catalog.jamInvitationLink", buildJsonObject {})
-                shareUrl = link.url?.takeIf { url ->
-                    link.result == "ready" &&
-                        url.startsWith("https://open.spotify.com/socialsession/") &&
-                        url.substringAfterLast('/').length == 22 &&
-                        url.substringAfterLast('/').all { ch -> ch.isLetterOrDigit() && ch.code < 128 }
-                }
-            } catch (cancel: CancellationException) {
-                throw cancel
-            } catch (_: Exception) { /* Keep the share option disabled. */ }
-        }
-    }
-
     if (showShareSheet && snapshot?.current?.session?.active == true) {
         JamShareInviteSheet(
             onDismiss = { showShareSheet = false },
@@ -517,6 +496,39 @@ internal fun ChatJamStatusSheet(
         )
     }
 
+    memberToRemove?.let { member ->
+        AlertDialog(
+            onDismissRequest = { if (!removingMember) { memberToRemove = null; removalError = null } },
+            title = { Text("Remove ${member.displayName.ifBlank { member.username }} from Jam?") },
+            text = { Column {
+                Text("They'll be disconnected from this Jam.")
+                removalError?.let { Text(it, color = JamUi.red) }
+            } },
+            confirmButton = { Button(enabled = !removingMember, onClick = {
+                if (removingMember) return@Button
+                removingMember = true
+                scope.launch {
+                    try {
+                        val result = graph.rpc.call<JamKickMemberResult>(
+                            "catalog.jamKickMember", buildJsonObject { put("memberId", member.id) })
+                        if (result.result == "submitted") {
+                            result.current?.session?.takeIf { it.active }?.let(onSessionChanged)
+                            memberToRemove = null
+                            removalError = null
+                            refresh++
+                        } else removalError = "Could not confirm removal (${result.result})."
+                    } catch (cancel: CancellationException) { throw cancel }
+                    catch (_: Exception) { removalError = "Could not confirm removal. Check the participants list." }
+                    finally { removingMember = false }
+                }
+            }) { if (removingMember) CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp)
+                else Text("Remove") } },
+            dismissButton = { TextButton(enabled = !removingMember, onClick = {
+                memberToRemove = null; removalError = null
+            }) { Text("Cancel") } },
+        )
+    }
+
     val activeSession = snapshot?.current?.session?.takeIf { it.active }
     LaunchedEffect(activeSession?.active) {
         if (activeSession == null) {
@@ -526,9 +538,12 @@ internal fun ChatJamStatusSheet(
     }
     // Re-enter each Jam subpage at the top, even if the prior queue had been scrolled.
     val sheetScroll = remember(view) { ScrollState(0) }
-    val isOverview = activeSession != null && view == 0
+    // Overview and Add Songs already own their scrollable LazyColumn. Never
+    // wrap them in a second verticalScroll with unbounded height: rapid swipes
+    // otherwise fight the ModalBottomSheet and its pinned controls.
+    val ownsListScroll = activeSession != null && (view == 0 || view == 3)
     Column(
-        modifier = if (isOverview) {
+        modifier = if (ownsListScroll) {
             Modifier.fillMaxWidth().fillMaxHeight(0.86f).background(JamUi.background)
         } else {
             Modifier.fillMaxWidth().background(JamUi.background).verticalScroll(sheetScroll)
@@ -563,6 +578,12 @@ internal fun ChatJamStatusSheet(
                 onBack = { view = 0 }, onInvite = { showShareSheet = true },
                 onGuestSettings = { view = 2 },
                 onLeave = { showLeaveConfirm = true },
+                onRemoveMember = { member ->
+                    if (activeSession.isSessionOwner == true && !member.isHost && !member.isSelf) {
+                        memberToRemove = member
+                        removalError = null
+                    }
+                },
             )
         } else if (activeSession != null && view == 2) {
             JamGuestSettingsPage(activeSession, onBack = { view = 0 },
@@ -570,11 +591,7 @@ internal fun ChatJamStatusSheet(
                     if (!guestBusy) { pendingQueueOnlyMode = enabled; guestChange++ }
                 }, changing = guestBusy, feedback = guestFeedback)
         } else if (activeSession != null && view == 3) {
-            JamAddToQueuePage(
-                onBack = { view = 0 },
-                onSearch = onFindSongs,
-                onOpenLikedSongs = onOpenLikedSongs,
-            )
+            JamAddToQueuePage(onBack = { view = 0 })
         } else if (activeSession != null) {
             JamOverviewPage(
                 session = activeSession,
@@ -593,9 +610,11 @@ internal fun ChatJamStatusSheet(
                 hostAvatarUrl = hostAvatarUrl,
                 peerAvatarUrl = conversationAvatarUrl,
                 session = null,
-                canStart = snapshot?.current?.result == "not-found" &&
-                    snapshot?.device?.result == "reply" && startResult == null &&
-                    startAttempt == 0 && leaveAttempt == 0,
+                // Device status is a separate host-inbox diagnostic; it may be
+                // missing or unavailable even when no Jam exists. Do not gate
+                // new-session creation on that unrelated response.
+                canStart = jamConfirmedCanStart(snapshot?.current) &&
+                    startResult == null && startAttempt == 0 && leaveAttempt == 0,
                 startBusy = starting,
                 onStart = {
                     inviteAfterStart = !conversationId.isNullOrBlank()
@@ -604,9 +623,14 @@ internal fun ChatJamStatusSheet(
                 onViewJam = { view = 0 },
                 sendAfterStart = !conversationId.isNullOrBlank(),
             )
-            if (snapshot?.current?.result != "not-found" && startResult == null) {
+            if (!jamConfirmedCanStart(snapshot?.current) && startResult == null) {
                 Text("Current session: ${jamCheckDescription(snapshot?.current ?: JamReadCheck())}",
                     color = JamUi.muted, modifier = Modifier.padding(horizontal = 20.dp))
+                if (!loading) {
+                    TextButton(onClick = { refresh++ }, enabled = !starting && !leaving) {
+                        Text("Refresh Jam status", color = JamUi.green)
+                    }
+                }
             }
         }
         if (starting || leaving || startError != null || leaveError != null ||

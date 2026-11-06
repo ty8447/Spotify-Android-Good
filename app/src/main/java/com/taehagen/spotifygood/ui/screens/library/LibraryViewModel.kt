@@ -10,6 +10,9 @@ import androidx.lifecycle.viewModelScope
 import com.taehagen.spotifygood.AppGraph
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.data.Resource
+import com.taehagen.spotifygood.data.LibraryPin
+import com.taehagen.spotifygood.data.isLikedSongsPin
+import com.taehagen.spotifygood.data.libraryPin
 import com.taehagen.spotifygood.data.dataOrNull
 import com.taehagen.spotifygood.data.settings.LibrarySort
 import com.taehagen.spotifygood.data.settings.LibraryView
@@ -42,6 +45,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
@@ -65,6 +69,8 @@ data class LibraryUiState(
     val tree: List<LibraryItem> = emptyList(),
     val showEpisodes: Boolean = false,
     val pinned: List<PinnedEntry> = emptyList(),
+    val shortcuts: List<LibraryPin> = emptyList(),
+    val pinnedKeys: Set<String> = emptySet(),
     val items: List<LibraryItem> = emptyList(),
     val downloaded: Set<String> = emptySet(),
     val isInitialLoading: Boolean = true,
@@ -76,6 +82,8 @@ data class LibraryUiState(
     val nowPlaying: NowPlaying = NowPlaying(),
     /** Completed downloads: the Your Episodes rows' download indicators. */
     val downloadedUris: Set<String> = emptySet(),
+    val likedSongCount: Int? = null,
+    val likedSongsDownloaded: Boolean = false,
 )
 
 private data class LibrarySources(
@@ -141,6 +149,9 @@ class LibraryViewModel(private val graph: AppGraph) : ViewModel() {
     private val reload = MutableStateFlow(0)
     private val refreshing = MutableStateFlow(false)
     private val recentRank = MutableStateFlow<Map<String, Int>>(emptyMap())
+    private val pins = graph.accountPins.pins
+    private var latestContextUri: String? = null
+    private var lastRecentFetchMs: Long = 0L
     private val likedCount = MutableStateFlow<Int?>(null)
     private val offline = graph.offlineFlow()
     private val messenger = SessionMessenger(graph.app)
@@ -231,13 +242,15 @@ class LibraryViewModel(private val graph: AppGraph) : ViewModel() {
     }
 
     val state: StateFlow<LibraryUiState> = combine(
-        listing,
+        combine(listing, pins, ::Pair),
         extras,
         episodes,
         episodePartialPages.partial,
         graph.downloads.downloadedUris,
-    ) { (listing, data, presentation, downloaded, collections), extras, episodes, episodesPartial, downloadedUris ->
+    ) { (result, savedPins), extras, episodes, episodesPartial, downloadedUris ->
+        val (listing, data, presentation, downloaded, collections) = result
         val nothing = data.playlists.isEmpty() && data.albums.isEmpty() && data.artists.isEmpty() && data.shows.isEmpty()
+        val pinnedKeys = savedPins.mapTo(HashSet()) { "${it.kind}:${it.id}" }
         LibraryUiState(
             user = extras.user,
             filter = presentation.query.filter,
@@ -257,9 +270,39 @@ class LibraryViewModel(private val graph: AppGraph) : ViewModel() {
                     likedCount = extras.likedCount,
                     likedDownloaded = likedSongsDownloaded(collections, extras.user?.username),
                     downloadCount = extras.downloadCount,
-                )
+                ).filterNot { entry ->
+                    // The built-in Liked Songs card and its account pin are the same page.
+                    // Keep the single pinned shortcut in the unfiltered library, not two.
+                    entry is PinnedEntry.LikedSongs && savedPins.any { it.isLikedSongsPin() } &&
+                        presentation.query.filter == null && presentation.query.text.isBlank() &&
+                        presentation.query.folderPath.isEmpty()
+                }
             },
-            items = listing.items,
+            pinnedKeys = pinnedKeys,
+            shortcuts = if (presentation.query.filter == null && presentation.query.text.isBlank() && presentation.query.folderPath.isEmpty() && !presentation.showEpisodes) {
+                val allItems = buildList<LibraryItem> {
+                    fun visit(items: List<LibraryItem>) { items.forEach { add(it); visit(it.children) } }
+                    visit(data.playlists)
+                    addAll(data.albums)
+                    addAll(data.artists)
+                    addAll(data.shows)
+                }
+                savedPins.distinctBy { pin -> if (pin.isLikedSongsPin()) "likedSongs" else pin.id }.map { pin ->
+                    // Include nested folders and sources not present in the current listing.
+                    val item = allItems.firstOrNull { it.id == pin.id }
+                    if (item == null) pin else pin.copy(
+                        name = item.name,
+                        images = if (item.images.isNotEmpty()) item.images else pin.images,
+                        ownerUsername = item.ownerUsername ?: pin.ownerUsername,
+                        creator = item.creator ?: pin.creator,
+                    )
+                }
+            } else emptyList(),
+            // Pinned shortcuts appear once at the top of the unfiltered root, not again below.
+            items = if (presentation.query.filter == null && presentation.query.text.isBlank() &&
+                presentation.query.folderPath.isEmpty() && !presentation.showEpisodes) {
+                listing.items.filterNot { it.key in pinnedKeys }
+            } else listing.items,
             downloaded = downloaded,
             isInitialLoading = data.isInitialLoading && !presentation.query.offline,
             isRefreshing = extras.refreshing,
@@ -268,10 +311,39 @@ class LibraryViewModel(private val graph: AppGraph) : ViewModel() {
             episodesPartial = episodesPartial,
             nowPlaying = extras.nowPlaying,
             downloadedUris = downloadedUris,
+            likedSongCount = extras.likedCount,
+            likedSongsDownloaded = likedSongsDownloaded(collections, extras.user?.username),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryUiState())
 
     init {
+        // Refresh account pins whenever Your Library is opened, and retain the last verified
+        // per-account list when the session is offline.
+        graph.accountPins.requestRefresh()
+        graph.engine.user.map { it?.username }.distinctUntilChanged()
+            .onEach {
+                recentRank.value = emptyMap()
+                latestContextUri = null
+                lastRecentFetchMs = 0L
+                likedCount.value = null
+            }.launchIn(viewModelScope)
+        // React instantly to a playback context change; fetch server recents only after a
+        // bounded delay because Spotify's recent-context service is eventually consistent.
+        graph.playback.snapshot.map { it.context?.uri?.takeIf(String::isNotBlank) }.distinctUntilChanged()
+            .onEach { contextUri ->
+                if (contextUri != null) {
+                    latestContextUri = contextUri
+                    recentRank.update { ranks -> ranks + (contextUri to -1) }
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    if (now - lastRecentFetchMs >= 45_000L && graph.engineReach() == EngineReach.ONLINE) {
+                        lastRecentFetchMs = now
+                        delay(6_000)
+                        attempt { graph.catalog.recentlyPlayed(RECENTS_LIMIT) }.onSuccess { recent ->
+                            recentRank.value = recentRanks(recent) + (contextUri to -1)
+                        }
+                    }
+                }
+            }.launchIn(viewModelScope)
         // Liked Songs count and recents ranking: once the session is ONLINE (a request made while
         // it connects fails NOT_CONNECTED), and again after reconnecting if they are still missing.
         graph.engineReachFlow()
@@ -301,7 +373,27 @@ class LibraryViewModel(private val graph: AppGraph) : ViewModel() {
     private suspend fun loadExtras() {
         if (graph.engineReach() != EngineReach.ONLINE) return
         attempt { graph.library.likedTracks(0, 1) }.onSuccess { likedCount.value = it.total }
-        attempt { graph.catalog.recentlyPlayed(RECENTS_LIMIT) }.onSuccess { recentRank.value = recentRanks(it) }
+        attempt { graph.catalog.recentlyPlayed(RECENTS_LIMIT) }.onSuccess {
+            val ranks = recentRanks(it)
+            recentRank.value = latestContextUri?.let { uri -> ranks + (uri to -1) } ?: ranks
+            lastRecentFetchMs = android.os.SystemClock.elapsedRealtime()
+        }
+    }
+
+    fun togglePin(item: LibraryItem) = graph.accountPins.toggle(item.libraryPin())
+
+    fun unpin(pin: LibraryPin) = graph.accountPins.unpin(pin)
+
+    fun movePin(from: Int, to: Int) = graph.accountPins.move(from, to)
+
+    fun openPinnedFolder(pin: LibraryPin) {
+        val tree = lastData.value?.playlists.orEmpty()
+        val path = pinnedFolderPath(tree, pin.id)
+        if (path.isNotEmpty()) {
+            searchActive.value = false
+            folderPath.value = path
+            showEpisodes.value = false
+        }
     }
 
     fun selectFilter(value: LibraryFilter) {
@@ -376,6 +468,8 @@ class LibraryViewModel(private val graph: AppGraph) : ViewModel() {
         refreshing.value = true
         viewModelScope.launch {
             try {
+                // Read all current account pins as part of an explicit library refresh.
+                graph.accountPins.refresh()
                 // The refresh drops the cached lists first: only when the server can answer.
                 if (graph.engineReach() == EngineReach.ONLINE) attempt { graph.library.refresh() }
                 reload.update { it + 1 }

@@ -42,6 +42,7 @@ pub(crate) enum Set {
     Artist,
     Show,
     ListenLater,
+    YlPin,
 }
 
 impl Set {
@@ -51,10 +52,11 @@ impl Set {
             Set::Artist => "artist",
             Set::Show => "show",
             Set::ListenLater => "listenlater",
+            Set::YlPin => "ylpin",
         }
     }
 
-    const ALL: [Set; 4] = [Set::Collection, Set::Artist, Set::Show, Set::ListenLater];
+    const ALL: [Set; 5] = [Set::Collection, Set::Artist, Set::Show, Set::ListenLater, Set::YlPin];
 }
 
 /// Where a URI is saved: a collection set, the rootlist (playlists) or nowhere.
@@ -173,6 +175,12 @@ type Listing = (Vec<CollItem>, bool);
 /// Every item of `set`. A listing cut off at `MAX_PAGES` fails: a snapshot is the authoritative
 /// membership (totals, `urisOnly`, download sync), so it is never silently short.
 async fn fetch_set(session: &Session, user: &str, set: Set) -> AppResult<Vec<CollItem>> {
+    // Spotify Desktop uses protobuf for `ylpin`. A full paging read (not a delta with
+    // an unknown sync token) is required to reconstruct every pin on first login.
+    if set == Set::YlPin {
+        let (items, complete) = fetch_set_proto(session, user, set).await?;
+        return if complete { Ok(items) } else { Err(AppError::unavailable("ylpin paging incomplete")) };
+    }
     let (items, complete) = match fetch_set_json(session, user, set).await {
         Ok(v) => v,
         Err(e) if encoding_rejected(&e) => {
@@ -469,6 +477,118 @@ pub(crate) async fn write(session: &Session, uris: &[String], remove: bool) -> A
 }
 
 // ---------------------------------------------------------------------------------------------
+// Account-backed Your Library pins (`ylpin`). These never use library.save/remove: a pin is
+// distinct from following a playlist or saving an album.
+// ---------------------------------------------------------------------------------------------
+
+fn validate_pin_uri(uri: &str) -> AppResult<()> {
+    // Opaque Spotify URIs (including user collections and folder URIs) are passed through. A
+    // synthetic local `folder:` identifier is not a Spotify account item and stays local-only.
+    if !uri.starts_with("spotify:") || uri.len() > 1024 || uri.chars().any(char::is_whitespace) {
+        return Err(AppError::invalid("pin requires a Spotify URI"));
+    }
+    Ok(())
+}
+
+/// `ylpin` timestamps represent list positions, not the recency used by saved collections.
+/// Desktop's first pin has the smallest `added_at` value. Do not reuse `sort_items`.
+fn sort_pin_items(items: &mut Vec<CollItem>) {
+    let mut seen = HashSet::new();
+    items.retain(|i| seen.insert(i.uri.clone()));
+    items.sort_by_key(|i| i.added_at);
+}
+
+async fn pin_items(session: &Session) -> AppResult<(String, Vec<CollItem>)> {
+    let owner = username(session)?;
+    // Never use a potentially stale cached pin list for timestamp positioning or reorders.
+    let mut items = fetch_set(session, &owner, Set::YlPin).await?;
+    sort_pin_items(&mut items);
+    Ok((owner, items))
+}
+
+async fn write_pin_items(session: &Session, owner: &str, items: &[c2::CollectionItem]) -> AppResult<()> {
+    for chunk in items.chunks(100) {
+        let mut req = c2::WriteRequest::new();
+        req.username = owner.to_string();
+        req.set = Set::YlPin.name().to_string();
+        req.items = chunk.to_vec();
+        req.client_update_id = uuid::Uuid::new_v4().simple().to_string();
+        http::spc_send_once(session, Method::POST, "/collection/v2/write", PROTO_CT, PROTO_CT, req.write_to_bytes()?)
+            .await?;
+    }
+    SNAPSHOTS.lock().remove(&Set::YlPin);
+    Ok(())
+}
+
+pub(crate) async fn pins_rpc(_args: Value) -> AppResult<Value> {
+    let session = engine::session()?;
+    let (_, pins) = pin_items(&session).await?;
+    Ok(json!({ "items": pins.iter().map(|i| json!({ "uri": i.uri, "addedAt": i.added_at })).collect::<Vec<_>>() }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetPinArgs {
+    uri: String,
+    pinned: bool,
+}
+
+pub(crate) async fn pin_set_rpc(args: Value) -> AppResult<Value> {
+    let a: SetPinArgs = parse_args(args)?;
+    validate_pin_uri(&a.uri)?;
+    let session = engine::session()?;
+    let (owner, pins) = pin_items(&session).await?;
+    if pins.iter().any(|i| i.uri == a.uri) == a.pinned {
+        return Ok(json!({}));
+    }
+    let mut i = c2::CollectionItem::new();
+    i.uri = a.uri;
+    i.is_removed = !a.pinned;
+    if a.pinned {
+        // Spotify Desktop treats older timestamps as earlier positions. Append after the
+        // existing last pin instead of inserting at the front of the server collection.
+        let now = (now_ms() / 1000).clamp(1, i32::MAX as i64);
+        i.added_at = pins.last().map(|last| last.added_at.saturating_add(1).clamp(1, i32::MAX as i64))
+            .unwrap_or(now) as i32;
+    }
+    write_pin_items(&session, &owner, &[i]).await?;
+    Ok(json!({}))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PinOrderArgs {
+    uris: Vec<String>,
+}
+
+pub(crate) async fn pin_reorder_rpc(args: Value) -> AppResult<Value> {
+    let a: PinOrderArgs = parse_args(args)?;
+    if a.uris.len() > 200 { return Err(AppError::invalid("too many pins")); }
+    for uri in &a.uris { validate_pin_uri(uri)?; }
+    let session = engine::session()?;
+    let (owner, pins) = pin_items(&session).await?;
+    let server: HashSet<&str> = pins.iter().map(|p| p.uri.as_str()).collect();
+    let ordered: HashSet<&str> = a.uris.iter().map(String::as_str).collect();
+    // Never overwrite an external change using a partial or stale local list.
+    if server != ordered || a.uris.len() != pins.len() {
+        return Err(AppError::unavailable("pin order changed on another device; refresh required"));
+    }
+    if pins.iter().map(|p| p.uri.as_str()).eq(a.uris.iter().map(String::as_str)) {
+        return Ok(json!({}));
+    }
+    // Increasing timestamps match the left-to-right/top-to-bottom order in Desktop.
+    let start = (now_ms() / 1000).clamp(1, i32::MAX as i64 - a.uris.len() as i64);
+    let write: Vec<c2::CollectionItem> = a.uris.iter().enumerate().map(|(index, uri)| {
+        let mut i = c2::CollectionItem::new();
+        i.uri = uri.clone();
+        i.added_at = (start + index as i64).clamp(1, i32::MAX as i64) as i32;
+        i
+    }).collect();
+    write_pin_items(&session, &owner, &write).await?;
+    Ok(json!({}))
+}
+
+// ---------------------------------------------------------------------------------------------
 // RPCs
 // ---------------------------------------------------------------------------------------------
 
@@ -755,6 +875,26 @@ pub(crate) async fn followed_artists(session: &Session, n: usize) -> AppResult<V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pins_accept_real_uris_but_not_local_folder_identifiers() {
+        assert!(validate_pin_uri("spotify:playlist:example").is_ok());
+        assert!(validate_pin_uri("spotify:user:somebody:collection").is_ok());
+        assert!(validate_pin_uri("folder:local-only").is_err());
+        assert!(validate_pin_uri("https://open.spotify.com/playlist/example").is_err());
+    }
+
+    #[test]
+    fn pin_order_deduplicates_by_uri_and_sorts_oldest_first() {
+        let mut items = vec![
+            CollItem { uri: "spotify:album:older".into(), added_at: 50 },
+            CollItem { uri: "spotify:playlist:newer".into(), added_at: 90 },
+            CollItem { uri: "spotify:playlist:newer".into(), added_at: 90 },
+        ];
+        sort_pin_items(&mut items);
+        assert_eq!(items.iter().map(|i| i.uri.as_str()).collect::<Vec<_>>(),
+            vec!["spotify:album:older", "spotify:playlist:newer"]);
+    }
 
     #[test]
     fn routes_uris_to_sets() {

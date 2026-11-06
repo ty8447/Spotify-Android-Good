@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.NavigationRailDefaults
@@ -114,9 +115,14 @@ import com.taehagen.spotifygood.ui.components.MediaActionsSheet
 import com.taehagen.spotifygood.ui.screens.menu.ChatJamConversationBar
 import com.taehagen.spotifygood.ui.screens.menu.ChatJamStatusSheet
 import com.taehagen.spotifygood.ui.screens.menu.JamGlobalState
+import com.taehagen.spotifygood.ui.screens.menu.JamIncomingRequestsHost
+import com.taehagen.spotifygood.ui.screens.menu.JamOutgoingRequestsHost
+import com.taehagen.spotifygood.ui.screens.menu.JamOutgoingRequestState
+import com.taehagen.spotifygood.ui.screens.menu.JamWaitingBanner
 import com.taehagen.spotifygood.ui.screens.menu.JamLastLocalContext
 import com.taehagen.spotifygood.ui.screens.menu.JamServiceStatus
 import com.taehagen.spotifygood.ui.screens.menu.ChatUnreadStates
+import com.taehagen.spotifygood.ui.screens.menu.UpdatesUnreadState
 import com.taehagen.spotifygood.ui.screens.menu.MessageOverviewResult
 import com.taehagen.spotifygood.ui.screens.menu.LocalProfileMenu
 import com.taehagen.spotifygood.ui.screens.menu.ProfileMenu
@@ -213,6 +219,24 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
     LaunchedEffect(messageAccount) {
         // Never show a previous account's unread counts after a user change or logout.
         ChatUnreadStates.counts.clear()
+        UpdatesUnreadState.clear()
+    }
+    // Notifications must be polled while the signed-in app is visible, rather than
+    // only when the profile drawer happens to be open. One poller serves all badges.
+    LaunchedEffect(graph, messageAccount, networkAvailable, offlineMode, unreadLifecycle) {
+        if (messageAccount.isNullOrBlank() || !networkAvailable || offlineMode) return@LaunchedEffect
+        unreadLifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                try {
+                    UpdatesUnreadState.update(graph.catalog.notifications())
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (_: Exception) {
+                    // Keep the last successful count; never flash away a badge on failure.
+                }
+                delay(30_000L)
+            }
+        }
     }
     LaunchedEffect(graph.rpc, messageAccount, networkAvailable, offlineMode, unreadLifecycle) {
         if (messageAccount.isNullOrBlank() || !networkAvailable || offlineMode) return@LaunchedEffect
@@ -427,7 +451,15 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
             onStartJam = { navigator.dismissDevices(); JamGlobalState.open() },
         )
         if (JamGlobalState.showSheet) {
-            ModalBottomSheet(onDismissRequest = JamGlobalState::close) {
+            // The queue and Add Songs pages own their scrolling. Keep the
+            // global sheet fully expanded and disable sheet drag gestures so
+            // fast list flings cannot bounce the pinned footer up and down.
+            val jamSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            ModalBottomSheet(
+                onDismissRequest = JamGlobalState::close,
+                sheetState = jamSheetState,
+                sheetGesturesEnabled = false,
+            ) {
                 ChatJamStatusSheet(
                     onDismiss = JamGlobalState::close,
                     conversationTitle = "",
@@ -443,6 +475,20 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
             }
         }
         if (navigator.isSleepTimerOpen) SleepTimerSheet(onDismiss = navigator::dismissSleepTimer)
+        // A host can receive Ask to Join while listening without an existing
+        // Jam. Keep this above the page-level overlays, not inside Jam sheet.
+        JamIncomingRequestsHost(
+            account = messageAccount,
+            online = networkAvailable && !offlineMode,
+            onServerRead = JamGlobalState::acceptServerRead,
+            onJamActivated = JamGlobalState::open,
+            onNotice = navigator::showMessage,
+        )
+        JamOutgoingRequestsHost(
+            account = messageAccount,
+            online = networkAvailable && !offlineMode,
+            onNotice = navigator::showMessage,
+        )
     }
 }
 
@@ -513,6 +559,14 @@ private fun MainContent(
                 (pendingDevice ?: shownPendingDevice)?.let { name ->
                     PendingDeviceBanner(deviceName = name, onClick = onPendingDeviceClick, onCancel = onPendingDeviceCancel)
                 }
+            }
+            val waitingRequest = JamOutgoingRequestState.pending
+            AnimatedVisibility(
+                visible = waitingRequest != null && !sheet.isExpanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                waitingRequest?.let { JamWaitingBanner(it) }
             }
             AnimatedVisibility(
                 visible = hasTrack && !sheet.isExpanded && jamSession?.active == true,

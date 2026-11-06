@@ -293,17 +293,36 @@ fn hand_back_allowed() -> bool {
 /// it is, without a gap (see [`handoff`]), before anything pauses it. The Spirc lets go of the
 /// Player first, no restore point is kept. Returns whether it did.
 pub(crate) fn take_over(generation: u64) -> bool {
-    let Some((spirc, snap)) = hub::link_snapshot(generation) else { return false };
+    let Some((spirc, snap)) = hub::link_snapshot(generation) else {
+        events::emit(events::PLAYBACK_SIGNAL, &serde_json::json!({
+            "kind": "offlineHandoff", "reason": "noSnapshot"
+        }));
+        return false;
+    };
     let now = now_ms();
     // A streamed current track whose data is all in the Player plays on too.
     let buffered = engine::player_host::player().and_then(|p| p.fully_buffered()).and_then(|u| u.to_uri().ok());
-    let Some(adoption) = handoff_with(&snap, downloads::is_downloaded, buffered.as_deref(), now) else { return false };
+    let Some(adoption) = handoff_with(&snap, downloads::is_downloaded, buffered.as_deref(), now) else {
+        let downloaded_current = snap.track.as_ref().is_some_and(|t| downloads::is_downloaded(&t.uri));
+        events::emit(events::PLAYBACK_SIGNAL, &serde_json::json!({
+            "kind": "offlineHandoff", "reason": "noEligibleTrack",
+            "downloadedCurrent": downloaded_current, "fullyBuffered": buffered.is_some()
+        }));
+        return false;
+    };
     if engine::player_host::player().is_none() {
+        events::emit(events::PLAYBACK_SIGNAL, &serde_json::json!({
+            "kind": "offlineHandoff", "reason": "noPlayer"
+        }));
         return false;
     }
     // From now on the dying Spirc doesn't pause or stop the Player.
     spirc.release_player();
     log::info!("the downloads play on offline ({} tracks)", adoption.uris.len());
+    events::emit(events::PLAYBACK_SIGNAL, &serde_json::json!({
+        "kind": "offlineHandoff", "reason": "adopted",
+        "trackCount": adoption.uris.len(), "streamedCurrent": adoption.streamed
+    }));
     let action = QUEUE.lock().adopt(adoption, now);
     if let Some(action) = action {
         // Resumes a Player that the Spirc paused when its task ended.

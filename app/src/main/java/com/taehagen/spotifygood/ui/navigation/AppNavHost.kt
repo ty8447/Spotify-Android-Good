@@ -27,6 +27,7 @@ import com.taehagen.spotifygood.ui.screens.library.LibraryScreen
 import com.taehagen.spotifygood.ui.screens.library.LikedSongsScreen
 import com.taehagen.spotifygood.ui.screens.menu.MessagesProbeScreen
 import com.taehagen.spotifygood.ui.screens.menu.MessageConversationScreen
+import com.taehagen.spotifygood.ui.screens.menu.PendingDirectMessageScreen
 import com.taehagen.spotifygood.ui.screens.menu.ActivityScreen
 import com.taehagen.spotifygood.ui.screens.menu.RecentsScreen
 import com.taehagen.spotifygood.ui.screens.menu.UpdatesScreen
@@ -84,6 +85,10 @@ fun AppNavHost(
         composable<Route.WhatsNew> { WhatsNewScreen(contentPadding) }
         composable<Route.Activity> { ActivityScreen(contentPadding) }
         composable<Route.Messages> { MessagesProbeScreen(contentPadding) }
+        composable<Route.NewDirectMessage> { entry ->
+            val route = entry.toRoute<Route.NewDirectMessage>()
+            PendingDirectMessageScreen(route.username, route.title, contentPadding)
+        }
         composable<Route.MessageConversation> { entry ->
             val route = entry.toRoute<Route.MessageConversation>()
             MessageConversationScreen(route.hierarchyId, route.title, contentPadding)

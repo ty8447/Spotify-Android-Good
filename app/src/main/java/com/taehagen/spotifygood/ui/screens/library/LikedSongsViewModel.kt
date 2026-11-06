@@ -21,6 +21,8 @@ import com.taehagen.spotifygood.model.SavedTrack
 import com.taehagen.spotifygood.model.Track
 import com.taehagen.spotifygood.playback.EngineReach
 import com.taehagen.spotifygood.playback.PlayRequest
+import com.taehagen.spotifygood.playback.ShuffleMode
+import com.taehagen.spotifygood.playback.shuffleMode
 import com.taehagen.spotifygood.ui.components.SessionMessenger
 import com.taehagen.spotifygood.ui.components.fastScrollDate
 import com.taehagen.spotifygood.ui.components.fastScrollLetter
@@ -566,7 +568,7 @@ class LikedSongsViewModel(private val graph: AppGraph) : ViewModel() {
         // Not ONLINE, a track list goes to the offline queue: planned like any plain list (the
         // reach as of now, after the wait and the sort).
         when (val plan = planSortedPlay(uris, startUri, graph.engineReach(), graph.downloads.downloadedUris.value)) {
-            is SortedStart.Load -> startList(plan.request)
+            is SortedStart.Load -> startList(plan.request.copy(shuffle = false, smartShuffle = false))
             SortedStart.NotDownloaded -> messenger.post(R.string.playback_error_not_available_offline)
             SortedStart.Nothing -> if (startUri == null) messages.trySend(LibraryMessage.NOTHING_TO_PLAY)
         }
@@ -713,7 +715,9 @@ class LikedSongsViewModel(private val graph: AppGraph) : ViewModel() {
             plays.cancel()
             graph.player.togglePlayPause()
         } else {
-            play(startUri = null, shuffle = false)
+            val snapshot = graph.playback.snapshot.value
+            val selected = graph.player.queuedShuffleMode.value ?: snapshot.shuffleMode
+            play(startUri = null, shuffle = selected != ShuffleMode.OFF, smart = selected == ShuffleMode.SMART)
         }
     }
 
@@ -723,7 +727,8 @@ class LikedSongsViewModel(private val graph: AppGraph) : ViewModel() {
         graph.player.play(request)
     }
 
-    fun shuffle() = play(startUri = null, shuffle = true)
+    /** Selects off → shuffle → smart shuffle → off without starting any music. */
+    fun shuffle() = graph.player.cycleShuffle(allowSmartWithoutContext = !state.value.offline)
 
     fun playTrack(track: Track) {
         if (track.isPlaceholder || !track.playable) return
@@ -737,9 +742,9 @@ class LikedSongsViewModel(private val graph: AppGraph) : ViewModel() {
      * a newer tap replaces a waiting one ([SortedPlayStarter]). What plays is decided when it
      * starts: the sort or the session may have changed during the wait.
      */
-    private fun play(startUri: String?, shuffle: Boolean) {
+    private fun play(startUri: String?, shuffle: Boolean, smart: Boolean = false) {
         val waits = !shuffle && sorted && likedPlayWaits(graph.engineReach(), state.value.fromDownload, pager.state.value)
-        plays.play(awaitRows = if (waits) ::awaitAllPages else null) { startPlay(startUri, shuffle) }
+        plays.play(awaitRows = if (waits) ::awaitAllPages else null) { startPlay(startUri, shuffle, smart) }
     }
 
     private suspend fun awaitAllPages() {
@@ -748,7 +753,7 @@ class LikedSongsViewModel(private val graph: AppGraph) : ViewModel() {
         awaitLikedPages(pager.state, reach, sort.map { it != TrackSort.RECENTLY_ADDED })
     }
 
-    private suspend fun startPlay(startUri: String?, shuffle: Boolean) {
+    private suspend fun startPlay(startUri: String?, shuffle: Boolean, smart: Boolean) {
         val current = state.value
         val context = current.contextUri
         // Sorted: the shown order (shuffle has no order to keep: the context, below).
@@ -760,7 +765,7 @@ class LikedSongsViewModel(private val graph: AppGraph) : ViewModel() {
             if (startUri != null) {
                 graph.player.playContext(context, startUri = startUri)
             } else {
-                graph.player.play(PlayRequest(contextUri = context, shuffle = shuffle))
+                graph.player.play(PlayRequest(contextUri = context, shuffle = shuffle, smartShuffle = smart && !current.offline))
             }
             return
         }
@@ -774,7 +779,7 @@ class LikedSongsViewModel(private val graph: AppGraph) : ViewModel() {
             messages.trySend(LibraryMessage.NOTHING_TO_PLAY)
             return
         }
-        startList(PlayRequest(trackUris = uris, startIndex = if (shuffle) null else 0, shuffle = shuffle))
+        startList(PlayRequest(trackUris = uris, startIndex = if (shuffle) null else 0, shuffle = shuffle, smartShuffle = false))
     }
 
     /** Download toggle (removal is confirmed by the UI first). */

@@ -6,6 +6,8 @@ use super::user::image_url;
 use super::util::encode_component;
 use crate::engine;
 use crate::error::{AppError, AppResult};
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 use crate::rpc::{parse_args, to_value};
 use bytes::Bytes;
 use ::http::header::{HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
@@ -79,28 +81,97 @@ pub(super) async fn list(args: Value) -> AppResult<Value> {
     to_value(&parse_people(&json, &a.kind)?)
 }
 
-/// Follow/unfollow user through Spotify's 2026 library API. Only confirm changes on HTTP success.
-/// OAuth permission and account-specific server support are required; errors propagate to UI.
+// Serialize follow mutations without assuming a global server quota or inventing
+// a long cooldown. A 429 from this OAuth client need not mean that the official
+// Spotify application's own API session is limited too.
+fn follow_gate() -> &'static Mutex<()> {
+    static GATE: OnceLock<Mutex<()>> = OnceLock::new();
+    GATE.get_or_init(|| Mutex::new(()))
+}
+
+/// Captured from the official Spotify desktop application on 2026-10-30:
+/// POST https://api-partner.spotify.com/pathfinder/v2/query
+/// operations followUsers/unfollowUsers with { variables: { usernames: [name] },
+/// extensions: { persistedQuery: { version: 1, sha256Hash } } }.
+/// The client sees `data.<operation>.responses[].result == true` on success.
+/// This is an experimental integration: the endpoint and response are proven
+/// for the desktop client, but Android-session authorization still needs a
+/// live test. Never fall back to a second non-idempotent request on failure.
+const FOLLOW_PARTNER_URL: &str = "https://api-partner.spotify.com/pathfinder/v2/query";
+const FOLLOW_PERSISTED_QUERY: &str = "c00e0cb6c7766e7230fc256cf4fe07aec63b53d1160a323940fce7b664e95596";
+
+fn follow_request_json(username: &str, follow: bool) -> Value {
+    let operation = if follow { "followUsers" } else { "unfollowUsers" };
+    serde_json::json!({
+        "variables": { "usernames": [username] },
+        "operationName": operation,
+        "extensions": {
+            "persistedQuery": { "version": 1, "sha256Hash": FOLLOW_PERSISTED_QUERY }
+        }
+    })
+}
+
+fn verify_follow_result(bytes: &[u8], username: &str, following: bool) -> AppResult<()> {
+    let payload: Value = serde_json::from_slice(bytes).map_err(|_| {
+        AppError::unavailable("Spotify returned an invalid Follow response")
+    })?;
+    if payload.get("errors").and_then(Value::as_array).is_some_and(|e| !e.is_empty()) {
+        return Err(AppError::unavailable(
+            "Spotify rejected the Follow operation; refresh the list before retrying",
+        ));
+    }
+    let operation = if following { "followUsers" } else { "unfollowUsers" };
+    let rows = payload.get("data")
+        .and_then(|data| data.get(operation))
+        .and_then(|value| value.get("responses"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::unavailable(
+            "Spotify returned no Follow confirmation; refresh the list before retrying",
+        ))?;
+    // Only a positive, matching response confirms a successful mutation.
+    if rows.len() == 1
+        && rows[0].get("username").and_then(Value::as_str) == Some(username)
+        && rows[0].get("result").and_then(Value::as_bool) == Some(true)
+    {
+        return Ok(());
+    }
+    Err(AppError::unavailable(
+        "Spotify did not confirm the Follow change; refresh the list before retrying",
+    ))
+}
+
 pub(super) async fn follow(args: Value) -> AppResult<Value> {
     let a: FollowArgs = parse_args(args)?;
     let username = a.username.strip_prefix("spotify:user:").unwrap_or(&a.username);
-    if username.is_empty() || username.contains(':') || username.contains('/') {
+    if username.is_empty() || username.len() > 128 || username.contains(':') ||
+        username.contains('/') || username.contains('?') || username.contains('#') {
         return Err(AppError::invalid("invalid user ID"));
     }
+    // A failed or ambiguous POST is not automatically replayed. The lock only
+    // prevents two concurrent manual taps; there is no speculative cooldown.
+    let _guard = follow_gate().try_lock().map_err(|_| {
+        AppError::unavailable("A follow request is already in progress. Try again shortly.")
+    })?;
     let session = engine::session()?;
-    let token = match engine::oauth_token() {
-        Some((token, _)) => token,
-        None => http::timed(session.login5().auth_token()).await?.access_token,
-    };
-    let uri = format!("spotify:user:{username}");
-    let target = format!("https://api.spotify.com/v1/me/library?uris={}", encode_component(&uri));
-    let method = if a.following { Method::PUT } else { Method::DELETE };
-    let req = Request::builder().method(method).uri(target)
-        .header(AUTHORIZATION, format!("Bearer {token}"))
+    let token = session.login5().auth_token().await?;
+    let client_token = session.spclient().client_token().await.map_err(|_| {
+        AppError::unavailable("Spotify client token unavailable; please retry later")
+    })?;
+    let body = follow_request_json(username, a.following).to_string();
+    let mut request = Request::builder().method(Method::POST).uri(FOLLOW_PARTNER_URL)
+        .header(AUTHORIZATION, format!("{} {}", token.token_type, token.access_token))
         .header(ACCEPT, JSON)
         .header(CONTENT_TYPE, JSON)
-        .body(Bytes::new()).map_err(|e| AppError::invalid(format!("invalid follow request: {e}")))?;
-    http::send(Some(&session), req, http::TIMEOUT).await?;
+        .header("app-platform", "Android-ARM")
+        .body(Bytes::from(body))
+        .map_err(|e| AppError::invalid(format!("invalid Follow request: {e}")))?;
+    let value = HeaderValue::from_str(&client_token).map_err(|_| {
+        AppError::unavailable("Invalid Spotify client token")
+    })?;
+    request.headers_mut().insert(HeaderName::from_static("client-token"), value);
+    let response = http::send(Some(&session), request, http::TIMEOUT).await?;
+    verify_follow_result(&response, username, a.following)?;
+    log::info!("partner Follow operation confirmed; follow={}", a.following);
     to_value(&serde_json::json!({ "success": true }))
 }
 
@@ -119,6 +190,29 @@ mod tests {
         assert!(!followers.items[0].is_following);
         assert!(parse_people(&v, "following").unwrap().items[0].is_following);
     }
+
+    #[test]
+    fn captured_follow_request_shape() {
+        let follow = follow_request_json("alice", true);
+        assert_eq!(follow["operationName"], "followUsers");
+        assert_eq!(follow["variables"]["usernames"], serde_json::json!(["alice"]));
+        assert_eq!(follow["extensions"]["persistedQuery"]["sha256Hash"], FOLLOW_PERSISTED_QUERY);
+        assert_eq!(follow_request_json("alice", false)["operationName"], "unfollowUsers");
+    }
+
+    #[test]
+    fn captured_follow_confirmation_is_strict() {
+        let success = br#"{"data":{"followUsers":{"responses":[{"username":"alice","result":true}]}}}"#;
+        assert!(verify_follow_result(success, "alice", true).is_ok());
+        assert!(verify_follow_result(success, "bob", true).is_err());
+        assert!(verify_follow_result(success, "alice", false).is_err());
+        let rejected = br#"{"data":{"followUsers":{"responses":[{"username":"alice","result":false}]}}}"#;
+        assert!(verify_follow_result(rejected, "alice", true).is_err());
+        let errors = br#"{"errors":[{"message":"rate limited"}],"data":{"followUsers":{"responses":[{"username":"alice","result":true}]}}}"#;
+        assert!(verify_follow_result(errors, "alice", true).is_err());
+    }
+
+
 }
 
 

@@ -45,17 +45,17 @@ class AudioFocusStateTest {
     }
 
     @Test
-    fun grantedRequestClearsAStaleDuck() {
+    fun escalationToTransientLossClearsDuckAndKeepsPendingFocus() {
         assertTrue(state.request())
         state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)
-        // The ducking app escalates to a transient loss (we pause), then playback is restarted
-        // by the user before any GAIN: the request is granted synchronously, no GAIN follows.
         state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
         assertFalse(state.hasFocus)
-        assertTrue(state.request())
-        assertEquals(2, f.requests)
-        assertEquals("gain restored after the granted request", listOf(true, false), f.duck)
         assertFalse(state.isDucked)
+        assertFalse("a sink restart must await focus gain", state.request())
+        assertEquals("no second request until GAIN", 1, f.requests)
+        assertEquals(listOf(true, false), f.duck)
+        state.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(1, f.events.count { it == "resume" })
     }
 
     @Test
@@ -154,6 +154,69 @@ class AudioFocusStateTest {
         assertTrue(state.isWaitingForGain)
         state.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
         assertEquals(listOf("pause", "resume"), f.events)
+    }
+
+    @Test
+    fun sinkRestartDuringTransientLossCannotErasePendingResume() {
+        assertTrue(state.request())
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        f.playing = true // stale AudioTrack restart before the queued native pause is processed
+        assertFalse(state.request())
+        assertEquals("no focus stealing while awaiting GAIN", 1, f.requests)
+        assertTrue(state.isWaitingForGain)
+        state.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(1, f.events.count { it == "resume" })
+    }
+
+    @Test
+    fun escalationFromDuckToPauseRestoresGainWithoutStealingFocus() {
+        assertTrue(state.request())
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)
+        assertTrue(state.isDucked)
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        assertFalse(state.isDucked)
+        assertEquals(listOf(true, false), f.duck)
+        f.playing = false
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)
+        assertFalse("duck while paused must not stick", state.isDucked)
+        state.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(1, f.events.count { it == "resume" })
+    }
+
+    @Test
+    fun stuckDuckOnlyRecoversAfterPlatformGrantsFocus() {
+        assertTrue(state.request())
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)
+        f.result = AudioManager.AUDIOFOCUS_REQUEST_DELAYED
+        assertEquals("delayed", state.recheckStaleDuck())
+        assertFalse(state.isDucked)
+        assertFalse(state.hasFocus)
+        assertTrue(state.isWaitingForGain)
+        assertEquals(listOf("pause"), f.events)
+        state.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf("pause", "resume"), f.events)
+    }
+
+    @Test
+    fun successfulFocusRecheckUnducksWithoutResumingOrPausing() {
+        assertTrue(state.request())
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)
+        assertEquals("granted", state.recheckStaleDuck())
+        assertFalse(state.isDucked)
+        assertEquals(listOf(true, false), f.duck)
+        assertTrue(f.events.isEmpty())
+    }
+
+    @Test
+    fun focusRecheckFailurePausesInsteadOfPlayingWithoutFocus() {
+        assertTrue(state.request())
+        state.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK)
+        f.result = AudioManager.AUDIOFOCUS_REQUEST_FAILED
+        assertEquals("failed", state.recheckStaleDuck())
+        assertFalse(state.isDucked)
+        assertFalse(state.hasFocus)
+        assertFalse(state.isRequested)
+        assertEquals(listOf("pause"), f.events)
     }
 
     @Test

@@ -21,11 +21,36 @@ internal data class VoiceRequest(
     val isBlank: Boolean get() = query.isBlank() && names.isEmpty()
 
     /** The kinds asked for ([VoiceMatch.kindsFor]). */
-    val kinds: Set<VoiceMatch.Kind> get() = VoiceMatch.kindsFor(focus)
+    val kinds: Set<VoiceMatch.Kind>
+        get() = if (focus != null) VoiceMatch.kindsFor(focus) else when {
+            VoiceMatch.Kind.PLAYLIST in names -> setOf(VoiceMatch.Kind.PLAYLIST)
+            VoiceMatch.Kind.ALBUM in names -> setOf(VoiceMatch.Kind.ALBUM)
+            VoiceMatch.Kind.SONG in names -> setOf(VoiceMatch.Kind.SONG)
+            VoiceMatch.Kind.ARTIST in names -> setOf(VoiceMatch.Kind.ARTIST)
+            else -> VoiceMatch.kindsFor(null)
+        }
 
-    /** The text to search the catalog for: what was said, else the name given for the focus (or any). */
+    /** A structured voice hint can identify the target even when Gemini sends no query text. */
+    val catalogFocus: String?
+        get() = focus ?: when {
+            VoiceMatch.Kind.PLAYLIST in names -> VoiceMatch.PLAYLIST_FOCUS
+            VoiceMatch.Kind.ALBUM in names -> MediaStore.Audio.Albums.ENTRY_CONTENT_TYPE
+            VoiceMatch.Kind.SONG in names -> MediaStore.Audio.Media.ENTRY_CONTENT_TYPE
+            VoiceMatch.Kind.ARTIST in names -> MediaStore.Audio.Artists.ENTRY_CONTENT_TYPE
+            else -> null
+        }
+
+    /** Prefer the extracted media name to the entire spoken sentence when both are provided. */
     val text: String
-        get() = query.trim().ifEmpty { kinds.firstNotNullOfOrNull { names[it] } ?: names.values.firstOrNull().orEmpty() }
+        get() = when {
+            VoiceMatch.Kind.PLAYLIST in names -> names.getValue(VoiceMatch.Kind.PLAYLIST)
+            VoiceMatch.Kind.ALBUM in names -> names.getValue(VoiceMatch.Kind.ALBUM)
+            VoiceMatch.Kind.SONG in names -> listOfNotNull(
+                names[VoiceMatch.Kind.SONG], names[VoiceMatch.Kind.ARTIST],
+            ).joinToString(" ")
+            VoiceMatch.Kind.ARTIST in names -> names.getValue(VoiceMatch.Kind.ARTIST)
+            else -> query.trim()
+        }
 
     companion object {
         fun of(query: String?, focus: String?, artist: String?, album: String?, title: String?, playlist: String?): VoiceRequest =

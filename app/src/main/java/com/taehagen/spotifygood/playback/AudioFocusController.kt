@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.audio.AudioFocusRequestCompat
@@ -48,17 +49,45 @@ internal class AudioFocusController(context: Context, callbacks: Callbacks) {
         )
         .setWillPauseWhenDucked(true)
         .setAcceptsDelayedFocusGain(true)
-        .setOnAudioFocusChangeListener({ change -> state.onFocusChange(change) }, main)
+        .setOnAudioFocusChangeListener({ change ->
+            val kind = when (change) {
+                AudioManager.AUDIOFOCUS_GAIN -> "gain"
+                AudioManager.AUDIOFOCUS_LOSS -> "loss_permanent"
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> "loss_transient"
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> "duck_or_pause_speech"
+                else -> "other"
+            }
+            DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "audio", "focus_change", "kind=$kind")
+            state.onFocusChange(change)
+            DiagnosticLogs.record(
+                DiagnosticLogs.Level.INFO, "audio", "focus_state",
+                "kind=$kind,requested=${state.isRequested},held=${state.hasFocus}," +
+                    "ducked=${state.isDucked},resumePending=${state.isWaitingForGain}",
+            )
+            syncDuckRecovery()
+        }, main)
         .build()
 
     private val state: AudioFocusState = AudioFocusState(
         callbacks = callbacks,
         platform = object : AudioFocusState.Platform {
-            override fun requestFocus(): Int = try {
-                AudioManagerCompat.requestAudioFocus(audioManager, request)
-            } catch (e: RuntimeException) {
-                Log.w(TAG, "requestAudioFocus failed", e)
-                AudioManager.AUDIOFOCUS_REQUEST_FAILED
+            override fun requestFocus(): Int {
+                val outcome = try {
+                    AudioManagerCompat.requestAudioFocus(audioManager, request)
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "requestAudioFocus failed", e)
+                    AudioManager.AUDIOFOCUS_REQUEST_FAILED
+                }
+                val kind = when (outcome) {
+                    AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> "granted"
+                    AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> "delayed"
+                    else -> "failed"
+                }
+                DiagnosticLogs.record(
+                    if (outcome == AudioManager.AUDIOFOCUS_REQUEST_FAILED) DiagnosticLogs.Level.WARN else DiagnosticLogs.Level.INFO,
+                    "audio", "focus_request", "outcome=$kind"
+                )
+                return outcome
             }
 
             override fun abandonFocus() {
@@ -68,6 +97,30 @@ internal class AudioFocusController(context: Context, callbacks: Callbacks) {
             override fun now(): Long = SystemClock.elapsedRealtime()
         },
     )
+
+    // Some car/notification focus implementations issue CAN_DUCK but never send the matching
+    // GAIN. Recheck with Android instead of unconditionally restoring full volume on a timer.
+    // A long delay avoids interrupting normal spoken directions and short notifications.
+    private val duckRecovery = object : Runnable {
+        override fun run() {
+            if (!state.isDucked || !state.hasFocus) return
+            if (audioManager.mode != AudioManager.MODE_NORMAL) {
+                main.postDelayed(this, DUCK_MODE_RECHECK_MS)
+                return
+            }
+            val outcome = state.recheckStaleDuck()
+            DiagnosticLogs.record(
+                DiagnosticLogs.Level.INFO, "audio", "duck_focus_recheck",
+                "outcome=$outcome,ducked=${state.isDucked},held=${state.hasFocus}",
+            )
+            if (state.isDucked && state.hasFocus) main.postDelayed(this, DUCK_RECOVERY_MS)
+        }
+    }
+
+    private fun syncDuckRecovery() {
+        main.removeCallbacks(duckRecovery)
+        if (state.isDucked && state.hasFocus) main.postDelayed(duckRecovery, DUCK_RECOVERY_MS)
+    }
 
     /** True while we are registered in the focus stack (even if temporarily lost). */
     val isRequested: Boolean get() = state.isRequested
@@ -79,10 +132,13 @@ internal class AudioFocusController(context: Context, callbacks: Callbacks) {
      * Requests focus for local playback that just started. Returns false if playback must not
      * continue right now (the caller has been asked to pause through [Callbacks.pauseForFocus]).
      */
-    fun request(): Boolean = state.request()
+    fun request(): Boolean = state.request().also { syncDuckRecovery() }
 
     /** Leaves the focus stack (stop, long pause, remote playback, engine stop). */
-    fun abandon() = state.abandon()
+    fun abandon() {
+        main.removeCallbacks(duckRecovery)
+        state.abandon()
+    }
 
     /** True while a transient loss is pending a resume (keep focus requested meanwhile). */
     val isWaitingForGain: Boolean get() = state.isWaitingForGain
@@ -93,6 +149,8 @@ internal class AudioFocusController(context: Context, callbacks: Callbacks) {
     companion object {
         private const val TAG = "AudioFocus"
         const val DUCK_VOLUME = 0.2f
+        private const val DUCK_RECOVERY_MS = 60_000L
+        private const val DUCK_MODE_RECHECK_MS = 15_000L
         /** Transient losses longer than this do not auto-resume; focus is abandoned after it as well. */
         const val RESUME_WINDOW_MS = AudioFocusState.RESUME_WINDOW_MS
     }
@@ -138,6 +196,13 @@ internal class AudioFocusState(
             if (callbacks.isPlayingLocally()) wasPlayingWithFocus = true
             return true
         }
+        if (isRequested && isWaitingForGain) {
+            // The same AudioTrack can briefly start again while an asynchronous focus pause is
+            // being processed. Re-requesting focus here can steal it from a call/navigation
+            // prompt and erase our pending resume even though no GAIN callback was delivered.
+            callbacks.pauseForFocus()
+            return false
+        }
         return when (platform.requestFocus()) {
             AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
                 isRequested = true
@@ -161,8 +226,41 @@ internal class AudioFocusState(
                 isRequested = false
                 hasFocus = false
                 wasPlayingWithFocus = false
+                setDucked(false)
                 callbacks.pauseForFocus()
                 false
+            }
+        }
+    }
+
+    /**
+     * Android sometimes omits the GAIN that should end ducking (notably after car prompts).
+     * A fresh, explicit platform grant is required before restoring normal gain. Never
+     * un-duck on elapsed time alone; failed/delayed requests must stop local audio instead.
+     */
+    fun recheckStaleDuck(): String {
+        if (!isRequested || !hasFocus || !isDucked || !callbacks.isPlayingLocally()) return "skipped"
+        return when (platform.requestFocus()) {
+            AudioManager.AUDIOFOCUS_REQUEST_GRANTED -> {
+                setDucked(false)
+                "granted"
+            }
+            AudioManager.AUDIOFOCUS_REQUEST_DELAYED -> {
+                hasFocus = false
+                wasPlayingWithFocus = true
+                resumeOnGainUntil = platform.now() + RESUME_WINDOW_MS
+                setDucked(false)
+                callbacks.pauseForFocus()
+                "delayed"
+            }
+            else -> {
+                hasFocus = false
+                isRequested = false
+                resumeOnGainUntil = 0L
+                wasPlayingWithFocus = false
+                setDucked(false)
+                callbacks.pauseForFocus()
+                "failed"
             }
         }
     }
@@ -202,7 +300,8 @@ internal class AudioFocusState(
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> transientLoss()
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                if (callbacks.isSpeech()) {
+                if (callbacks.isSpeech() || !hasFocus) {
+                    // Never leave a stale 20% gain behind after a transient focus loss.
                     transientLoss()
                 } else {
                     // Still our focus (see the class comment); only the gain is lowered.
@@ -214,11 +313,20 @@ internal class AudioFocusState(
 
     private fun transientLoss() {
         hasFocus = false
+        if (isWaitingForGain) {
+            setDucked(false)
+            return // Repeated focus-loss callbacks are not new pauses.
+        }
         // Only auto-resume what we interrupted, never something the user had paused.
-        if (!callbacks.isPlayingLocally() && !wasPlayingWithFocus) return
+        val interruptedPlayback = callbacks.isPlayingLocally() || wasPlayingWithFocus
         wasPlayingWithFocus = false
-        resumeOnGainUntil = platform.now() + RESUME_WINDOW_MS
-        callbacks.pauseForFocus()
+        if (interruptedPlayback) {
+            resumeOnGainUntil = platform.now() + RESUME_WINDOW_MS
+            callbacks.pauseForFocus()
+        }
+        // A duck may escalate to a full interruption; the next sink cannot inherit 20% gain.
+        // Queue pause first so we do not raise output gain before requesting the pause.
+        setDucked(false)
     }
 
     private fun setDucked(ducked: Boolean) {

@@ -53,6 +53,7 @@ import androidx.compose.material.icons.rounded.PersonRemove
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Podcasts
 import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.rounded.RemoveDone
@@ -103,6 +104,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.taehagen.spotifygood.AppGraph
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.data.PlaylistAddChoice
+import com.taehagen.spotifygood.data.LibraryPin
+import com.taehagen.spotifygood.data.LibraryPins
 import com.taehagen.spotifygood.data.Resource
 import com.taehagen.spotifygood.data.SpotifyUris
 import com.taehagen.spotifygood.data.dataOrNull
@@ -228,12 +231,51 @@ private fun MediaActionsContent(target: MediaActionTarget, dismiss: () -> Unit, 
                     is MediaActionTarget.ArtistTarget -> ArtistActions(target, scope)
                     is MediaActionTarget.PlaylistTarget -> PlaylistActions(target, scope)
                     is MediaActionTarget.ShowTarget -> ShowActions(target, scope)
+                    is MediaActionTarget.LibraryPinTarget -> {
+                        // Library targets reuse the real media sheet; never prepend a second
+                        // artwork/title header or put Pin above the standard actions.
+                        when (val original = target.media) {
+                            is MediaActionTarget.AlbumTarget -> AlbumActions(original, scope, target.pin)
+                            is MediaActionTarget.PlaylistTarget -> PlaylistActions(original, scope, target.pin)
+                            is MediaActionTarget.ArtistTarget -> ArtistActions(original, scope, target.pin)
+                            is MediaActionTarget.ShowTarget -> ShowActions(original, scope, target.pin)
+                            is MediaActionTarget.TrackTarget -> { TrackActions(original, scope); LibraryPinAction(target.pin, scope) }
+                            is MediaActionTarget.EpisodeTarget -> { EpisodeActions(original, scope); LibraryPinAction(target.pin, scope) }
+                            else -> {
+                                SheetHeader(imageUrl = null, title = target.pin.name, subtitle = "Your Library")
+                                LibraryPinAction(target.pin, scope)
+                            }
+                        }
+                    }
                 }
                 is SheetPage.Artists -> ArtistPicker(current.artists, scope)
-                SheetPage.Rename -> (target as? MediaActionTarget.PlaylistTarget)?.let { RenamePlaylist(it, scope) }
-                SheetPage.ConfirmDelete -> (target as? MediaActionTarget.PlaylistTarget)?.let { ConfirmDeletePlaylist(it, scope) }
+                SheetPage.Rename -> ((target as? MediaActionTarget.PlaylistTarget)
+                    ?: (target as? MediaActionTarget.LibraryPinTarget)?.media as? MediaActionTarget.PlaylistTarget)
+                    ?.let { RenamePlaylist(it, scope) }
+                SheetPage.ConfirmDelete -> ((target as? MediaActionTarget.PlaylistTarget)
+                    ?: (target as? MediaActionTarget.LibraryPinTarget)?.media as? MediaActionTarget.PlaylistTarget)
+                    ?.let { ConfirmDeletePlaylist(it, scope) }
             }
         }
+    }
+}
+
+/** The account-local fallback pin, placed after Save/Remove from library in each sheet. */
+@Composable
+private fun LibraryPinAction(pin: LibraryPin, s: ActionScope) {
+    val saved by s.graph.accountPins.pins.collectAsStateWithLifecycle()
+    val pinned = saved.any { it.id == pin.id }
+    val type = when (pin.kind) {
+        "PLAYLIST" -> "Playlist"
+        "ALBUM" -> "Album"
+        "ARTIST" -> "Artist"
+        "SHOW" -> "Podcast"
+        "FOLDER" -> "Folder"
+        else -> "Item"
+    }
+    SheetAction(Icons.Rounded.PushPin, if (pinned) "Unpin $type" else "Pin $type") {
+        s.graph.accountPins.toggle(pin)
+        s.dismiss()
     }
 }
 
@@ -350,7 +392,7 @@ private fun EpisodeActions(t: MediaActionTarget.EpisodeTarget, s: ActionScope) {
 }
 
 @Composable
-private fun AlbumActions(t: MediaActionTarget.AlbumTarget, s: ActionScope) {
+private fun AlbumActions(t: MediaActionTarget.AlbumTarget, s: ActionScope, pin: LibraryPin? = null) {
     val album = t.album
     val saved by remember(album.uri) { s.graph.library.isSaved(album.uri) }.collectAsStateWithLifecycle(null)
     val downloaded by remember(album.uri) { s.graph.downloads.isCollectionDownloaded(album.uri) }.collectAsStateWithLifecycle(false)
@@ -385,6 +427,7 @@ private fun AlbumActions(t: MediaActionTarget.AlbumTarget, s: ActionScope) {
     ) { shown ->
         s.runner.setSaved(album.uri, !shown, R.string.shell_msg_saved_to_library, R.string.shell_msg_removed_from_library)
     }
+    pin?.let { LibraryPinAction(it, s) }
     CollectionDownloadAction(downloaded, s) {
         CollectionRef(album.uri, CollectionType.ALBUM, album.name, album.images.best(300))
     }
@@ -403,7 +446,7 @@ private fun AlbumActions(t: MediaActionTarget.AlbumTarget, s: ActionScope) {
 }
 
 @Composable
-private fun ArtistActions(t: MediaActionTarget.ArtistTarget, s: ActionScope) {
+private fun ArtistActions(t: MediaActionTarget.ArtistTarget, s: ActionScope, pin: LibraryPin? = null) {
     val artist = t.artist
     val following by remember(artist.uri) { s.graph.library.isSaved(artist.uri) }.collectAsStateWithLifecycle(null)
     SheetHeader(
@@ -422,6 +465,7 @@ private fun ArtistActions(t: MediaActionTarget.ArtistTarget, s: ActionScope) {
     ) { shown ->
         s.runner.setSaved(artist.uri, !shown, R.string.shell_msg_following, R.string.shell_msg_unfollowed)
     }
+    pin?.let { LibraryPinAction(it, s) }
     SheetAction(Icons.Rounded.Person, stringResource(R.string.shell_action_view_artist)) { s.go(Route.Artist(artist.uri)) }
     SheetAction(Icons.Rounded.Radio, stringResource(R.string.shell_action_start_radio)) { s.radio(artist.uri) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(artist.uri, artist.name) }
@@ -432,7 +476,7 @@ private fun ArtistActions(t: MediaActionTarget.ArtistTarget, s: ActionScope) {
 }
 
 @Composable
-private fun PlaylistActions(t: MediaActionTarget.PlaylistTarget, s: ActionScope) {
+private fun PlaylistActions(t: MediaActionTarget.PlaylistTarget, s: ActionScope, pin: LibraryPin? = null) {
     val playlist = t.playlist
     val following by remember(playlist.uri) { s.graph.library.isSaved(playlist.uri) }.collectAsStateWithLifecycle(null)
     val downloaded by remember(playlist.uri) { s.graph.downloads.isCollectionDownloaded(playlist.uri) }.collectAsStateWithLifecycle(false)
@@ -472,6 +516,7 @@ private fun PlaylistActions(t: MediaActionTarget.PlaylistTarget, s: ActionScope)
             }
         }
     }
+    pin?.let { LibraryPinAction(it, s) }
     CollectionDownloadAction(downloaded, s) {
         CollectionRef(playlist.uri, CollectionType.PLAYLIST, playlist.name, playlist.images.best(300))
     }
@@ -483,7 +528,7 @@ private fun PlaylistActions(t: MediaActionTarget.PlaylistTarget, s: ActionScope)
 }
 
 @Composable
-private fun ShowActions(t: MediaActionTarget.ShowTarget, s: ActionScope) {
+private fun ShowActions(t: MediaActionTarget.ShowTarget, s: ActionScope, pin: LibraryPin? = null) {
     val show = t.show
     val following by remember(show.uri) { s.graph.library.isSaved(show.uri) }.collectAsStateWithLifecycle(null)
     SheetHeader(
@@ -500,6 +545,7 @@ private fun ShowActions(t: MediaActionTarget.ShowTarget, s: ActionScope) {
     ) { shown ->
         s.runner.setSaved(show.uri, !shown, R.string.shell_msg_following, R.string.shell_msg_unfollowed)
     }
+    pin?.let { LibraryPinAction(it, s) }
     SheetAction(Icons.Rounded.Podcasts, stringResource(R.string.shell_action_go_to_show)) { s.go(Route.Show(show.uri)) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(show.uri, show.name) }
     SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {

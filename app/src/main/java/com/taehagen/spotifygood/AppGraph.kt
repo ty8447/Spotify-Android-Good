@@ -183,6 +183,11 @@ class AppGraph(val app: Application) {
 
     val responseCache: ResponseCache by lazy { ResponseCache(database.responseCache(), json) }
     val catalog: CatalogRepository by lazy { CatalogRepository(rpc, responseCache, episodeProgress) }
+    /** Account-synced `ylpin` collection; preserves a local copy when the service is unavailable. */
+    val accountPins: com.taehagen.spotifygood.data.AccountPinsRepository by lazy {
+        com.taehagen.spotifygood.data.AccountPinsRepository(
+            app, appScope, rpc, engine.user, engine.isOnline, appForeground, events.libraryPushes)
+    }
     val library: LibraryRepository by lazy {
         LibraryRepository(appScope, rpc, responseCache, engine.isOnline, episodeProgress, ownLibraryEdits).also { repo ->
             // The playlists' current revisions: a mosaic learned at another is learned again.

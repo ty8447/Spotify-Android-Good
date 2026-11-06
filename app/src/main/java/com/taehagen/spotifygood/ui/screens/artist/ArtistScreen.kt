@@ -167,7 +167,11 @@ private fun ArtistList(
                     }
                 },
                 trailing = {
-                    ShuffleButton(active = state.playback.isContext(uri) && state.playback.shuffle, onClick = onShuffle)
+                    ShuffleButton(
+                        shuffle = state.playback.shuffle,
+                        smart = state.playback.smartShuffle,
+                        onClick = onShuffle,
+                    )
                     PlayFab(isPlaying = state.playback.isPlayingContext(uri), onClick = onPlay)
                 },
             )

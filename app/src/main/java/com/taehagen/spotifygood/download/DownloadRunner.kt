@@ -9,6 +9,7 @@ import android.text.format.Formatter
 import android.util.Log
 import androidx.room.withTransaction
 import com.taehagen.spotifygood.R
+import com.taehagen.spotifygood.diagnostics.DiagnosticLogs
 import com.taehagen.spotifygood.auth.KeystoreUnavailableException
 import com.taehagen.spotifygood.data.callWith
 import com.taehagen.spotifygood.data.db.AppDatabase
@@ -61,6 +62,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /** How a download run ended; the host (job / worker) maps it to its reschedule semantics. */
 internal enum class RunOutcome {
@@ -170,6 +172,9 @@ internal class DownloadRunner(
     private val dao = database.downloads()
     private val json: Json = rpc.json
     private val runLock = Mutex()
+    // Process-local sequence, not a track URI or stable fingerprint. Correlates the download
+    // phases in an exported diagnostic log without exposing the user's music library.
+    private val diagnosticItemSequence = AtomicInteger(0)
 
     private class CurrentItem(val uri: String, val job: Deferred<ItemResult>)
 
@@ -658,6 +663,9 @@ internal class DownloadRunner(
         val quality = settings.awaitLoaded().downloadQuality.kbps
         // Removed since it was picked: nothing to download.
         if (dao.markPreparing(item.uri, quality) == 0) return@coroutineScope ItemResult.Done
+        val diagnosticId = diagnosticItemSequence.incrementAndGet()
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "download", "item_started",
+            "id=$diagnosticId,attempt=${item.attempts + 1},quality=$quality")
         keyPause = null
         val title = displayTitle(item.metadataJson)
         val pendingNow = dao.pendingCount()
@@ -665,7 +673,9 @@ internal class DownloadRunner(
         host.reportEstimated(hostedBytes + stats.transferredBytes + DownloadRules.estimateBytes(pendingNow, quality))
         _activity.value = DownloadActivity(running = true, currentUri = item.uri, remaining = total - stats.processed)
         host.updateNotification(notifications.progress(title, stats.processed, total, 0f))
-        val progress = launch(start = CoroutineStart.UNDISPATCHED) { trackProgress(item.uri, title, total, host, stats) }
+        val progress = launch(start = CoroutineStart.UNDISPATCHED) {
+            trackProgress(item.uri, title, total, host, stats, diagnosticId)
+        }
         try {
             val record = rpc.callWith(
                 OfflineTrackRecord.serializer(),
@@ -678,14 +688,21 @@ internal class DownloadRunner(
                 },
             )
             progress.cancelAndJoin()
+            DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "download", "native_verified",
+                "id=$diagnosticId,sizeKb=${record.sizeBytes / 1024}")
             if (commit(item, record, quality)) {
+                DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "download", "item_completed", "id=$diagnosticId")
                 breaker.onSuccess()
                 stats.completed++
                 stats.transferredBytes += record.sizeBytes
                 host.reportTransferred(hostedBytes + stats.transferredBytes)
+            } else {
+                DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "download", "commit_requeued_or_removed",
+                    "id=$diagnosticId")
             }
             ItemResult.Done
         } catch (e: CancellationException) {
+            DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "download", "item_cancelled", "id=$diagnosticId")
             progress.cancel()
             // Back to the queue untouched (attempts unchanged); the native side keeps the .part file.
             withContext(NonCancellable) {
@@ -699,6 +716,7 @@ internal class DownloadRunner(
             // recorded, download.track reuses it), the item is requeued without an attempt and the
             // whole queue waits for the device's Keystore.
             progress.cancelAndJoin()
+            DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "download", "keystore_wait", "id=$diagnosticId")
             recordFileId(item.uri)
             onKeystoreBusy(item)
         } catch (e: Exception) {
@@ -707,7 +725,7 @@ internal class DownloadRunner(
                 ?: NativeException(NativeErrorInfo(NativeErrorCode.INTERNAL, e.message ?: e.javaClass.simpleName))
             if (e !is NativeException) Log.w(TAG, "Download of ${item.uri} failed", e)
             recordFileId(item.uri)
-            handleFailure(item, error, stats)
+            handleFailure(item, error, stats, diagnosticId)
         }
     }
 
@@ -758,7 +776,10 @@ internal class DownloadRunner(
         }
     }
 
-    private suspend fun trackProgress(uri: String, title: String?, total: Int, host: DownloadHost, stats: RunStats) {
+    private suspend fun trackProgress(uri: String, title: String?, total: Int, host: DownloadHost, stats: RunStats,
+                                      diagnosticId: Int) {
+        var lastDiagnosticState: DownloadState? = null
+        var lastDiagnosticQuarter = 0
         var lastDbWrite = 0L
         var lastDbState: DownloadState? = null
         var lastUiUpdate = 0L
@@ -770,6 +791,19 @@ internal class DownloadRunner(
                 // Bytes are about to land in a .part: from now on it must survive a killed process.
                 fileRecorded = true
                 recordFileId(uri)
+            }
+            if (p.state != lastDiagnosticState) {
+                lastDiagnosticState = p.state
+                DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "download", "item_phase",
+                    "id=$diagnosticId,phase=${p.state}")
+            }
+            if (p.state == DownloadState.DOWNLOADING && p.totalBytes > 0) {
+                val quarter = ((p.bytes * 4) / p.totalBytes).toInt().coerceIn(0, 4)
+                if (quarter > lastDiagnosticQuarter) {
+                    lastDiagnosticQuarter = quarter
+                    DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "download", "item_progress",
+                        "id=$diagnosticId,percent=${quarter * 25}")
+                }
             }
             val now = SystemClock.elapsedRealtime()
             // Persisted on a state change and every few seconds only (resume / crash recovery): each
@@ -823,7 +857,10 @@ internal class DownloadRunner(
         val outcome = commitLock.withLock {
             // Under the lock, like removals: a file download.track reused from another download
             // (relinking) is deleted when that download is removed before this row names the file.
-            val present = withContext(Dispatchers.IO) { File(record.path).isFile }
+            val present = withContext(Dispatchers.IO) {
+                val file = File(record.path)
+                file.isFile && record.sizeBytes > 0 && file.length() == record.sizeBytes
+            }
             val result = database.withTransaction {
                 val row = dao.get(item.uri) ?: return@withTransaction Commit.Removed
                 if (!present) return@withTransaction Commit.FileGone
@@ -860,7 +897,7 @@ internal class DownloadRunner(
             is Commit.Kept -> outcome.seq
             Commit.Removed -> return false
             Commit.FileGone -> {
-                Log.w(TAG, "The file of ${item.uri} was removed with another download; downloading it again")
+                Log.w(TAG, "The file of ${item.uri} is missing or its size changed; downloading it again")
                 dao.requeue(item.uri)
                 return false
             }
@@ -870,12 +907,35 @@ internal class DownloadRunner(
         return true
     }
 
-    private suspend fun handleFailure(item: DownloadEntity, e: NativeException, stats: RunStats): ItemResult {
+    private suspend fun handleFailure(item: DownloadEntity, e: NativeException, stats: RunStats,
+                                      diagnosticId: Int): ItemResult {
+        // Only enum categories, timing and a temporary per-process item number are exported.
+        // The server's error message/context and Spotify URI must stay out of diagnostics.
+        val failureContext = when (e.info.context) {
+            DownloadRules.KEY_PACING -> "keyPacing"
+            DownloadRules.KEY_THROTTLED -> "keyThrottled"
+            DownloadRules.KEY_REFUSED -> "keyRefused"
+            "notReleased" -> "notReleased"
+            "countryRestricted" -> "countryRestricted"
+            "catalogUnavailable" -> "catalogUnavailable"
+            "noDuration" -> "noDuration"
+            "noAudioFile" -> "noAudioFile"
+            "unsupportedAudioFormat" -> "unsupportedAudioFormat"
+            "qualityRestricted" -> "qualityRestricted"
+            "externallyHosted" -> "externallyHosted"
+            "explicitFiltered" -> "explicitFiltered"
+            "preparationOther" -> "preparationOther"
+            null -> "none"
+            else -> "other"
+        }
+        DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "download", "item_failure",
+            "id=$diagnosticId,code=${e.code},context=$failureContext,attempt=${item.attempts + 1}")
         val message = describe(e)
         val online = engine.isOnline.value
         val now = System.currentTimeMillis()
         val pauseMs = breaker.onFailure(e.code, online, e.info.retryAfterMs, e.info.context)
-        val result = when (val action = DownloadRules.onFailure(e.code, item.attempts, online, e.info.retryAfterMs, e.info.context)) {
+        val decision = DownloadRules.onFailure(e.code, item.attempts, online, e.info.retryAfterMs, e.info.context)
+        val result = when (val action = decision) {
             DownloadRules.FailureAction.StopRun -> {
                 dao.markFailed(item.uri, item.attempts + 1, message)
                 stats.failed++
@@ -921,6 +981,21 @@ internal class DownloadRunner(
                 ItemResult.Done
             }
         }
+        val decisionName = when (decision) {
+            DownloadRules.FailureAction.StopRun -> "stopRun"
+            DownloadRules.FailureAction.AccountRefused -> "accountRefused"
+            DownloadRules.FailureAction.WaitForNetwork -> "waitNetwork"
+            is DownloadRules.FailureAction.Retry -> "retry"
+            is DownloadRules.FailureAction.Fail -> "failed"
+            DownloadRules.FailureAction.Throttled -> "throttled"
+            DownloadRules.FailureAction.Paced -> "paced"
+        }
+        val retrySeconds = when (decision) {
+            is DownloadRules.FailureAction.Retry -> decision.delayMs / 1000
+            else -> (pauseMs ?: 0L) / 1000
+        }
+        DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "download", "item_resolution",
+            "id=$diagnosticId,decision=$decisionName,retrySeconds=$retrySeconds")
         if (pauseMs != null && result !is ItemResult.StopRun) {
             // Hold every pending row back: the loop then waits (inline or rescheduled) instead of
             // starting the next item against a service that is refusing them all.

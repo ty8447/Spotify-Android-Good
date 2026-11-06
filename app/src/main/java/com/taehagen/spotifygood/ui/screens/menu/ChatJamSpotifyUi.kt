@@ -181,7 +181,7 @@ internal fun JamInvitePage(
                 Spacer(Modifier.width(10.dp))
                 Text(if (sendingInvite) "Sending…" else "Send invite", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
-            Text(if (onInvite == null) "Open a conversation to send a Jam invitation." else "Sends your current Jam link directly to this chat.", color = JamUi.muted,
+            Text(if (onInvite == null) "Open a conversation to send a Jam invitation." else "Sends one native Jam invitation card to this chat.", color = JamUi.muted,
                 style = MaterialTheme.typography.labelMedium, textAlign = TextAlign.Center)
             TextButton(onClick = onViewJam) { Text("View your Jam", color = JamUi.white) }
         } else {
@@ -192,7 +192,7 @@ internal fun JamInvitePage(
                 Spacer(Modifier.width(10.dp))
                 Text(if (startBusy) "Starting…" else if (sendAfterStart) "Start Jam and invite" else "Start a Jam", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             }
-            Text(if (sendAfterStart) "Starts a Jam, then sends an invitation link to this chat." else "Starting opens a Jam on your device; it does not send an invite.",
+            Text(if (sendAfterStart) "Starts a Jam, then sends one invitation card to this chat." else "Starting opens a Jam on your device; it does not send an invite.",
                 color = JamUi.muted, fontSize = 12.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth())
         }
@@ -582,10 +582,12 @@ internal fun JamOverviewPage(
                 Text("$count listening", color = JamUi.muted, fontSize = 12.sp)
             }
             Spacer(Modifier.weight(1f))
-            Surface(onClick = onGuestSettings, shape = CircleShape,
-                color = JamUi.background, modifier = Modifier.size(40.dp)) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.Settings, "Jam settings", tint = JamUi.white)
+            if (session.isSessionOwner == true) {
+                Surface(onClick = onGuestSettings, shape = CircleShape,
+                    color = JamUi.background, modifier = Modifier.size(40.dp)) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Settings, "Jam settings", tint = JamUi.white)
+                    }
                 }
             }
             JamDarkButton(if (session.isSessionOwner == true) "End" else "Leave", onLeave,
@@ -594,7 +596,7 @@ internal fun JamOverviewPage(
         JamLine()
         JamQueuePreview(onOpenQueue, modifier = Modifier.weight(1f),
             hostAvatarUrl = hostAvatarUrl, isLocalHost = session.isSessionOwner == true)
-        if (shuffleOn && playback.source == PlaybackSource.REMOTE) {
+        if (session.isSessionOwner == true && shuffleOn && playback.source == PlaybackSource.REMOTE) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 JamDarkButton("Reshuffle", onClick = {
                     if (!modeBusy) {
@@ -618,9 +620,10 @@ internal fun JamOverviewPage(
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            JamActionTile({ Icon(Icons.Rounded.Headphones, null, tint = JamUi.muted) }, "Mix", null,
-                Modifier.weight(1f))
-            JamActionTile({ Icon(Icons.Rounded.Shuffle, "Shuffle",
+            if (session.isSessionOwner == true) {
+                JamActionTile({ Icon(Icons.Rounded.Headphones, null, tint = JamUi.muted) }, "Mix", null,
+                    Modifier.weight(1f))
+                JamActionTile({ Icon(Icons.Rounded.Shuffle, "Shuffle",
                 tint = if (shuffleOn) JamUi.green else JamUi.white) }, "Shuffle", {
                 if (!canShuffle) {
                     modeFeedback = "Shuffle isn't available on this playback device or track."
@@ -679,6 +682,7 @@ internal fun JamOverviewPage(
                     }
                 }
             }, Modifier.weight(1f))
+            }
             JamActionTile({ Icon(Icons.Rounded.Add, null, tint = JamUi.white) }, "Add songs",
                 onFindSongs, Modifier.weight(1f))
         }
@@ -689,7 +693,8 @@ internal fun JamOverviewPage(
 @Composable
 internal fun JamDetailsPage(session: JamSessionSummary, hostName: String, hostAvatarUrl: String?,
                              onBack: () -> Unit, onInvite: () -> Unit, onGuestSettings: () -> Unit,
-                             onLeave: () -> Unit) {
+                             onLeave: () -> Unit,
+                             onRemoveMember: (JamSessionMember) -> Unit) {
     Column(Modifier.fillMaxWidth().background(JamUi.background).heightIn(min = 520.dp)
         .padding(horizontal = 18.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -723,6 +728,25 @@ internal fun JamDetailsPage(session: JamSessionSummary, hostName: String, hostAv
         session.memberCount?.takeIf { it > 1 }?.let { count ->
             Text("$count participants", color = JamUi.muted, fontSize = 14.sp)
         }
+        session.members.forEach { member ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                JamAvatar(member.imageUrl, 38, member.displayName.ifBlank { member.username })
+                Column(Modifier.weight(1f)) {
+                    Text(member.displayName.ifBlank { member.username }, color = JamUi.white,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (member.isHost || member.isSelf) Text(if (member.isHost) "Host" else "You",
+                        color = JamUi.muted, fontSize = 12.sp)
+                }
+                if (session.isSessionOwner == true && session.members.any { it.isHost } &&
+                    !member.isHost && !member.isSelf) {
+                    TextButton(onClick = { onRemoveMember(member) }) {
+                        Text("Remove", color = JamUi.red)
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(28.dp))
         JamLine()
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
@@ -741,8 +765,10 @@ internal fun JamDetailsPage(session: JamSessionSummary, hostName: String, hostAv
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             JamActionTile({ Icon(Icons.Rounded.Close, null, tint = JamUi.white) },
                 if (session.isSessionOwner == true) "End Jam" else "Leave Jam", onLeave, Modifier.weight(1f))
-            JamActionTile({ Icon(Icons.Rounded.Settings, null, tint = JamUi.white) },
-                "Guest settings", onGuestSettings, Modifier.weight(1f))
+            if (session.isSessionOwner == true) {
+                JamActionTile({ Icon(Icons.Rounded.Settings, null, tint = JamUi.white) },
+                    "Guest settings", onGuestSettings, Modifier.weight(1f))
+            }
         }
     }
 }

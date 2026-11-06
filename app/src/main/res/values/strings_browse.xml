@@ -8,6 +8,13 @@
     <string name="browse_loading">Loading</string>
     <string name="browse_settings">Settings</string>
     <string name="browse_more_options">More options</string>
+    <string name="browse_library_pin">Pin to top</string>
+    <string name="browse_library_unpin">Unpin from Your Library</string>
+    <string name="browse_library_reorder_pins">Reorder pins</string>
+    <string name="browse_library_reorder_done">Done</string>
+    <string name="browse_library_reorder_hint">Drag the handles or use the arrow buttons to reorder pinned items</string>
+    <string name="browse_library_move_pin_up">Move pin up</string>
+    <string name="browse_library_move_pin_down">Move pin down</string>
     <string name="browse_profile_open">Your profile</string>
     <string name="browse_liked_songs">Liked Songs</string>
     <string name="browse_go_to_downloads">Go to Downloads</string>

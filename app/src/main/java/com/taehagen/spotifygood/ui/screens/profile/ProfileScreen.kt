@@ -44,6 +44,9 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Visibility
 import androidx.compose.material.icons.rounded.QrCode2
+import androidx.compose.material.icons.rounded.Block
+import androidx.compose.material.icons.rounded.PersonAdd
+import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -99,6 +102,18 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.buildJsonObject
 
+/** Missing counts are not evidence that a stranger's list can be browsed.
+ * A confirmed showFollows=true still takes precedence (including zero followers).
+ * A confirmed false setting always wins.
+ */
+internal fun profileHasVisibleFollows(user: User): Boolean = when (user.showFollows) {
+    true -> true
+    false -> false
+    // The public endpoint sometimes omits this switch. Counts alone do not
+    // prove permission to enumerate another person's social graph.
+    null -> false
+}
+
 /** [username] null = the logged-in user. */
 @Composable
 fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Modifier = Modifier) {
@@ -106,6 +121,11 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
     val state by viewModel.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     var showProfileOptions by rememberSaveable { mutableStateOf(false) }
+    var showOtherProfileOptions by rememberSaveable { mutableStateOf(false) }
+    var followBusy by remember(state.user?.username) { mutableStateOf(false) }
+    var followError by remember(state.user?.username) { mutableStateOf<String?>(null) }
+    var localFollowOverride by remember(state.user?.username) { mutableStateOf<Boolean?>(null) }
+    var relationship by remember(state.user?.username, state.myUsername) { mutableStateOf(ProfileRelationship()) }
     var showPublicPreview by rememberSaveable { mutableStateOf(false) }
     // Show a short profile overview first; expand in place on request.
     var showAllPlaylists by rememberSaveable(username) { mutableStateOf(false) }
@@ -136,6 +156,12 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
     var recentArtists by remember(state.user?.username) { mutableStateOf<List<PublicProfileArtist>>(emptyList()) }
     var recentArtistsLoading by remember(state.user?.username) { mutableStateOf(false) }
     var recentArtistsError by remember(state.user?.username) { mutableStateOf(false) }
+    // Read our own social lists at most once per ten minutes; never query a target's private list.
+    LaunchedEffect(state.isMe, state.user?.username, state.myUsername) {
+        val person = state.user ?: return@LaunchedEffect
+        val me = state.myUsername ?: return@LaunchedEffect
+        if (!state.isMe) relationship = ProfileRelationships.check(graph, me, person.username)
+    }
     // The Settings screen edits these same server-backed switches. Refresh on profile
     // entry and when returning from the options sheet or public preview.
     LaunchedEffect(state.isMe, state.user?.username, showProfileOptions, showPublicPreview) {
@@ -251,9 +277,60 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
                     ProfileHeader(
                         user = user,
                         playlistCount = if (state.isMe && profileVisibility["playlists"] != false) state.playlists.size else null,
+                        showFollows = if (state.isMe) profileVisibility["followers"] != false
+                            else profileHasVisibleFollows(user),
                         onFollowers = { navigator.navigate(Route.SocialPeople("followers", if (state.isMe) null else user.username)) },
                         onFollowing = { navigator.navigate(Route.SocialPeople("following", if (state.isMe) null else user.username)) },
                     )
+                }
+                if (!state.isMe) {
+                    item(key = "socialActions", contentType = "actions") {
+                        val following = localFollowOverride ?: relationship.following ?: user.isFollowing
+                        val followsYou = relationship.followsYou ?: user.followsYou
+                        val followLabel = when {
+                            following == true -> "Following"
+                            followsYou == true -> "Follow Back"
+                            else -> "Follow"
+                        }
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            OutlinedButton(onClick = {
+                                navigator.navigate(Route.NewDirectMessage(user.username, user.displayName ?: user.username))
+                            }, modifier = Modifier.weight(1f)) { Text("Message") }
+                            OutlinedButton(
+                                onClick = {
+                                    if (followBusy) return@OutlinedButton
+                                    followBusy = true
+                                    followError = null
+                                    scope.launch {
+                                        try {
+                                            val next = following != true
+                                            graph.catalog.followUser(user.username, next)
+                                            localFollowOverride = next
+                                            state.myUsername?.let { ProfileRelationships.updatedFollowing(it, user.username, next) }
+                                        } catch (e: Exception) {
+                                            followError = e.message ?: "Spotify could not change the follow status"
+                                        } finally { followBusy = false }
+                                    }
+                                },
+                                enabled = !followBusy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                if (followBusy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                else Text(followLabel, maxLines = 1)
+                            }
+                            IconButton(onClick = { showOtherProfileOptions = true }) {
+                                Icon(Icons.Rounded.MoreVert, contentDescription = "Profile options")
+                            }
+                        }
+                        followError?.let { error ->
+                            Text(error, modifier = Modifier.padding(horizontal = 16.dp),
+                                color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
                 if (state.isMe) {
                     item(key = "actions", contentType = "actions") {
@@ -371,6 +448,58 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
         }
     }
 
+    if (showOtherProfileOptions && !state.isMe && state.user != null) {
+        val person = state.user!!
+        val url = "https://open.spotify.com/user/${Uri.encode(person.username)}"
+        val following = localFollowOverride ?: relationship.following ?: person.isFollowing
+        ModalBottomSheet(onDismissRequest = { showOtherProfileOptions = false }) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
+                Text(person.displayName ?: person.username, style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.height(12.dp))
+                ProfileOption(Icons.Rounded.Share, "Share profile") {
+                    showOtherProfileOptions = false
+                    val intent = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, url)
+                    }
+                    context.startActivity(Intent.createChooser(intent, "Share Spotify profile"))
+                }
+                ProfileOption(Icons.Rounded.ChatBubbleOutline, "Message") {
+                    showOtherProfileOptions = false
+                    navigator.navigate(Route.NewDirectMessage(person.username, person.displayName ?: person.username))
+                }
+                ProfileOption(Icons.Rounded.PersonAdd, if (following == true) "Unfollow" else if (relationship.followsYou == true) "Follow Back" else "Follow") {
+                    showOtherProfileOptions = false
+                    if (!followBusy) {
+                        followBusy = true
+                        followError = null
+                        scope.launch {
+                            try {
+                                val next = following != true
+                                graph.catalog.followUser(person.username, next)
+                                localFollowOverride = next
+                                state.myUsername?.let { ProfileRelationships.updatedFollowing(it, person.username, next) }
+                            } catch (e: Exception) { followError = e.message ?: "Could not change follow status" }
+                            finally { followBusy = false }
+                        }
+                    }
+                }
+                ProfileOption(Icons.Rounded.QrCode2, "Show Spotify Code") {
+                    showOtherProfileOptions = false
+                    navigator.navigate(Route.SpotifyCode("spotify:user:${person.username}", person.images.best(480)))
+                }
+                HorizontalDivider()
+                ProfileOption(Icons.Rounded.Block, "Block user (open in Spotify)") {
+                    showOtherProfileOptions = false
+                    // Blocking isn't supported by the verified Spotify Good RPCs; don't fake success.
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                        .onFailure { navigator.showMessage("Could not open Spotify profile") }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+    }
+
     if (showProfileOptions && state.isMe && state.user != null) {
         val profile = state.user!!
         val profileUrl = "https://open.spotify.com/user/${Uri.encode(profile.username)}"
@@ -450,7 +579,7 @@ fun ProfileScreen(username: String?, contentPadding: PaddingValues, modifier: Mo
 }
 
 @Composable
-private fun ProfileHeader(user: User, playlistCount: Int?, onFollowers: () -> Unit, onFollowing: () -> Unit) {
+private fun ProfileHeader(user: User, playlistCount: Int?, showFollows: Boolean, onFollowers: () -> Unit, onFollowing: () -> Unit) {
     Box(
         Modifier
             .fillMaxWidth()
@@ -495,6 +624,8 @@ private fun ProfileHeader(user: User, playlistCount: Int?, onFollowers: () -> Un
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // Only a confirmed private setting hides the social counts; unknown stays visible.
+            if (showFollows) {
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
                 Text(
@@ -517,6 +648,7 @@ private fun ProfileHeader(user: User, playlistCount: Int?, onFollowers: () -> Un
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.clickable(onClick = onFollowing),
                 )
+            }
             }
         }
     }

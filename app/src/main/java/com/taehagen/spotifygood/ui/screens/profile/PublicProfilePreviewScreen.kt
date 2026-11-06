@@ -156,7 +156,7 @@ internal fun PublicProfilePreviewScreen(
                                         Text(visibleProfile.displayName?.takeIf { it.isNotBlank() } ?: visibleProfile.username,
                                             style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
                                             maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        if (visibleProfile.showFollows != false && visibility["followers"] != false) {
+                                        if (profileHasVisibleFollows(visibleProfile) && visibility["followers"] != false) {
                                             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                                                 Text("${visibleProfile.followersCount ?: "—"} followers",
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -79,8 +79,11 @@ internal fun JamShareInviteSheet(onDismiss: () -> Unit, onOpenQr: () -> Unit, sh
                 Spacer(Modifier.width(9.dp))
                 Text("Share link", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
-            Text(if (shareUrl == null) "Waiting for Spotify to supply this Jam's join link."
-                else "The QR and Share link use the same invitation address.",
+            Text(when {
+                selectedUrl == null -> "Waiting for Spotify to supply this Jam's join link."
+                JamInviteLinks.short(selectedUrl) != null -> "Spotify's short invitation link is ready."
+                else -> "Spotify has not supplied a short link; sharing the verified full Jam URL."
+            },
                 color = JamUi.muted, fontSize = 12.sp, textAlign = TextAlign.Center)
             HorizontalDivider(color = JamUi.divider)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -88,7 +91,7 @@ internal fun JamShareInviteSheet(onDismiss: () -> Unit, onOpenQr: () -> Unit, sh
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Auto-invite people nearby", color = JamUi.white,
                         fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Text("People on your WiFi or nearby with Bluetooth access enabled will be invited in Spotify.",
+                    Text("Nearby invitations require Spotify's discovery broadcast, which is not enabled here.",
                         color = JamUi.muted, fontSize = 12.sp)
                 }
                 Icon(Icons.Rounded.WifiTethering, contentDescription = null,
