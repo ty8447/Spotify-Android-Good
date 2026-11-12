@@ -82,6 +82,8 @@ data class Episode(
     val playable: Boolean = true,
     val resumePositionMs: Long? = null,
     val fullyPlayed: Boolean? = null,
+    /** A video episode's own thumbnail (often wider than tall), shown in place of the show's cover. */
+    val thumbnail: List<Image> = emptyList(),
 )
 
 @Serializable
@@ -141,6 +143,10 @@ data class PlaylistItem(
     val addedBy: String? = null,
     val track: Track? = null,
     val episode: Episode? = null,
+    /** A prompted playlist's note on the song. */
+    val note: String? = null,
+    /** A mixed playlist's transition from this song into the next (Spotify's stored mix). */
+    val transition: MixTransition? = null,
 ) {
     val uri: String? get() = track?.uri ?: episode?.uri
 }
@@ -166,6 +172,12 @@ data class Playlist(
     val isPublic: Boolean? = null,
     /** Some item metadata failed to load; those items are uri-only placeholders (docs §6.5). */
     val partial: Boolean = false,
+    /** A mixed playlist (smooth transitions): its songs show their BPM and key. */
+    val mixed: Boolean = false,
+    /** A prompted playlist's prompt (null for other playlists). */
+    val prompt: String? = null,
+    /** Who prompted it (username); the list itself is Spotify's. */
+    val promptedBy: String? = null,
 ) {
     fun toRef() = PlaylistRef(uri, name, description, images, owner, total)
 }
@@ -269,6 +281,8 @@ data class RootlistEntry(
     val canEdit: Boolean = false,
     /** Playlists: shown on the user's profile (null for folders). */
     val isPublic: Boolean? = null,
+    /** "prompted" or "mixed": the library's "Prompted Playlist" / "Mixed Playlist". */
+    val format: String? = null,
     /** Playlists: the playlist's current revision, when the rootlist gives it (its mosaic is kept per revision). */
     val revision: String? = null,
 )
@@ -690,3 +704,14 @@ data class CollectionChangeItem(val uri: String, val removed: Boolean = false)
  */
 @Serializable
 data class CollectionChangedPush(val set: String, val items: List<CollectionChangeItem> = emptyList()) : LibraryPush
+
+/** A mixed playlist's stored transition between two songs (Spotify's `automix` recipe). */
+@Serializable
+data class MixTransition(
+    val startAMs: Double = 0.0,
+    val startBMs: Double = 0.0,
+    val durationMs: Double = 0.0,
+    val beatmatched: Boolean = false,
+    /** fade | cut | beatmatchedFade | beatmatchedCut */
+    val preset: String = "fade",
+)

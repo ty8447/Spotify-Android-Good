@@ -40,8 +40,15 @@ class PlaylistEditor(
     private val own: OwnLibraryEdits = OwnLibraryEdits(),
 ) {
     /** Creates a playlist (added to the library) and returns its URI. */
-    suspend fun create(name: String, description: String? = null, public: Boolean = false, initialUris: List<String> = emptyList()): String =
-        detached { rootlistEdit { createNow(name, description, public, initialUris) } }
+    suspend fun create(name: String, description: String? = null, public: Boolean = false, initialUris: List<String> = emptyList(), mixed: Boolean = false): String =
+        detached { rootlistEdit { createNow(name, description, public, initialUris, mixed) } }
+
+    /** Spotify's prompted playlist: generated (and kept up to date) from [prompt]; returns its URI. */
+    suspend fun createPrompted(prompt: String, isPrivate: Boolean = false): String = detached {
+        val reply = rpc.callOffMain<PromptedPlaylist>("playlist.createPrompted", rpcArgs { put("prompt", prompt); put("private", isPrivate) })
+        if (reply.violating) throw IllegalArgumentException("Spotify can't make a playlist from that prompt")
+        reply.uri.also { library.refresh() }
+    }
 
     /** Creates an empty folder at the top of the library or of folder [parent]; returns its URI. */
     suspend fun createFolder(name: String, parent: String? = null): String = detached {
@@ -65,13 +72,14 @@ class PlaylistEditor(
         library.refresh()
     }
 
-    private suspend fun createNow(name: String, description: String?, public: Boolean, initialUris: List<String>): String {
+    private suspend fun createNow(name: String, description: String?, public: Boolean, initialUris: List<String>, mixed: Boolean = false): String {
         val uri = rpc.callOffMain<CreatedPlaylist>(
             "playlist.create",
             rpcArgs {
                 put("name", name)
                 if (!description.isNullOrBlank()) put("description", description)
                 put("public", public)
+                if (mixed) put("mixed", true)
             },
         ).uri
         try {
@@ -317,3 +325,6 @@ internal data class CreatedPlaylist(val uri: String)
 
 @Serializable
 internal data class RevisionResult(val revision: String? = null)
+
+@kotlinx.serialization.Serializable
+internal data class PromptedPlaylist(val uri: String = "", val title: String = "", val violating: Boolean = false)

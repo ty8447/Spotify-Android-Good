@@ -60,6 +60,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.download.CollectionDownloadStatus
 import com.taehagen.spotifygood.model.Track
@@ -73,6 +75,7 @@ import com.taehagen.spotifygood.ui.components.rememberFastScrollDatePattern
 import com.taehagen.spotifygood.ui.components.OfflineBanner
 import com.taehagen.spotifygood.ui.components.PartialContentNotice
 import com.taehagen.spotifygood.ui.components.PlayFab
+import com.taehagen.spotifygood.ui.components.isPlaceholder
 import com.taehagen.spotifygood.ui.components.rememberAppGraph
 import com.taehagen.spotifygood.playback.ShuffleMode
 import com.taehagen.spotifygood.playback.shuffleMode
@@ -88,6 +91,8 @@ internal fun LikedSongsContent(contentPadding: PaddingValues, modifier: Modifier
     val state by viewModel.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val graph = rememberAppGraph()
+    val showUnplayable by remember(graph) { graph.settings.settings.map { it.showUnplayable }.distinctUntilChanged() }
+        .collectAsStateWithLifecycle(initialValue = graph.settings.settings.value.showUnplayable)
     val shuffleSnapshot by graph.playback.snapshot.collectAsStateWithLifecycle()
     val queuedShuffle by graph.player.queuedShuffleMode.collectAsStateWithLifecycle()
     val selectedShuffle = queuedShuffle ?: shuffleSnapshot.shuffleMode
@@ -212,7 +217,10 @@ internal fun LikedSongsContent(contentPadding: PaddingValues, modifier: Modifier
                     }
                 }
                 items(state.tracks, key = { "track:${it.uri}" }, contentType = { "track" }) { track ->
-                    LikedTrackRow(track, state, onPlay = viewModel::playTrack, onActions = navigator::showActions)
+                    // Settings › Show unplayable songs: greyed out (TrackRow dims them) or left out.
+                    if (showUnplayable || track.playable || track.isPlaceholder) {
+                        LikedTrackRow(track, state, onPlay = viewModel::playTrack, onActions = navigator::showActions)
+                    }
                 }
                 if (state.placeholders > 0) {
                     val loaded = state.tracks.size

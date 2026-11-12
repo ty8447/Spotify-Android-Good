@@ -340,11 +340,28 @@ internal class ShowViewModel(graph: AppGraph, private val uri: String) : DetailV
 
     /** Toggles playback of this show, or starts its newest episode at its resume point. */
     override fun playContext() {
-        val newest = firstPage.firstOrNull { it.playable && !it.isPlaceholder }
+        // Show settings › "Skip finished episodes": start at the newest one not played to the end.
+        val skip = uri in graph.podcastSettings.skipFinished.value
+        val newest = firstPage.firstOrNull { it.playable && !it.isPlaceholder && !(skip && it.fullyPlayed == true) }
         when {
             currentPlayback().isContext(uri) -> graph.player.togglePlayPause()
             newest != null -> playEpisode(newest)
             else -> graph.player.play(PlayRequest(contextUri = uri))
+        }
+    }
+
+    /** An episode row's "+" (Your Episodes). */
+    fun toggleEpisodeSaved(episodeUri: String, saved: Boolean?) =
+        toggleSaved(saved, episodeUri, R.string.detail_saved_episode, R.string.detail_removed_episode)
+
+    /** An episode row's download button. */
+    fun downloadEpisode(episodeUri: String, remove: Boolean) {
+        if (remove) {
+            launchWrite(R.string.detail_download_removed, R.string.detail_download_failed) { graph.downloads.removeItems(listOf(episodeUri)) }
+        } else {
+            launchWrite(successRes = null, failureRes = R.string.detail_download_failed) {
+                graph.downloads.downloadItems(listOf(episodeUri)).notice?.let { message(it) }
+            }
         }
     }
 
@@ -452,6 +469,18 @@ internal class EpisodeViewModel(graph: AppGraph, private val uri: String) : Deta
     }
 
     private fun toContent(episode: Episode) = EpisodeContent(episode, parseHtml(episode.description))
+
+    /** A chapter's start: plays the episode from [positionMs] (seeks when it is already playing). */
+    fun playFrom(positionMs: Long) {
+        val episode = state.value.load.dataOrNull()?.episode ?: return
+        if (currentPlayback().isCurrent(uri)) {
+            graph.player.seekTo(positionMs)
+            return
+        }
+        val request = episodePlayRequest(uri, episode.show?.uri, graph.engineReach(), state.value.download)
+            ?: return message(R.string.playback_error_not_available_offline)
+        graph.player.play(request.copy(positionMs = positionMs))
+    }
 
     fun playPause() {
         val episode = state.value.load.dataOrNull()?.episode ?: return

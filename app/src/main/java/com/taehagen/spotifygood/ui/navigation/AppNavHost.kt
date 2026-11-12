@@ -81,6 +81,7 @@ fun AppNavHost(
         }
         composable<Route.StorageBreakdown> { StorageBreakdownSettingsScreen(contentPadding) }
         composable<Route.Recents> { RecentsScreen(contentPadding) }
+        composable<Route.VibeDj> { com.taehagen.spotifygood.ui.screens.vibedj.VibeDjScreen(contentPadding) }
         composable<Route.Updates> { UpdatesScreen(contentPadding) }
         composable<Route.WhatsNew> { WhatsNewScreen(contentPadding) }
         composable<Route.Activity> { ActivityScreen(contentPadding) }

@@ -25,6 +25,11 @@ impl Default for AndroidSink {
 
 impl Sink for AndroidSink {
     fn start(&mut self) -> SinkResult<()> {
+        // Vibe DJ: the mixer thread owns the AudioTrack while it runs.
+        if crate::dj::mixer::sink_started() {
+            self.running = true;
+            return Ok(());
+        }
         match bridge::audio() {
             Some(audio) => {
                 if !audio.start() {
@@ -38,6 +43,10 @@ impl Sink for AndroidSink {
     }
 
     fn stop(&mut self) -> SinkResult<()> {
+        if crate::dj::mixer::sink_stopped() {
+            self.running = false;
+            return Ok(());
+        }
         if let Some(audio) = bridge::audio() {
             audio.stop();
         }
@@ -54,7 +63,11 @@ impl Sink for AndroidSink {
             return Ok(());
         }
         let audio = bridge::audio().ok_or_else(|| SinkError::NotConnected("audio bridge missing".into()))?;
-        let pcm = converter.f64_to_f32(&samples);
+        let pcm = match crate::dj::mixer::sink_write(converter.f64_to_f32(&samples)) {
+            Ok(true) => return Ok(()),
+            Ok(false) => converter.f64_to_f32(&samples),
+            Err(pcm) => pcm,
+        };
         if audio.write_f32(&pcm) {
             Ok(())
         } else {

@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -140,12 +141,19 @@ internal fun MiniPlayerBar(
                     },
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // "Larger video in Now Playing Bar": a bigger video at its own shape (the bar grows with it).
+                    val largerSetting by com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo.largerInBar.collectAsState()
+                    val larger = com.taehagen.spotifygood.ui.screens.video.videoShowing() && largerSetting
+                    val aspect by com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo.aspect.collectAsState()
                     PlayerArtwork(
                         url = artwork,
                         contentDescription = null,
                         shown = { sheet.showsMiniArtwork() },
+                        video = true,
+                        videoFit = larger,
                         modifier = Modifier
-                            .size(MiniArtworkSize)
+                            .height(if (larger) MiniArtworkSize * 1.8f else MiniArtworkSize)
+                            .width(if (larger) MiniArtworkSize * 1.8f * aspect.coerceIn(1f, 2f) else MiniArtworkSize)
                             .miniArtworkAtRest(sheet),
                     )
                     Spacer(Modifier.width(10.dp))

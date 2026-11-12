@@ -655,6 +655,10 @@ internal fun PlayerArtwork(
     modifier: Modifier = Modifier,
     shape: Shape? = RoundedCornerShape(MiniArtworkCorner),
     shown: () -> Boolean = { true },
+    /** Draws the playing video (Spotify's music videos, video podcasts) over the cover. */
+    video: Boolean = false,
+    /** The whole video frame (Now Playing) rather than filling the square (the mini player). */
+    videoFit: Boolean = false,
 ) {
     val context = LocalPlatformContext.current
     val sheet = LocalPlayerSheet.current
@@ -718,6 +722,7 @@ internal fun PlayerArtwork(
                 )
             }
         }
+        if (video) com.taehagen.spotifygood.ui.screens.video.NowPlayingVideoSurface(attach = shown(), modifier = Modifier.matchParentSize(), fit = videoFit)
     }
 }
 

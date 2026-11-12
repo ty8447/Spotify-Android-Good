@@ -36,11 +36,15 @@ mod profile_privacy;
 mod proto;
 pub(crate) mod push;
 mod radio;
+mod showextras;
+mod playlistextras;
+mod video;
 mod recent;
 mod refs;
 mod search;
 mod scannable;
 mod messaging;
+pub(crate) mod mix;
 mod social;
 mod stickers;
 pub(crate) mod user;
@@ -132,6 +136,7 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "catalog.lyricStickerDetails" => stickers::details(args).await,
         "catalog.setMessageReaction" => messaging::set_reaction(args).await,
         "catalog.markChatSeen" => messaging::mark_chat_seen(args).await,
+        "catalog.respondChatRequest" => messaging::respond_request(args).await,
         "catalog.deleteChatMessage" => messaging::delete_contribution(args).await,
         "catalog.deleteChatForMe" => messaging::delete_chat_for_me(args).await,
         "catalog.createGroupChat" => messaging::create_group(args).await,
@@ -145,6 +150,28 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "catalog.recentlyPlayed" => recent::rpc(args).await,
         "catalog.recentHistory" => recent::history_rpc(args).await,
         "catalog.playHistory" => recent::play_history(args).await,
+        "catalog.refs" => recent::refs_rpc(args).await,
+        "catalog.recents" => recent::recents_rpc(args).await,
+        "catalog.showExtras" => showextras::extras(args).await,
+        "catalog.showRecommendations" => showextras::recommendations(args).await,
+        "catalog.verifiedShows" => showextras::verified_shows(args).await,
+        "catalog.postComment" => showextras::post_comment(args).await,
+        "catalog.transcript" => showextras::transcript(args).await,
+        "catalog.playlistRecommendations" => playlistextras::recommendations(args).await,
+        "catalog.audioAttributes" => playlistextras::audio_attributes(args).await,
+        "playlist.createPrompted" => playlistextras::create_prompted(args).await,
+        "library.tags" => playlistextras::library_tags(args).await,
+        "catalog.video" => video::video(args).await,
+        "playlist.refreshPrompted" => playlistextras::refresh_prompted(args).await,
+        "playlist.editPrompt" => playlistextras::edit_prompt(args).await,
+        "playlist.setMixed" => playlist::set_mixed_rpc(args).await,
+        "playlist.mixInfo" => playlist::mix_info(args).await,
+        "playlist.refinePrompted" => playlistextras::refine(args).await,
+        "catalog.chapters" => showextras::chapters(args).await,
+        "catalog.comments" => showextras::comments(args).await,
+        "catalog.rateShow" => showextras::rate(args).await,
+        "catalog.setShowNotify" => showextras::set_notify(args).await,
+        "catalog.friendSuggestions" => showextras::friend_suggestions(args).await,
         "catalog.user" => user::rpc(args).await,
         "catalog.updateProfileName" => user::update_name(args).await,
         "catalog.updateProfilePhoto" => user::update_photo(args).await,
@@ -190,6 +217,7 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "playlist.setCollaborative" => playlist::set_collaborative(args).await,
         "playlist.delete" | "playlist.unfollow" => playlist::unfollow(args).await,
         "playlist.follow" => playlist::follow(args).await,
+        "playlist.inviteLink" => playlist::invite_link(args).await,
         _ => Err(AppError::invalid(format!("unknown method {method}"))),
     }
 }

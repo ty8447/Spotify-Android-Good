@@ -17,6 +17,7 @@ pub mod cast_client;
 pub mod catalog;
 pub mod connect;
 pub mod device_token;
+pub mod dj;
 pub mod engine;
 pub mod error;
 pub mod events;

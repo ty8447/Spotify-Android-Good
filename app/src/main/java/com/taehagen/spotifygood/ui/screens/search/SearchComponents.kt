@@ -81,6 +81,7 @@ import com.taehagen.spotifygood.data.RecentSearch
 import com.taehagen.spotifygood.data.SearchType
 import com.taehagen.spotifygood.model.MediaRef
 import com.taehagen.spotifygood.model.MediaType
+import kotlinx.coroutines.launch
 import com.taehagen.spotifygood.model.best
 import com.taehagen.spotifygood.ui.components.Artwork
 import com.taehagen.spotifygood.ui.components.EpisodeRow
@@ -369,6 +370,39 @@ internal fun TopResultCard(
     }
 }
 
+/** Which shows are verified (Spotify's badge): asked in one batch per screenful, kept for the process. */
+private object VerifiedShows {
+    val known = androidx.compose.runtime.mutableStateMapOf<String, Boolean>()
+    private val pending = mutableSetOf<String>()
+    private var job: kotlinx.coroutines.Job? = null
+
+    /** Main thread only. */
+    fun ask(graph: com.taehagen.spotifygood.AppGraph, uri: String) {
+        if (uri in known || !pending.add(uri) || job?.isActive == true) return
+        job = graph.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            while (pending.isNotEmpty()) {
+                kotlinx.coroutines.delay(150)
+                val batch = pending.toList()
+                pending.clear()
+                batch.forEach { known[it] = false }
+                val args = kotlinx.serialization.json.buildJsonObject {
+                    put("uris", kotlinx.serialization.json.JsonArray(batch.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+                }
+                val found = runCatching { graph.rpc.call<kotlinx.serialization.json.JsonObject>("catalog.verifiedShows", args) }
+                    .getOrNull()?.get("uris") as? kotlinx.serialization.json.JsonArray
+                found?.forEach { (it as? kotlinx.serialization.json.JsonPrimitive)?.content?.let { u -> known[u] = true } }
+            }
+        }
+    }
+}
+
+@Composable
+private fun verifiedShow(uri: String): Boolean {
+    val graph = com.taehagen.spotifygood.ui.components.rememberAppGraph()
+    androidx.compose.runtime.LaunchedEffect(uri) { VerifiedShows.ask(graph, uri) }
+    return VerifiedShows.known[uri] == true
+}
+
 /** Row for one result, playing songs and opening everything else. */
 @Composable
 internal fun SearchItemRow(
@@ -401,6 +435,7 @@ internal fun SearchItemRow(
             ref = item.ref,
             onClick = onClick,
             subtitle = typedSubtitle(item.ref.type, item.ref.subtitle),
+            verified = item.ref.type == MediaType.SHOW && verifiedShow(item.ref.uri),
             onMoreClick = onActions,
             onLongClick = onActions,
             modifier = modifier,

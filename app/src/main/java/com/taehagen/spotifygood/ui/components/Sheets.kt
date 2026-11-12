@@ -1,5 +1,12 @@
 package com.taehagen.spotifygood.ui.components
 
+import android.content.Intent
+import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.LibraryMusic
+import com.taehagen.spotifygood.data.callOffMain
+import com.taehagen.spotifygood.data.rpcArgs
+import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.put
 import android.content.Context
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedContent
@@ -157,6 +164,7 @@ private sealed interface SheetPage {
     data class Artists(val artists: List<ArtistRef>) : SheetPage
     data object Rename : SheetPage
     data object ConfirmDelete : SheetPage
+    data class MoveToFolder(val uri: String) : SheetPage
 }
 
 /** Everything an action row needs. */
@@ -186,6 +194,21 @@ private class ActionScope(
     fun share(uri: String, title: String) {
         dismiss()
         if (!shareSpotifyLink(context, uri, title)) runner.message(R.string.shell_msg_cannot_share)
+    }
+
+    /** Spotify's "Invite collaborators": makes the playlist collaborative and shares an invite link. */
+    fun inviteCollaborators(uri: String, name: String) {
+        dismiss()
+        runner.launch {
+            graph.playlists.setCollaborative(uri, true)
+            val url = graph.rpc.callOffMain<InviteLink>("playlist.inviteLink", rpcArgs { put("uri", uri) }).url
+            withContext(Dispatchers.Main) {
+                val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                    .putExtra(Intent.EXTRA_SUBJECT, name)
+                    .putExtra(Intent.EXTRA_TEXT, "Help me make \"$name\" on Spotify: $url")
+                context.startActivity(Intent.createChooser(send, "Invite collaborators").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        }
     }
 
     fun radio(uri: String) {
@@ -255,6 +278,7 @@ private fun MediaActionsContent(target: MediaActionTarget, dismiss: () -> Unit, 
                 SheetPage.ConfirmDelete -> ((target as? MediaActionTarget.PlaylistTarget)
                     ?: (target as? MediaActionTarget.LibraryPinTarget)?.media as? MediaActionTarget.PlaylistTarget)
                     ?.let { ConfirmDeletePlaylist(it, scope) }
+                is SheetPage.MoveToFolder -> MoveToFolderPage(current.uri, scope)
             }
         }
     }
@@ -437,6 +461,7 @@ private fun AlbumActions(t: MediaActionTarget.AlbumTarget, s: ActionScope, pin: 
             stringResource(if (album.artists.size > 1) R.string.shell_action_go_to_artists else R.string.shell_action_go_to_artist),
         ) { s.goToArtists(album.artists) }
     }
+    StartJamAction(album.uri, s)
     SheetAction(Icons.Rounded.Radio, stringResource(R.string.shell_action_start_radio)) { s.radio(album.uri) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(album.uri, album.name) }
     SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {
@@ -501,6 +526,7 @@ private fun PlaylistActions(t: MediaActionTarget.PlaylistTarget, s: ActionScope,
         s.runner.pickPlaylistFor(excludeUri = playlist.uri) { s.graph.catalog.playlistItemUris(playlist.uri) }
     }
     if (t.isOwned) {
+        SheetAction(Icons.Rounded.PersonAdd, "Invite collaborators") { s.inviteCollaborators(playlist.uri, playlist.name) }
         SheetAction(Icons.Rounded.Edit, stringResource(R.string.shell_action_rename)) { s.setPage(SheetPage.Rename) }
         PlaylistPrivacyActions(playlist.uri, s)
         SheetAction(Icons.Rounded.Delete, stringResource(R.string.shell_action_delete_playlist)) { s.setPage(SheetPage.ConfirmDelete) }
@@ -517,6 +543,10 @@ private fun PlaylistActions(t: MediaActionTarget.PlaylistTarget, s: ActionScope,
         }
     }
     pin?.let { LibraryPinAction(it, s) }
+    if (t.isOwned || following == true) {
+        SheetAction(Icons.Rounded.Folder, "Move to folder") { s.setPage(SheetPage.MoveToFolder(playlist.uri)) }
+    }
+    StartJamAction(playlist.uri, s)
     CollectionDownloadAction(downloaded, s) {
         CollectionRef(playlist.uri, CollectionType.PLAYLIST, playlist.name, playlist.images.best(300))
     }
@@ -1183,4 +1213,43 @@ fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreated: (String) -> Unit, ini
         },
     )
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+}
+
+
+@kotlinx.serialization.Serializable
+private data class InviteLink(val url: String)
+
+/** Plays [uri] and opens the Jam sheet to start a Jam with it (Spotify's "Start a Jam"). */
+@Composable
+private fun StartJamAction(uri: String, s: ActionScope) {
+    SheetAction(Icons.Rounded.Groups, "Start a Jam") {
+        s.dismiss()
+        s.graph.player.playContext(uri)
+        com.taehagen.spotifygood.ui.screens.menu.JamGlobalState.open()
+    }
+}
+
+/** The folders of Your Library to move a playlist into (or the top level). */
+@Composable
+private fun MoveToFolderPage(uri: String, s: ActionScope) {
+    var folders by remember { mutableStateOf<List<Pair<String?, String>>?>(null) }
+    LaunchedEffect(uri) {
+        val root = s.graph.library.playlists().first { it.dataOrNull != null }.dataOrNull
+        val out = mutableListOf<Pair<String?, String>>(null to "Your Library")
+        fun walk(entries: List<RootlistEntry>, depth: Int) {
+            entries.filter { it.type == RootlistEntryType.FOLDER }.forEach { f ->
+                f.uri?.let { out += it to ("    ".repeat(depth) + f.name) }
+                walk(f.children, depth + 1)
+            }
+        }
+        walk(root?.items.orEmpty(), 0)
+        folders = out
+    }
+    SheetHeader(imageUrl = null, title = "Move to folder", subtitle = null)
+    folders?.forEach { (id, name) ->
+        SheetAction(if (id == null) Icons.Rounded.LibraryMusic else Icons.Rounded.Folder, name) {
+            s.dismiss()
+            s.runner.launch { s.graph.playlists.moveToFolder(listOf(uri), id) }
+        }
+    }
 }

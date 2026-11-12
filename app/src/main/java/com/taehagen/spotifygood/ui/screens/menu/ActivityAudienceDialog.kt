@@ -63,6 +63,13 @@ internal fun ActivityAudienceDialog(
             // instead of issuing one catalog.user network request per row. Large audiences
             // previously fanned out profile calls and could exhaust Spotify's rate limit.
             profiles = known.toMap()
+            // People in neither list showed their raw user id: look up a few profiles (cached natively).
+            audience.map { it.username }.filter { known[it]?.displayName.isNullOrBlank() }.take(15).forEach { u ->
+                runCatching { graph.catalog.user(u) }.getOrNull()?.takeIf { !it.displayName.isNullOrBlank() }?.let { p ->
+                    known[u] = SocialPerson(u, p.displayName.orEmpty(), p.images.firstOrNull()?.url ?: known[u]?.imageUrl)
+                    profiles = known.toMap()
+                }
+            }
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
         } catch (e: Exception) {
@@ -198,7 +205,7 @@ internal fun ActivityAudienceDialog(
                                 Text(profile?.displayName?.ifBlank { person.username } ?: person.username,
                                     fontWeight = FontWeight.SemiBold, maxLines = 1,
                                     overflow = TextOverflow.Ellipsis)
-                                Text("In a group with you", style = MaterialTheme.typography.bodySmall,
+                                if (person.source == 2) Text("In a group with you", style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (busyUser == person.username) {

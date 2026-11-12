@@ -4,9 +4,13 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AddCircleOutline
+import androidx.compose.material.icons.outlined.DownloadForOffline
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.rounded.AddCircle
+import androidx.compose.material.icons.rounded.DownloadForOffline
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Search
@@ -48,10 +52,26 @@ enum class MainTab(
     val labelRes: Int,
     val icon: ImageVector,
     val selectedIcon: ImageVector,
+    /** Not a destination: a button (Create opens the create sheet). */
+    val action: Boolean = false,
 ) {
     HOME(Route.Home, R.string.shell_tab_home, Icons.Outlined.Home, Icons.Rounded.Home),
     SEARCH(Route.Search, R.string.shell_tab_search, Icons.Outlined.Search, Icons.Rounded.Search),
     LIBRARY(Route.Library, R.string.shell_tab_library, Icons.Outlined.LibraryMusic, Icons.Rounded.LibraryMusic),
+    DOWNLOADS(Route.Downloads, R.string.shell_tab_downloads, Icons.Outlined.DownloadForOffline, Icons.Rounded.DownloadForOffline),
+    CREATE(Route.Library, R.string.shell_tab_create, Icons.Outlined.AddCircleOutline, Icons.Rounded.AddCircle, action = true);
+
+    companion object {
+        /** The tabs shown: Home, Search, Your Library and the chosen fourth button. */
+        fun shown(navButton: String) = listOfNotNull(
+            HOME, SEARCH, LIBRARY,
+            when (navButton) {
+                "create" -> CREATE
+                "none" -> null
+                else -> DOWNLOADS
+            },
+        )
+    }
 }
 
 /**
@@ -114,7 +134,7 @@ class MainNavigator internal constructor(
 
     override fun navigate(route: Route) = onMain {
         closeOverlays()
-        val tab = MainTab.entries.firstOrNull { it.route == route }
+        val tab = MainTab.entries.firstOrNull { !it.action && it.route == route }
         if (tab != null) {
             switchTo(tab)
         } else if (!isShowing(route)) {
@@ -137,7 +157,7 @@ class MainNavigator internal constructor(
         when (ref.type) {
             MediaType.TRACK -> playTrack(SpotifyLinks.canonicalUri(ref.uri) ?: ref.uri)
             MediaType.COLLECTION -> navigate(
-                if (SpotifyLinks.parse(ref.uri) == SpotifyLink.Library) Route.Library else Route.LikedSongs,
+                if (SpotifyLinks.parse(ref.uri) == SpotifyLink.Library || ref.uri.endsWith(":your-episodes")) Route.Library else Route.LikedSongs,
             )
             MediaType.ALBUM -> navigate(Route.Album(normalized(ref.uri)))
             MediaType.ARTIST -> navigate(Route.Artist(normalized(ref.uri)))
@@ -277,7 +297,7 @@ class MainNavigator internal constructor(
 
         fun tabOf(backStack: List<NavBackStackEntry>): MainTab =
             backStack.asReversed().firstNotNullOfOrNull { entry ->
-                MainTab.entries.firstOrNull { entry.destination.hasRoute(it.route::class) }
+                MainTab.entries.firstOrNull { !it.action && entry.destination.hasRoute(it.route::class) }
             } ?: MainTab.HOME
     }
 }

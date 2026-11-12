@@ -5,6 +5,8 @@
     <string name="shell_tab_home">Home</string>
     <string name="shell_tab_search">Search</string>
     <string name="shell_tab_library">Your Library</string>
+    <string name="shell_tab_downloads">Downloads</string>
+    <string name="shell_tab_create">Create</string>
 
     <!-- Common -->
     <string name="shell_cancel">Cancel</string>

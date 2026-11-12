@@ -41,11 +41,13 @@ import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Podcasts
 import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -113,6 +115,7 @@ import com.taehagen.spotifygood.ui.appViewModel
 import com.taehagen.spotifygood.ui.components.EmptyState
 import com.taehagen.spotifygood.ui.navigation.AppNavigator
 import com.taehagen.spotifygood.ui.navigation.LocalAppNavigator
+import com.taehagen.spotifygood.ui.navigation.Route
 
 /**
  * Now Playing inside the expanding player (which draws its background and handles back and the
@@ -259,7 +262,18 @@ internal fun NowPlayingBody(
             )
         }
     }
+    // Video: Now Playing's art takes the video's shape, with its controls and subtitles; switched to
+    // audio with Subtitles on, the subtitles show in its place like the lyrics.
+    val videoOn = com.taehagen.spotifygood.ui.screens.video.videoShowing()
+    val videoAvailable by com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo.available.collectAsStateWithLifecycle()
+    val subtitlesOn by com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo.subtitles.collectAsStateWithLifecycle()
+    val videoAspect by com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo.aspect.collectAsStateWithLifecycle()
+    val subtitleLines = com.taehagen.spotifygood.ui.screens.video.rememberSubtitles(track.uri, track.isEpisode, lyrics)
+    val subtitlePanel = videoAvailable && !videoOn && subtitlesOn && subtitleLines.isNotEmpty()
+    val artAspect = if (videoOn || subtitlePanel) videoAspect else 1f
+    val chapters = rememberChapters(track.uri, track.isEpisode)
     // The art's slot: the moving art lands here, and the art drawn in it shows once at rest.
+    val coverUrl = artwork
     val artwork: @Composable (Modifier) -> Unit = { artworkModifier ->
         Box(artworkModifier.then(if (sheet != null) Modifier.onGloballyPositioned(sheet::updateLargeArtwork) else Modifier)) {
             NowPlayingArtwork(
@@ -274,6 +288,8 @@ internal fun NowPlayingBody(
                     .fillMaxSize()
                     .playerArtworkAtRest(sheet),
             )
+            if (videoOn) com.taehagen.spotifygood.ui.screens.video.VideoOverlay(subtitleLines, position, Modifier.matchParentSize())
+            if (subtitlePanel) com.taehagen.spotifygood.ui.screens.video.SubtitlesPanel(subtitleLines, position, Modifier.matchParentSize())
         }
     }
     val details: @Composable (besideArtwork: Boolean) -> Unit = { besideArtwork ->
@@ -282,12 +298,25 @@ internal fun NowPlayingBody(
                 .fillMaxWidth()
                 .playerDetailsMotion(sheet, besideArtwork),
         ) {
-            TitleRow(
-                track = track,
-                liked = liked,
-                onToggleLike = commands::toggleLike,
-                onOpenUri = openAndCollapse,
+            NowPlayingExtras(
+                chapters = chapters, positionMs = { snapshot.positionAt() }, onSeek = commands::seekTo,
+                modifier = Modifier.padding(bottom = 4.dp),
             )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // With the video in the art's place, the cover sits small beside the title, as Spotify's.
+                if (com.taehagen.spotifygood.ui.screens.video.videoShowing()) {
+                    com.taehagen.spotifygood.ui.components.Artwork(coverUrl, null, Modifier.size(48.dp), RoundedCornerShape(4.dp))
+                    Spacer(Modifier.width(12.dp))
+                }
+                Box(Modifier.weight(1f)) {
+                    TitleRow(
+                        track = track,
+                        liked = liked,
+                        onToggleLike = commands::toggleLike,
+                        onOpenUri = openAndCollapse,
+                    )
+                }
+            }
             PlaybackProblem(snapshot)
             Spacer(Modifier.height(12.dp))
             PlayerSeekBar(
@@ -298,7 +327,12 @@ internal fun NowPlayingBody(
                 trackKey = track.uri,
                 cinematicTheme = cinematic,
                 modifier = Modifier.keepDragsLocal(),
+                // An episode's bar in chapter segments, the playing chapter's name under it.
+                segments = chapters.drop(1).map { it.startMs },
+                label = { chapters.at(it)?.title },
             )
+            // Episodes played here: speed and the sleep timer in place of previous / next, as Spotify's.
+            val podcastHere = track.isEpisode && !isRemote
             TransportControls(
                 snapshot = snapshot,
                 onShuffle = commands::cycleShuffle,
@@ -307,6 +341,16 @@ internal fun NowPlayingBody(
                 onNext = commands::next,
                 onRepeat = commands::cycleRepeat,
                 onSeekBy = commands::seekBy,
+                podcastSide = if (!podcastHere) null else ({ end ->
+                    if (end) {
+                        IconButton(onClick = onShowSleepTimer) {
+                            Icon(Icons.Rounded.Bedtime, contentDescription = stringResource(R.string.player_sleep_timer),
+                                tint = if (sleepTimer is SleepTimerState.Off) LocalContentColor.current else MaterialTheme.colorScheme.primary)
+                        }
+                    } else {
+                        SpeedButton(speed = podcastSpeedInEffect, chosen = podcastSpeed, onSpeed = commands::setPodcastSpeed)
+                    }
+                }),
             )
             // Fixed-volume receivers and some groups ignore volume changes (the thumb would snap back).
             if (isRemote && remoteVolumeSupported) {
@@ -327,11 +371,13 @@ internal fun NowPlayingBody(
                 lyricsButton = if (track.isEpisode) null else !lyricsUnavailable,
                 onLyrics = navigator::openLyrics,
                 // Episodes played here (Spotify Connect has no speed command for other devices).
-                speed = if (track.isEpisode && !isRemote) podcastSpeedInEffect else null,
+                // Episodes played here have it beside play / pause instead.
+                speed = null,
                 chosenSpeed = podcastSpeed,
                 onSpeed = commands::setPodcastSpeed,
                 onShare = onShare,
                 onQueue = navigator::openQueue,
+                onVibeDj = if (isRemote || track.isEpisode) null else ({ navigator.closeNowPlaying(); navigator.navigate(Route.VibeDj) }),
             )
             if (isRemote && indicator is DeviceIndicator.Remote) {
                 RemoteBanner(indicator = indicator, onClick = navigator::openDevices)
@@ -360,6 +406,8 @@ internal fun NowPlayingBody(
                 .padding(bottom = 24.dp)
                 .playerDetailsMotion(sheet, besideArtwork),
         )
+        // An episode's comments load in as Now Playing scrolls down.
+        if (track.isEpisode) EpisodeComments(track.uri, Modifier.playerDetailsMotion(sheet, besideArtwork))
     }
 
     BoxWithConstraints(
@@ -384,7 +432,7 @@ internal fun NowPlayingBody(
                             .padding(16.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        artwork(Modifier.aspectRatio(1f))
+                        artwork(Modifier.aspectRatio(artAspect))
                     }
                 }
                 Box(
@@ -415,8 +463,8 @@ internal fun NowPlayingBody(
                 artwork(
                     Modifier
                         .padding(vertical = 12.dp)
-                        .fillMaxWidth(0.6f)
-                        .aspectRatio(1f),
+                        .fillMaxWidth(if (artAspect > 1f) 1f else 0.6f)
+                        .aspectRatio(artAspect),
                 )
                 details(false)
                 lyricsCard(false)
@@ -431,16 +479,18 @@ internal fun NowPlayingBody(
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 24.dp),
                 ) {
-                    Column(Modifier.fillMaxWidth().height(viewportHeight)) {
+                    // A video (wider than tall) takes its own shape at the top, the details right under it.
+                    val wideArt = artAspect > 1f
+                    Column(Modifier.fillMaxWidth().then(if (wideArt) Modifier else Modifier.height(viewportHeight))) {
                         topBar()
                         Box(
                             Modifier
-                                .weight(1f)
+                                .then(if (wideArt) Modifier else Modifier.weight(1f))
                                 .fillMaxWidth()
                                 .padding(vertical = 16.dp),
                             contentAlignment = Alignment.Center,
                         ) {
-                            artwork(Modifier.aspectRatio(1f))
+                            artwork(Modifier.fillMaxWidth().aspectRatio(artAspect))
                         }
                         details(false)
                         Spacer(Modifier.height(8.dp))
@@ -765,6 +815,8 @@ private fun NowPlayingArtwork(
                 contentDescription = artworkDescription,
                 shape = RoundedCornerShape(LargeArtworkCorner),
                 shown = { sheet.showsPlayerArtwork() },
+                video = true,
+                videoFit = true,
                 modifier = Modifier
                     .fillMaxSize()
                     .shadow(elevation = LargeArtworkElevation, shape = RoundedCornerShape(LargeArtworkCorner)),
@@ -876,6 +928,8 @@ private fun TransportControls(
     onNext: () -> Unit,
     onRepeat: () -> Unit,
     onSeekBy: (deltaMs: Long) -> Unit,
+    /** Episodes played here: what goes in previous's (false) and next's (true) places. */
+    podcastSide: (@Composable (end: Boolean) -> Unit)? = null,
 ) {
     val restrictions = snapshot.restrictions
     val graph = rememberAppGraph()
@@ -897,7 +951,7 @@ private fun TransportControls(
                 onClick = onShuffle,
             )
         }
-        SkipButton(next = false, enabled = restrictions.canSkipPrev, onClick = onPrevious, iconSize = skipSize)
+        if (podcastSide != null) podcastSide(false) else SkipButton(next = false, enabled = restrictions.canSkipPrev, onClick = onPrevious, iconSize = skipSize)
         if (episode) SeekStepButton(forward = false, enabled = restrictions.canSeek, onClick = { onSeekBy(-SEEK_STEP_MS) })
         PlayPauseButton(
             status = snapshot.status,
@@ -906,7 +960,7 @@ private fun TransportControls(
             size = 68.dp,
         )
         if (episode) SeekStepButton(forward = true, enabled = restrictions.canSeek, onClick = { onSeekBy(SEEK_STEP_MS) })
-        SkipButton(next = true, enabled = restrictions.canSkipNext, onClick = onNext, iconSize = skipSize)
+        if (podcastSide != null) podcastSide(true) else SkipButton(next = true, enabled = restrictions.canSkipNext, onClick = onNext, iconSize = skipSize)
         if (!episode) RepeatButton(mode = snapshot.repeat, enabled = restrictions.canToggleRepeat, onClick = onRepeat)
     }
 }
@@ -925,6 +979,7 @@ private fun BottomActions(
     onSpeed: (Float) -> Unit,
     onShare: () -> Unit,
     onQueue: () -> Unit,
+    onVibeDj: (() -> Unit)? = null,
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val devicesLabel = stringResource(R.string.player_devices)
@@ -970,6 +1025,12 @@ private fun BottomActions(
             }
         }
         if (speed != null) SpeedButton(speed = speed, chosen = chosenSpeed, onSpeed = onSpeed)
+        if (onVibeDj != null) {
+            val dj by rememberAppGraph().vibeDj.state.collectAsStateWithLifecycle()
+            IconButton(onClick = onVibeDj) {
+                Icon(Icons.Rounded.GraphicEq, contentDescription = "Vibe DJ", tint = if (dj.active) accent else LocalContentColor.current)
+            }
+        }
         IconButton(onClick = onShare) {
             Icon(Icons.Rounded.Share, contentDescription = stringResource(R.string.player_share))
         }

@@ -185,6 +185,9 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
     // Keep the unread badge current even when the Messages screen and profile menu are closed.
     // It uses the same authoritative unseen-contribution counter as the inbox and drawer.
     val signedInUser by graph.engine.user.collectAsStateWithLifecycle()
+    val navButton by remember(graph) { graph.settings.settings.map { it.navButton }.distinctUntilChanged() }
+        .collectAsStateWithLifecycle(initialValue = graph.settings.settings.value.navButton)
+    var createOpen by rememberSaveable { mutableStateOf(false) }
     val messageAccount = signedInUser?.username
     // This phone's last playlist/album is stored independently of the shared Connect queue.
     // Recording the current LOCAL context is read-only and doesn't activate playback.
@@ -199,6 +202,9 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
     val jamHostAvatar = signedInUser?.images?.best(96)
     val jamSession = JamGlobalState.session
     // Each app surface observes the same current Jam. Read-only verification never starts a Jam.
+    // The playing song's music video / the episode's video, in Now Playing and the mini player.
+    val videoLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(graph) { com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo.run(context, graph, videoLifecycle) }
     LaunchedEffect(graph.rpc, messageAccount, networkAvailable, offlineMode) {
         JamGlobalState.session = null
         if (messageAccount.isNullOrBlank() || !networkAvailable || offlineMode) return@LaunchedEffect
@@ -331,6 +337,15 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
     }
 
     NotificationPermissionRequest()
+    if (createOpen) {
+        com.taehagen.spotifygood.ui.components.CreateSheet(
+            onDismiss = { createOpen = false },
+            onPlaylistCreated = { uri ->
+                createOpen = false
+                navigator.navigate(com.taehagen.spotifygood.ui.navigation.Route.Playlist(uri))
+            },
+        )
+    }
 
     CompositionLocalProvider(
         LocalAppNavigator provides navigator,
@@ -358,11 +373,11 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
                 playerProgress = { sheet.progress },
                 modifier = if (playerCoversPage) Modifier.clearAndSetSemantics {} else Modifier,
                 navigationItems = {
-                    MainTab.entries.forEach { tab ->
+                    MainTab.shown(navButton).forEach { tab ->
                         val selected = tab == currentTab
                         NavigationSuiteItem(
                             selected = selected,
-                            onClick = { navigator.selectTab(tab) },
+                            onClick = { if (tab.action) createOpen = true else navigator.selectTab(tab) },
                             icon = { Icon(if (selected) tab.selectedIcon else tab.icon, contentDescription = null) },
                             label = {
                                 Text(

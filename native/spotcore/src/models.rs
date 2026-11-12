@@ -123,6 +123,10 @@ pub struct Episode {
     pub resume_position_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fully_played: Option<bool>,
+    /// A video episode's own thumbnail (its freeze frame, often wider than tall): shown in place
+    /// of the show's cover in episode lists.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thumbnail: Vec<Image>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -219,6 +223,12 @@ pub struct PlaylistItem {
     pub track: Option<Track>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode: Option<Episode>,
+    /// A prompted playlist's note on the song ("A huge, sunlit opener…").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// A mixed playlist's stored transition from this song into the next (Spotify's recipe).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -259,6 +269,15 @@ pub struct Playlist {
     /// Some item metadata could not be fetched right now (docs §6.5 `partial`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// A mixed playlist (format attribute `mix=true`): BPM and key are shown on its songs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mixed: bool,
+    /// A prompted playlist's prompt (format attribute `prompt`, else `prompt_summary`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// The username of who prompted it ("Prompted by Cole R.").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompted_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -379,6 +398,9 @@ pub struct RootlistEntry {
     /// image derived from its items (the app's mosaic) was learned at is compared with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// "prompted" or "mixed" (the library's "Prompted Playlist", "Mixed Playlist").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

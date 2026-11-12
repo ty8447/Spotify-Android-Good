@@ -669,8 +669,26 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     onCheckedChange = vm::setHideExplicit,
                 )
                         }
+            item(key = "show_unplayable") {
+                SwitchPref(
+                    title = "Show unplayable songs",
+                    summary = "List songs that aren't available, greyed out",
+                    icon = Icons.Rounded.VisibilityOff,
+                    checked = settings.showUnplayable,
+                    onCheckedChange = { v -> vm.update { it.copy(showUnplayable = v) } },
+                )
+                        }
             FutureSettingsGroup("h_content_preferences", navigator::showMessage)
             item(key = "sub_display_preferences") { SettingsSubsection("Display preferences") }
+            item(key = "nav_button") {
+                ChoicePref(
+                    title = "Navigation bar button",
+                    icon = Icons.Rounded.Download,
+                    options = listOf("downloads" to "Downloads", "create" to "Create", "none" to "None"),
+                    selected = settings.navButton,
+                    onSelect = { v -> vm.update { it.copy(navButton = v) } },
+                )
+                        }
             item(key = "theme") {
                 ChoicePref(
                     title = stringResource(R.string.shell_settings_theme),
@@ -816,7 +834,7 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
             item(key = "automix") {
                 SwitchPref(
                     title = "Automix",
-                    summary = "Saved preference; automatic DJ-style transitions are not yet supported by the playback engine",
+                    summary = "Blend songs on the beat, matching tempo and key (songs are analysed on this phone)",
                     icon = Icons.Rounded.GraphicEq,
                     checked = settings.automix,
                     onCheckedChange = { enabled -> vm.update { it.copy(automix = enabled) } },
@@ -825,7 +843,7 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
             item(key = "crossfade") {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp)) {
                     Text("Crossfade: ${settings.crossfadeSeconds}s", style = MaterialTheme.typography.titleMedium)
-                    Text("0–12 seconds · saved preference; audio crossfade is not yet implemented",
+                    Text(if (settings.crossfadeSeconds == 0) "Off" else "Songs overlap for ${settings.crossfadeSeconds} seconds (played on this phone)",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Slider(
                         value = settings.crossfadeSeconds.coerceIn(0, 12).toFloat(),
@@ -1283,6 +1301,8 @@ private val SEARCH_INDEX = listOf(
     SettingEntry("gapless", R.string.shell_settings_gapless, "h_playback", "crossfade transition"),
     SettingEntry("automix", "Automix", "h_playback", "crossmix dj transitions"),
     SettingEntry("crossfade", "Crossfade", "h_playback", "transition seconds"),
+    SettingEntry("nav_button", "Navigation bar button", "h_content", "create downloads tab bottom bar"),
+    SettingEntry("show_unplayable", "Show unplayable songs", "h_content", "unavailable greyed out hidden"),
     SettingEntry("autoplay", R.string.shell_settings_autoplay, "h_playback", "continue similar"),
     SettingEntry("mono_audio", "Mono audio", "h_playback", "stereo accessibility"),
     SettingEntry("sleep", R.string.shell_settings_sleep_timer, "h_playback", "bedtime"),

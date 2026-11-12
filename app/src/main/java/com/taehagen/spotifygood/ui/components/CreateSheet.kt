@@ -33,6 +33,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Headphones
@@ -55,6 +56,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -99,6 +102,7 @@ enum class CreateKind(val title: String, val subtitle: String, val icon: ImageVe
     Collaborative("Collaborative playlist", "Create a playlist together with friends", Icons.Rounded.Groups, "playlist"),
     Mixed("Mixed playlist", "Mix songs with smooth transitions", Icons.Rounded.Tune, "playlist", beta = true),
     Blend("Blend", "Combine your friends' tastes into a playlist", Icons.Rounded.JoinInner, ""),
+    Prompted("Prompted Playlist", "Generate a playlist that curates and updates", Icons.Rounded.AutoAwesome, "playlist", beta = true),
     Folder("Folder", "Organize your playlists", Icons.Rounded.Folder, "folder"),
     Jam("Jam", "Listen together from anywhere", Icons.Rounded.Headphones, ""),
 }
@@ -121,6 +125,15 @@ fun CreateSheet(
     val context = LocalContext.current
     val graph = rememberAppGraph()
     var naming by rememberSaveable { mutableStateOf<CreateKind?>(null) }
+    // Spotify's default name: "My Playlist #N", N one more than the playlists you own.
+    var nextName by remember { mutableStateOf("My Playlist") }
+    LaunchedEffect(Unit) {
+        val me = graph.engine.user.value?.username
+        val owned = kotlinx.coroutines.withTimeoutOrNull(5_000) {
+            graph.library.playlists().filterIsInstance<com.taehagen.spotifygood.data.Resource.Success<*>>().first().data as? com.taehagen.spotifygood.model.Rootlist
+        }?.flatPlaylists()?.count { it.owner?.username.equals(me, ignoreCase = true) }
+        if (owned != null) nextName = "My Playlist #${owned + 1}"
+    }
     if (naming == null) {
         ModalBottomSheet(
             onDismissRequest = onDismiss,
@@ -162,17 +175,81 @@ fun CreateSheet(
     when (val kind = naming) {
         null -> Unit
         CreateKind.Blend -> BlendInviteScreen(onBack = { naming = null })
+        CreateKind.Prompted -> PromptSheet(onCancel = { naming = null }) { uri -> if (uri.startsWith("spotify:playlist:")) onPlaylistCreated(uri) else onDismiss() }
         else -> NameScreen(
-            "Give your ${kind.label} a name", if (kind == CreateKind.Folder) "New folder" else "My playlist", "Create",
+            "Give your ${kind.label} a name", if (kind == CreateKind.Folder) "New folder" else nextName, "Create",
             onCancel = { naming = null },
             submit = { name ->
                 when (kind) {
                     CreateKind.Folder -> graph.playlists.createFolder(name, parent)
                     CreateKind.Collaborative -> graph.playlists.create(name).also { graph.playlists.setCollaborative(it, true) }
+                    CreateKind.Mixed -> graph.playlists.create(name, public = true, mixed = true)
                     else -> graph.playlists.create(name, public = true)
                 }.also { if (kind != CreateKind.Folder && parent != null) graph.playlists.moveToFolder(listOf(it), parent) }
             },
         ) { uri -> if (kind == CreateKind.Folder) onDismiss() else onPlaylistCreated(uri) }
+    }
+}
+
+/** Spotify's "New prompt" sheet: the prompt, Public / Private and Generate playlist. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PromptSheet(onCancel: () -> Unit, onCreated: (String) -> Unit) {
+    val graph = rememberAppGraph()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var text by remember { mutableStateOf("") }
+    var public by remember { mutableStateOf(true) }
+    var busy by remember { mutableStateOf(false) }
+    val generate: () -> Unit = {
+        if (!busy && text.isNotBlank()) {
+            busy = true
+            scope.launch {
+                // Spotify writes the songs after it answers; this returns once they're there.
+                val result = withContext(NonCancellable) { runCatching { graph.playlists.createPrompted(text.trim(), isPrivate = !public) } }
+                busy = false
+                result.onSuccess(onCreated).onFailure { Toast.makeText(context, friendlyErrorMessage(context, it), Toast.LENGTH_LONG).show() }
+            }
+        }
+    }
+    ModalBottomSheet(
+        onDismissRequest = { if (!busy) onCancel() },
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.TextButton(onClick = onCancel, enabled = !busy) { Text("Cancel") }
+                Text("New prompt", Modifier.weight(1f), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.width(72.dp))
+            }
+            androidx.compose.material3.TextField(
+                value = text, onValueChange = { text = it }, enabled = !busy,
+                placeholder = { Text("Describe your perfect playlist in as much detail as you want. Music, podcasts, audiobooks, you name it…") },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 240.dp),
+                colors = androidx.compose.material3.TextFieldDefaults.colors(
+                    focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent, disabledContainerColor = Color.Transparent,
+                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, disabledIndicatorColor = Color.Transparent,
+                ),
+            )
+            Text(
+                "You are prompting with an AI, mistakes can happen. Do not include any sensitive data.",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            androidx.compose.material3.FilterChip(
+                selected = public, onClick = { public = !public }, label = { Text(if (public) "Public" else "Private") },
+            )
+            if (text.isNotBlank()) {
+                Button(
+                    generate, enabled = !busy, modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).heightIn(min = 52.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = SpotifyGreen, contentColor = Color.Black),
+                ) {
+                    if (busy) CircularProgressIndicator(Modifier.size(20.dp), color = Color.Black, strokeWidth = 2.dp)
+                    else Text("Generate playlist", fontWeight = FontWeight.Bold)
+                }
+            } else Spacer(Modifier.height(16.dp))
+        }
     }
 }
 
@@ -202,6 +279,8 @@ internal fun NameScreen(
     actionLabel: String,
     onCancel: () -> Unit,
     submit: suspend (String) -> String,
+    /** A prompt (several lines) rather than a name. */
+    multiline: Boolean = false,
     onDone: (String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -233,8 +312,8 @@ internal fun NameScreen(
                 Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
                 Spacer(Modifier.height(40.dp))
                 BasicTextField(
-                    value, { value = it }, Modifier.fillMaxWidth().focusRequester(focus), enabled = !busy, singleLine = true,
-                    textStyle = MaterialTheme.typography.displaySmall.copy(color = Color.White, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, fontSize = 36.sp),
+                    value, { value = it }, Modifier.fillMaxWidth().focusRequester(focus), enabled = !busy, singleLine = !multiline, maxLines = if (multiline) 8 else 1,
+                    textStyle = MaterialTheme.typography.displaySmall.copy(color = Color.White, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, fontSize = if (multiline) 22.sp else 36.sp),
                     cursorBrush = SolidColor(SpotifyGreen),
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { create() }),

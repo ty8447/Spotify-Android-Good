@@ -180,6 +180,24 @@ pub(crate) async fn spc_send_once(
     accept: &'static str,
     body: Vec<u8>,
 ) -> Result<Bytes, HttpError> {
+    spc_send_with(session, method, endpoint, content_type, accept, body, &[]).await
+}
+
+/// The playlist service's lens header: `spotify-apply-lenses: mix` makes a mixed playlist read as
+/// mixed (its `mix` / `has-custom-transitions` attributes and transitions) and lets the mix signal
+/// take effect, as the Android client asks.
+pub(crate) const MIX_LENS: (&str, &str) = ("spotify-apply-lenses", "mix");
+
+/// [`spc_send_once`] with extra request headers.
+pub(crate) async fn spc_send_with(
+    session: &Session,
+    method: Method,
+    endpoint: &str,
+    content_type: &'static str,
+    accept: &'static str,
+    body: Vec<u8>,
+    extra: &[(&'static str, &str)],
+) -> Result<Bytes, HttpError> {
     let fut = async {
         let base = session.spclient().base_url().await?;
         let token = session.login5().auth_token().await?;
@@ -193,6 +211,11 @@ pub(crate) async fn spc_send_once(
             .body(Bytes::from(body))?;
         if let Some(ct) = client_token.and_then(|t| HeaderValue::from_str(&t).ok()) {
             req.headers_mut().insert(HeaderName::from_static("client-token"), ct);
+        }
+        for (k, v) in extra {
+            if let Ok(v) = HeaderValue::from_str(v) {
+                req.headers_mut().insert(HeaderName::from_static(k), v);
+            }
         }
         session.http_client().request_body(req).await
     };

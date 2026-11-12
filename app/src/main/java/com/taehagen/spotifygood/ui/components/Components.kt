@@ -40,6 +40,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudOff
 import androidx.compose.material.icons.rounded.DownloadForOffline
@@ -432,6 +433,10 @@ fun EpisodeRow(
     /** Swipe start→end to add the episode to the queue (see [TrackRow]). */
     swipeToQueue: Boolean = true,
     onMoreClick: (() -> Unit)? = null,
+    /** [onClick] opens the episode (its page), so it works when it can't play here too. */
+    openable: Boolean = false,
+    /** Spotify's row of buttons under the episode (a show's list: +, download, more … play). */
+    actions: (@Composable RowScope.() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val colors = MaterialTheme.colorScheme
@@ -464,8 +469,8 @@ fun EpisodeRow(
             modifier = slide
                 .fillMaxWidth()
                 .combinedClickable(
-                    enabled = enabled && !placeholder,
-                    onClick = { if (episode.playable && !placeholder) onClick() },
+                    enabled = (enabled || openable) && !placeholder,
+                    onClick = { if ((episode.playable || openable) && !placeholder) onClick() },
                     onLongClick = onLongClick ?: onMoreClick,
                     onLongClickLabel = if (onLongClick != null || onMoreClick != null) moreLabel else null,
                 )
@@ -480,10 +485,12 @@ fun EpisodeRow(
             verticalAlignment = Alignment.Top,
         ) {
             Row(Modifier.weight(1f).alpha(if (enabled && episode.playable && !placeholder) 1f else DISABLED_ALPHA)) {
+                // A video episode's own thumbnail (often wider than tall) in place of the cover.
+                val thumb = episode.thumbnail.best(320)
                 Artwork(
-                    url = episode.images.best(160) ?: episode.show?.images?.best(160),
+                    url = thumb ?: episode.images.best(160) ?: episode.show?.images?.best(160),
                     contentDescription = null,
-                    modifier = Modifier.size(72.dp),
+                    modifier = if (thumb != null) Modifier.height(72.dp).width(128.dp) else Modifier.size(72.dp),
                     shape = RoundedCornerShape(8.dp),
                     placeholderIcon = Icons.Rounded.Podcasts,
                 )
@@ -533,6 +540,9 @@ fun EpisodeRow(
                             trackColor = colors.surfaceVariant,
                             drawStopIndicator = {},
                         )
+                    }
+                    if (actions != null) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, content = actions)
                     }
                 }
             }
@@ -605,6 +615,15 @@ fun MediaRow(
     onLongClick: (() -> Unit)? = null,
     pinned: Boolean = false,
     trailing: (@Composable () -> Unit)? = null,
+    /** Shows the explicit "E" before the subtitle. */
+    explicit: Boolean = false,
+    /** Podcast progress 0–1 under the subtitle, with [progressLabel] ("12 min left"). */
+    progress: Float? = null,
+    progressLabel: String? = null,
+    /** A small icon before the subtitle (a prompted or mixed playlist's). */
+    badge: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    /** Spotify's verified badge after the name (podcasts in search). */
+    verified: Boolean = false,
 ) {
     val moreLabel = stringResource(R.string.shell_cd_more_options_for, ref.name)
     Row(
@@ -622,18 +641,35 @@ fun MediaRow(
         MediaThumbnail(ref, Modifier.size(56.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(
-                text = ref.name,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (pinned || !subtitle.isNullOrBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = ref.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (verified) {
+                    Spacer(Modifier.width(4.dp))
+                    Icon(androidx.compose.material.icons.Icons.Rounded.Verified, contentDescription = "Verified",
+                        tint = Color(0xFF4CB3FF), modifier = Modifier.size(16.dp))
+                }
+            }
+            if (pinned || explicit || !subtitle.isNullOrBlank()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (pinned) {
                         Icon(Icons.Rounded.PushPin, contentDescription = "Pinned",
                             tint = Color(0xFF1ED760), modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    if (explicit) {
+                        ExplicitBadge()
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    if (badge != null) {
+                        Icon(badge, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
                     }
                     if (!subtitle.isNullOrBlank()) {
@@ -641,6 +677,22 @@ fun MediaRow(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
+                }
+            }
+            if (progress != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                    if (progressLabel != null) {
+                        Text(progressLabel, style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.width(72.dp).height(3.dp),
+                        color = Color(0xFF1ED760),
+                        trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f),
+                        drawStopIndicator = {},
+                    )
                 }
             }
         }
@@ -984,6 +1036,10 @@ fun DetailHeader(
     circularImage: Boolean = false,
     /** Four covers shown as a 2x2 mosaic when there is no [imageUrl] (a playlist without an image). */
     mosaic: List<String> = emptyList(),
+    /** Small art beside the title, as on Spotify's show pages. */
+    compact: Boolean = false,
+    /** Under the title and subtitle (a show's "Verified by Spotify"). */
+    details: @Composable () -> Unit = {},
     actions: @Composable () -> Unit = {},
 ) {
     val colors = MaterialTheme.colorScheme
@@ -1020,23 +1076,49 @@ fun DetailHeader(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         val shape = if (circularImage) CircleShape else RoundedCornerShape(6.dp)
-        val artModifier = Modifier
+        val artModifier = if (compact) Modifier.size(120.dp).shadow(elevation = 12.dp, shape = shape) else Modifier
             .fillMaxWidth(0.62f)
             .widthIn(max = 300.dp)
             .aspectRatio(1f)
             .shadow(elevation = 18.dp, shape = shape)
-        if (imageUrl == null && mosaic.size == MOSAIC_TILES) {
-            MosaicArtwork(mosaic, null, artModifier, shape)
-        } else {
-            Artwork(
-                url = imageUrl,
-                contentDescription = null,
-                modifier = artModifier,
-                shape = shape,
-                placeholderIcon = if (circularImage) Icons.Rounded.Person else Icons.Rounded.MusicNote,
-            )
+        val art = @Composable {
+            if (imageUrl == null && mosaic.size == MOSAIC_TILES) {
+                MosaicArtwork(mosaic, null, artModifier, shape)
+            } else {
+                Artwork(
+                    url = imageUrl,
+                    contentDescription = null,
+                    modifier = artModifier,
+                    shape = shape,
+                    placeholderIcon = if (circularImage) Icons.Rounded.Person else Icons.Rounded.MusicNote,
+                )
+            }
         }
-        Spacer(Modifier.height(20.dp))
+        val texts = @Composable { DetailTitle(title, subtitle, circularImage, details) }
+        if (compact) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                art()
+                Spacer(Modifier.width(16.dp))
+                Column(Modifier.weight(1f)) { texts() }
+            }
+        } else {
+            art()
+            Spacer(Modifier.height(20.dp))
+            texts()
+        }
+        if (!description.isNullOrBlank()) {
+            Spacer(Modifier.height(8.dp))
+            ExpandableDescription(description, Modifier.fillMaxWidth())
+        }
+        Spacer(Modifier.height(8.dp))
+        Box(Modifier.fillMaxWidth()) { actions() }
+    }
+}
+
+@Composable
+private fun DetailTitle(title: String, subtitle: String?, circularImage: Boolean, details: @Composable () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth()) {
         Text(
             text = title,
             style = if (title.length > 28) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.headlineMedium,
@@ -1058,12 +1140,7 @@ fun DetailHeader(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        if (!description.isNullOrBlank()) {
-            Spacer(Modifier.height(8.dp))
-            ExpandableDescription(description, Modifier.fillMaxWidth())
-        }
-        Spacer(Modifier.height(8.dp))
-        Box(Modifier.fillMaxWidth()) { actions() }
+        details()
     }
 }
 

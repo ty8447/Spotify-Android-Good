@@ -930,6 +930,12 @@ internal class DownloadRunner(
         }
         DiagnosticLogs.record(DiagnosticLogs.Level.WARN, "download", "item_failure",
             "id=$diagnosticId,code=${e.code},context=$failureContext,attempt=${item.attempts + 1}")
+        if (e.info.context in DownloadRules.UNAVAILABLE_CONTEXTS) {
+            // Not available for this account or region: kept out of sight (no "failed" count, no
+            // retry); a sync puts it back once Spotify has it.
+            dao.markFailed(item.uri, item.attempts + 1, context.getString(R.string.data_dl_error_unplayable))
+            return ItemResult.Done
+        }
         val message = describe(e)
         val online = engine.isOnline.value
         val now = System.currentTimeMillis()

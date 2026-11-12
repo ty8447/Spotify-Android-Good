@@ -72,6 +72,25 @@ fn picture_width(target: &str, url: &str) -> Option<u32> {
 
 /// Images of a playlist: transcoded `picture_size` URLs (mosaics, generated covers) and the
 /// custom picture file id.
+/// A list's format attribute `key`, if set.
+fn format_attr<'a>(attrs: &'a [p4::FormatListAttribute], key: &str) -> Option<&'a str> {
+    attrs.iter().find(|f| f.key() == key).map(|f| f.value()).filter(|v| !v.is_empty())
+}
+
+/// "prompted" (format attributes `prompt` / `prompt_summary`, as Spotify's client checks),
+/// "mixed" (`mix=true`), or "prompted,mixed" for a prompted playlist with Mix on.
+fn list_format(attrs: &p4::ListAttributes) -> Option<String> {
+    let f = &attrs.format_attributes;
+    let prompted = format_attr(f, "prompt").or(format_attr(f, "prompt_summary")).is_some();
+    let mixed = format_attr(f, "mix").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+    match (prompted, mixed) {
+        (true, true) => Some("prompted,mixed".into()),
+        (true, false) => Some("prompted".into()),
+        (false, true) => Some("mixed".into()),
+        _ => None,
+    }
+}
+
 pub(crate) fn list_images(attrs: &p4::ListAttributes) -> Vec<Image> {
     let mut out: Vec<Image> = attrs
         .picture_size
@@ -169,14 +188,82 @@ async fn fetch_list(
     if let Some((from, length)) = range {
         endpoint.push_str(&format!("&from={from}&length={length}"));
     }
-    let body = match http::spc_get(session, &endpoint, None).await {
+    let body = match http::spc_send_with(session, Method::GET, &endpoint, PROTOBUF, PROTOBUF, Vec::new(), &[http::MIX_LENS]).await {
         Err(e) if range.is_some() && e.error.code == ErrorCode::InvalidArgument => {
             // Paging parameters not accepted: fetch the whole list and slice locally.
             http::spc_get(session, &format!("/playlist/v2/playlist/{id}?{DECORATE}"), None).await?
         }
+        // Prompted playlists (Spotify's generated lists) are served by the list platform only.
+        Err(e) if e.status == Some(404) => return list_platform(session, id, range).await.ok_or(e),
         r => r?,
     };
     http::proto(&body).map_err(|error| HttpError { status: None, error })
+}
+
+/// A playlist read through the list platform (`ListReadService/GetLists`), as playlist4 content:
+/// its name, description, picture, owner, length, format attributes and items (with theirs).
+async fn list_platform(session: &Session, id: &str, range: Option<(u32, u32)>) -> Option<p4::SelectedListContent> {
+    use super::showextras::fields;
+    let (from, length) = range.unwrap_or((0, 100));
+    let req = super::recent::list_request(&format!("spotify:playlist:{id}"), from, length.max(1));
+    let body = http::spc_post_idempotent(session, super::recent::LISTS_PATH, PROTOBUF, PROTOBUF, &req).await.ok()?;
+    let response = fields(&body).into_iter().find(|f| f.0 == 1)?.2;
+    let entity = fields(response).into_iter().find(|f| f.0 == 1)?.2;
+    let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let format = |b: &[u8]| -> Vec<p4::FormatListAttribute> {
+        fields(b).into_iter().filter(|f| f.0 == 1).map(|(_, _, e)| {
+            let kv = fields(e);
+            let mut a = p4::FormatListAttribute::new();
+            a.set_key(kv.iter().find(|x| x.0 == 1).map(|x| text(x.2)).unwrap_or_default());
+            a.set_value(kv.iter().find(|x| x.0 == 2).map(|x| text(x.2)).unwrap_or_default());
+            a
+        }).collect()
+    };
+    let mut out = p4::SelectedListContent::new();
+    let mut attrs = p4::ListAttributes::new();
+    let mut items = p4::ListItems::new();
+    for (f, _, v) in fields(entity) {
+        match f {
+            1 => for (g, n, w) in fields(v) {
+                match g {
+                    3 => attrs.set_name(text(w)),
+                    4 => attrs.set_description(text(w)),
+                    7 => out.set_owner_username(text(w)),
+                    13 => out.set_length(n as i32),
+                    20 => attrs.set_picture(w.to_vec()),
+                    24 => attrs.format_attributes = format(w),
+                    _ => {}
+                }
+            },
+            2 => {
+                let mut item = p4::Item::new();
+                let mut ia = p4::ItemAttributes::new();
+                for (g, _, w) in fields(v).into_iter().filter(|x| x.0 == 2).flat_map(|x| fields(x.2)) {
+                    match g {
+                        1 => item.set_uri(text(w)),
+                        24 => ia.format_attributes = format(w),
+                        _ => {}
+                    }
+                }
+                item.attributes = MessageField::some(ia);
+                if !item.uri().is_empty() {
+                    items.items.push(item);
+                }
+            }
+            _ => {}
+        }
+    }
+    if attrs.name().is_empty() && items.items.is_empty() {
+        return None;
+    }
+    if out.length.is_none() {
+        out.set_length((from as usize + items.items.len()) as i32);
+    }
+    items.set_pos(from as i32);
+    out.attributes = MessageField::some(attrs);
+    out.contents = MessageField::some(items);
+    log::info!("playlist {id}: read through the list platform");
+    Some(out)
 }
 
 /// Header cache: `Some` = the playlist's reference, `None` = a lookup that will fail again.
@@ -336,6 +423,13 @@ pub(crate) fn build_items(
                 added_by: attrs.added_by.clone().filter(|a| !a.is_empty()),
                 track: None,
                 episode: None,
+                // Spotify's note on the song in a prompted playlist.
+                note: ["description", "note", "reason", "explanation"].iter()
+                    .find_map(|k| format_attr(&attrs.format_attributes, k)).map(str::to_string),
+                transition: format_attr(&attrs.format_attributes, super::mix::RECIPE_KEY).and_then(super::mix::decode_recipe).map(|r| {
+                    super::mix::remember(&r);
+                    serde_json::to_value(&r).unwrap_or_default()
+                }),
             };
             if uri.starts_with("spotify:local:") {
                 out.track = Some(local_track(uri));
@@ -392,7 +486,15 @@ pub(crate) async fn playlist(args: Value) -> AppResult<Value> {
     let owner_name = list.owner_username().to_string();
     let owned = !owner_name.is_empty() && owner_name.eq_ignore_ascii_case(&me);
     let collaborative = list.attributes.collaborative();
-    let can_edit = list.capabilities.can_edit_items.unwrap_or(owned || collaborative);
+    let mixed = list_format(&list.attributes).is_some_and(|f| f.contains("mixed"))
+        || super::mix::mixed(&session, std::slice::from_ref(&uri)).await.contains(&uri);
+    let prompt = format_attr(&list.attributes.format_attributes, "prompt")
+        .or(format_attr(&list.attributes.format_attributes, "prompt_summary")).map(str::to_string);
+    // Who prompted it (format attribute `owner_username`; the list itself is Spotify's).
+    let prompted_by = prompt.as_ref().and(format_attr(&list.attributes.format_attributes, "owner_username")).map(str::to_string);
+    // A prompted playlist is Spotify's but its prompter edits it (Add, Edit, Name & details).
+    let prompted_by_me = prompted_by.as_deref().is_some_and(|u| u.eq_ignore_ascii_case(&me));
+    let can_edit = list.capabilities.can_edit_items.unwrap_or(owned || collaborative || prompted_by_me);
     // An owned playlist's page offers "Make public / private": its state lives in the rootlist.
     let library = match cached_rootlist(&me, PAGE_ROOTLIST_AGE) {
         Some(r) => Some(r),
@@ -418,6 +520,9 @@ pub(crate) async fn playlist(args: Value) -> AppResult<Value> {
         items: build_items(&page, &tracks.map, &episodes.map),
         following,
         is_public,
+        mixed,
+        prompt,
+        prompted_by,
         partial,
     })
 }
@@ -651,7 +756,7 @@ pub(crate) async fn rootlist(session: &Session, max_age: Duration) -> AppResult<
             "/playlist/v2/user/{}/rootlist?decorate=revision,attributes,length,owner,capabilities,status_code&from={from}&length={ROOTLIST_PAGE}",
             encode_component(&user)
         );
-        let body = http::spc_get(session, &endpoint, None).await?;
+        let body = http::spc_send_with(session, Method::GET, &endpoint, PROTOBUF, PROTOBUF, Vec::new(), &[http::MIX_LENS]).await?;
         let list: p4::SelectedListContent = http::proto(&body)?;
         if page == 0 {
             revision = list.revision().to_vec();
@@ -699,6 +804,7 @@ pub(crate) fn build_tree(items: &[RootItem], username: &str, extra: &HashMap<Str
                     can_edit: false,
                     is_public: None,
                     revision: None,
+                    format: None,
                 },
             });
         } else if let Some(id) = item.uri.strip_prefix("spotify:end-group:") {
@@ -726,6 +832,7 @@ pub(crate) fn build_tree(items: &[RootItem], username: &str, extra: &HashMap<Str
                         can_edit: item.can_edit_items.unwrap_or(owned_by(&item.owner) || collaborative),
                         is_public: Some(item.public == Some(true)),
                         revision: item.revision.clone(),
+                        format: list_format(attrs),
                     })
                 }
                 (_, Some(r)) => {
@@ -742,6 +849,7 @@ pub(crate) fn build_tree(items: &[RootItem], username: &str, extra: &HashMap<Str
                         can_edit: item.can_edit_items.unwrap_or(owned),
                         is_public: Some(item.public == Some(true)),
                         revision: item.revision.clone(),
+                        format: None,
                     })
                 }
                 _ => None,
@@ -796,7 +904,27 @@ pub(crate) async fn library_playlists(_args: Value) -> AppResult<Value> {
     super::user::resolve_names(&session, r.playlists().map(|it| it.owner.as_str())).await;
     let extra = resolve_undecorated(&session, &r).await;
     let user = engine::username().unwrap_or_else(|| session.username());
-    let mut out = json!({ "items": build_tree(&r.items, &user, &extra.refs) });
+    let mut tree = build_tree(&r.items, &user, &extra.refs);
+    // Mixed playlists (their format attributes may not reach the rootlist): Spotify's mix state.
+    let mut uris = Vec::new();
+    fn walk(l: &[RootlistEntry], out: &mut Vec<String>) {
+        for e in l {
+            out.extend(e.uri.clone().filter(|u| u.starts_with("spotify:playlist:")));
+            walk(&e.children, out);
+        }
+    }
+    walk(&tree, &mut uris);
+    let mixed = super::mix::mixed(&session, &uris).await;
+    fn mark(l: &mut [RootlistEntry], mixed: &HashSet<String>) {
+        for e in l {
+            if e.uri.as_ref().is_some_and(|u| mixed.contains(u)) && !e.format.as_deref().is_some_and(|f| f.contains("mixed")) {
+                e.format = Some(if e.format.as_deref() == Some("prompted") { "prompted,mixed".into() } else { "mixed".into() });
+            }
+            mark(&mut e.children, mixed);
+        }
+    }
+    mark(&mut tree, &mixed);
+    let mut out = json!({ "items": tree });
     if extra.incomplete {
         // Playlists whose names could not be looked up right now are missing from the tree.
         out["partial"] = json!(true);
@@ -1031,6 +1159,9 @@ struct CreateArgs {
     /// `playlist.createFolder`: the folder to create it in.
     #[serde(default)]
     parent: Option<String>,
+    /// A mixed playlist (smooth transitions): format attribute `mix=true`, as Spotify's.
+    #[serde(default)]
+    mixed: bool,
 }
 
 pub(crate) async fn create(args: Value) -> AppResult<Value> {
@@ -1058,16 +1189,101 @@ pub(crate) async fn create(args: Value) -> AppResult<Value> {
         AppError::new(e.code, format!("playlist created but could not be added to the library: {}", e.message))
     })?;
     let mut revision = revision.and_then(|r| revision_hex(&r));
+    // The name (and description) again as a change of the new list: the create request alone
+    // left it blank on other devices. The first songs go in the same change.
     let initial: Vec<String> = a.uris.into_iter().filter(|u| item_uri_ok(u)).collect();
+    let mut ops = vec![update_attributes_op(Some(name), a.description.as_deref().filter(|d| !d.is_empty()))];
     if !initial.is_empty() {
-        let changes = list_changes(None, vec![add_op(&initial, None, now_ms(), None)]);
-        revision = apply_changes(&session, &p.id, &changes).await?.or(revision);
+        ops.push(add_op(&initial, None, now_ms(), None));
+    }
+    revision = apply_changes(&session, &p.id, &list_changes(None, ops)).await?.or(revision);
+    if a.mixed {
+        // Spotify turns mixing on with a signal, not an attribute (a `mix` attribute gets a 500).
+        if let Err(e) = set_mixed(&session, &p.id, revision.as_deref()).await {
+            log::warn!("mixed playlist: the mix signal failed ({e}); created as a regular playlist");
+        }
     }
     let mut out = json!({ "uri": uri });
     if let Some(r) = revision {
         out["revision"] = json!(r);
     }
     Ok(out)
+}
+
+/// Turns a playlist into a mixed playlist, as the Android client does:
+/// `POST /playlist/v2/playlist/{id}/signals` with `ListSignals{1: base_revision, 2: Signal{1:
+/// "mix-state", 2: SignalData{1: lens "mix"}, 3: SetMixState{1: playlist_mixed}}}`.
+/// `playlist.setMixed {uri, on}`: Spotify's "Mix" button (smooth transitions on or off).
+pub(crate) async fn set_mixed_rpc(args: Value) -> AppResult<Value> {
+    #[derive(Deserialize)]
+    struct Args {
+        uri: String,
+        #[serde(default = "yes")]
+        on: bool,
+    }
+    fn yes() -> bool {
+        true
+    }
+    let a: Args = parse_args(args)?;
+    let p = parse_kind(&a.uri, UriKind::Playlist).ok_or_else(|| AppError::invalid("not a playlist"))?;
+    let session = engine::session()?;
+    set_mix_state(&session, &p.id, None, a.on).await?;
+    super::mix::set_known(&p.uri(), a.on);
+    Ok(json!({}))
+}
+
+/// A playlist's format attributes (`spotbot_session_id`, `prompt`, `mix`, …).
+pub(crate) async fn format_attributes(session: &Session, uri: &str) -> AppResult<HashMap<String, String>> {
+    let p = parse_kind(uri, UriKind::Playlist).ok_or_else(|| AppError::invalid("not a playlist"))?;
+    let list = fetch_list(session, &p.id, Some((0, 1))).await.map_err(|e| e.error)?;
+    Ok(list.attributes.format_attributes.iter().map(|f| (f.key().to_string(), f.value().to_string())).collect())
+}
+
+/// `playlist.mixInfo {uri}` → `{mixed, transitions}`: whether a playlist is mixed, and its stored
+/// transitions (learned for Vibe DJ, which plays them).
+pub(crate) async fn mix_info(args: Value) -> AppResult<Value> {
+    let a: super::pages::UriArgs = parse_args(args)?;
+    let p = parse_kind(&a.uri, UriKind::Playlist).ok_or_else(|| AppError::invalid("not a playlist"))?;
+    let session = engine::session()?;
+    let uri = p.uri();
+    let list = fetch_list(&session, &p.id, None).await.map_err(|e| e.error)?;
+    let mixed = list_format(&list.attributes).is_some_and(|f| f.contains("mixed"))
+        || super::mix::mixed(&session, std::slice::from_ref(&uri)).await.contains(&uri);
+    let mut transitions = 0;
+    for item in &list.contents.items {
+        if let Some(r) = format_attr(&item.attributes.format_attributes, super::mix::RECIPE_KEY).and_then(super::mix::decode_recipe) {
+            super::mix::remember(&r);
+            transitions += 1;
+        }
+    }
+    log::info!("mixInfo: mixed={mixed} transitions={transitions} items={}", list.contents.items.len());
+    Ok(json!({ "mixed": mixed, "transitions": transitions }))
+}
+
+async fn set_mixed(session: &Session, id: &str, revision_hex: Option<&str>) -> AppResult<()> {
+    set_mix_state(session, id, revision_hex, true).await
+}
+
+async fn set_mix_state(session: &Session, id: &str, revision_hex: Option<&str>, on: bool) -> AppResult<()> {
+    use super::messaging::{append_pb_message, append_pb_string};
+    let mut data = Vec::new();
+    append_pb_string(&mut data, 1, "mix");
+    let mut signal = Vec::new();
+    append_pb_string(&mut signal, 1, "mix-state");
+    append_pb_message(&mut signal, 2, &data);
+    append_pb_message(&mut signal, 3, &[0x08, u8::from(on)]);
+    let mut body = Vec::new();
+    if let Some(rev) = revision_hex.and_then(|h| (0..h.len()).step_by(2).map(|i| u8::from_str_radix(h.get(i..i + 2)?, 16).ok()).collect::<Option<Vec<u8>>>()) {
+        append_pb_message(&mut body, 1, &rev);
+    }
+    append_pb_message(&mut body, 2, &signal);
+    // 304 Not Modified: the signal was taken, the items are unchanged (mixing is a lens on them).
+    match http::spc_send_with(session, Method::POST, &format!("/playlist/v2/playlist/{id}/signals"), PROTOBUF, PROTOBUF, body, &[http::MIX_LENS]).await {
+        Err(e) if e.status != Some(304) => return Err(e.error),
+        _ => {}
+    }
+    forget_header(&format!("spotify:playlist:{id}"));
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1411,6 +1627,31 @@ pub(crate) async fn set_collaborative(args: Value) -> AppResult<Value> {
         })?;
     }
     Ok(revision_result(rev))
+}
+
+/// `playlist.inviteLink {uri}`: a collaborator invite link (Spotify's "Invite collaborators"):
+/// playlist-permission grants a CONTRIBUTOR token valid for 7 days, shared as `?pt=<token>`. The
+/// playlist becomes collaborative first (the official app does the same).
+pub(crate) async fn invite_link(args: Value) -> AppResult<Value> {
+    use super::proto::playlist_permission as pp;
+    use protobuf::Message;
+    let a: super::pages::UriArgs = parse_args(args)?;
+    let id = playlist_id(&a.uri)?;
+    let session = engine::session()?;
+    let options = pp::PermissionGrantOptions {
+        permission: MessageField::some(pp::Permission {
+            permission_level: Some(EnumOrUnknown::new(pp::PermissionLevel::CONTRIBUTOR)),
+            ..Default::default()
+        }),
+        ttl_ms: Some(7 * 24 * 3600 * 1000),
+        ..Default::default()
+    };
+    let body = options.write_to_bytes().map_err(|e| AppError::internal(format!("invite: {e}")))?;
+    let endpoint = format!("/playlist-permission/v1/playlist/{id}/permission-grant");
+    let bytes = http::spc_send_once(&session, Method::POST, &endpoint, PROTOBUF, PROTOBUF, body).await.map_err(map_write_error)?;
+    let grant = pp::PermissionGrant::parse_from_bytes(&bytes).map_err(|e| AppError::internal(format!("invite: {e}")))?;
+    let token = grant.token.filter(|t| !t.is_empty()).ok_or_else(|| AppError::unavailable("Spotify gave no invite"))?;
+    Ok(json!({ "url": format!("https://open.spotify.com/playlist/{id}?pt={token}"), "token": token }))
 }
 
 pub(crate) async fn follow(args: Value) -> AppResult<Value> {

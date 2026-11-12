@@ -51,6 +51,10 @@ data class Settings(
     val gapless: Boolean = true,
     val automix: Boolean = false,
     val crossfadeSeconds: Int = 0,
+    /** The navigation bar's fourth button: "downloads" or "create" (Settings › Display). */
+    val navButton: String = "downloads",
+    /** Songs that can't be played are listed greyed out (true) or hidden. */
+    val showUnplayable: Boolean = true,
     val monoAudio: Boolean = false,
     val hideExplicit: Boolean = false,
     val downloadOverCellular: Boolean = false,

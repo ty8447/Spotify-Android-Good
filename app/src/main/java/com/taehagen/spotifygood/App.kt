@@ -63,6 +63,9 @@ object AppInitializer {
         // stored credentials off the main thread, written only when it differs (a login or logout
         // the previous process didn't apply), so an ordinary start sends no PACKAGE_CHANGED.
         graph.routeProviderSwitch.reconcile()
+        // Vibe DJ: re-applies the crossfade per session and schedules the downloads' analysis.
+        graph.vibeDj
+        graph.playLog
     }
 
     private fun initNative(app: App, graph: AppGraph) {

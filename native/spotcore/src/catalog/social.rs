@@ -221,7 +221,7 @@ mod tests {
 /// 2 restricted, 3 source, 4 hidden. No client-side account privacy approximation.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct AudienceMember { username: String, restricted: bool, hidden: bool }
+struct AudienceMember { username: String, restricted: bool, hidden: bool, source: u64 }
 
 fn read_varint(buf: &[u8], at: &mut usize) -> AppResult<u64> {
     let mut v = 0u64;
@@ -266,6 +266,11 @@ fn proto_fields<'a>(buf: &'a [u8]) -> AppResult<Vec<(u32, u64, &'a [u8])>> {
 // The official Android service is created with RetrofitMaker.createWebgateService,
 // not with a rotating spclient access point (the latter returns HTTP 503).
 // Use the existing Spotify session credentials and preserve the protobuf wire format.
+/// A protobuf POST/PUT to Spotify's webgate (`spclient.wg.spotify.com`), as the client's Retrofit services.
+pub(super) async fn webgate_request(method: Method, path: &str, body: Vec<u8>) -> AppResult<Bytes> {
+    audience_webgate_request(method, path, body).await
+}
+
 async fn audience_webgate_request(method: Method, path: &str, body: Vec<u8>) -> AppResult<Bytes> {
     let session = engine::session()?;
     let token = session.login5().auth_token().await?;
@@ -393,17 +398,20 @@ pub(super) async fn listening_audience(_args: Value) -> AppResult<Value> {
         let mut username = String::new();
         let mut restricted = false;
         let mut hidden = false;
+        // AudienceUser.source: 1 a direct chat, 2 a group chat ("In a group with you").
+        let mut source = 0;
         for (f, number, bytes) in proto_fields(data)? {
             match f {
                 1 => username = String::from_utf8(bytes.to_vec())
                     .map_err(|_| AppError::unavailable("Invalid audience username"))?,
                 2 => restricted = number != 0,
+                3 => source = number,
                 4 => hidden = number != 0,
                 _ => {}
             }
         }
         if !username.is_empty() {
-            users.push(AudienceMember { username, restricted, hidden });
+            users.push(AudienceMember { username, restricted, hidden, source });
         }
     }
     to_value(&serde_json::json!({ "users": users }))

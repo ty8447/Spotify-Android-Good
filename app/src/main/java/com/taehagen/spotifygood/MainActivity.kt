@@ -70,8 +70,20 @@ class MainActivity : ComponentActivity() {
             val settings by graph.settings.settings.collectAsStateWithLifecycle()
             SpotifyGoodTheme(settings) {
                 AppRoot()
+                // Picture in Picture: only the video, over the app (which keeps its state).
+                com.taehagen.spotifygood.ui.screens.video.PipVideo()
             }
         }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo.enterPip(this)
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo.inPip.value = isInPictureInPictureMode
     }
 
     /**

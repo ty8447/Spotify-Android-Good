@@ -19,6 +19,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.connect.DevicesRepository
+import com.taehagen.spotifygood.model.ContextType
 import com.taehagen.spotifygood.model.PlaybackSnapshot
 import com.taehagen.spotifygood.model.PlaybackSource
 import com.taehagen.spotifygood.model.PlaybackStatus
@@ -151,6 +152,20 @@ internal class SpotifyPlayer(
     fun playMeansPause(requesterPackage: String?): Boolean =
         RemotePlayback.playMeansPause(playback.snapshot.value, readsPaused, requesterPackage, localLoadPending)
 
+    private fun contextTitle(s: PlaybackSnapshot): String? {
+        val ctx = s.context ?: return null
+        // The name the service looked up (playlists rarely carry one in the player state).
+        (contextName(ctx.uri) ?: ctx.name)?.takeIf { it.isNotBlank() }?.let { return it }
+        return when {
+            ctx.uri.contains(":collection") && ctx.uri.endsWith(":your-episodes") -> "Your Episodes"
+            ctx.type == ContextType.COLLECTION || ctx.uri.contains(":collection") -> "Liked Songs"
+            ctx.type == ContextType.ALBUM -> s.track?.album?.name
+            ctx.type == ContextType.ARTIST -> s.track?.artists?.firstOrNull()?.name
+            ctx.type == ContextType.SHOW -> s.track?.show?.name
+            else -> null
+        }
+    }
+
     override fun getState(): State {
         val s = playback.snapshot.value
         val w = QueueWindow.build(s)
@@ -200,6 +215,9 @@ internal class SpotifyPlayer(
         val builder = State.Builder()
             .setAvailableCommands(commands)
             .setPlaylist(buildItems(w, s, remoteName))
+            // The queue title: Android Auto shows it at the top of Now Playing ("Liked Songs", the
+            // album, playlist or artist playing from), like Spotify.
+            .setPlaylistMetadata(MediaMetadata.Builder().setTitle(contextTitle(s)).build())
             .setAudioAttributes(AUDIO_ATTRIBUTES)
             .setAudioSessionId(audioSessionId)
             .setSeekBackIncrementMs(EPISODE_SKIP_MS)

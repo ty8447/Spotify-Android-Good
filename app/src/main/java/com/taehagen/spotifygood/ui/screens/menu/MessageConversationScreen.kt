@@ -183,6 +183,9 @@ private data class MessageHistoryPage(
     val groupName: String? = null,
     val groupMemberCount: Int = 0,
     val pendingMemberCount: Int = 0,
+    /** Someone else's message request to this user: accept it before replying. */
+    val requestPending: Boolean = false,
+    val initiatorUsername: String? = null,
     val activeOtherMemberCount: Int = 0,
     val participants: List<HistoryParticipant> = emptyList(),
     val messages: List<HistoryMessage> = emptyList(),
@@ -1452,6 +1455,37 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
                             )
                         }
                     }
+                    // A message request someone sent this user (Spotify: Accept / Delete / Block).
+                    var answering by remember(hierarchyId) { mutableStateOf(false) }
+                    if (page?.requestPending == true) {
+                        val from = participants.firstOrNull { it.username == page?.initiatorUsername }?.displayName
+                            ?: page?.initiatorUsername ?: "Someone"
+                        val answer: (Boolean, Boolean) -> Unit = { accept, block ->
+                            answering = true
+                            scope.launch {
+                                runCatching {
+                                    graph.rpc.callRaw("catalog.respondChatRequest", buildJsonObject {
+                                        put("hierarchyId", hierarchyId); put("accept", accept); put("block", block)
+                                    })
+                                }.onSuccess {
+                                    if (accept) page = page?.copy(requestPending = false) else navigator.back()
+                                }
+                                answering = false
+                            }
+                        }
+                        Column(Modifier.fillMaxWidth().padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("$from wants to send you a message", style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+                            Text("Accept to reply and see what they share. They won't know you've seen it until you accept.",
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center, modifier = Modifier.padding(vertical = 6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { answer(false, true) }, enabled = !answering) { Text("Block", color = MaterialTheme.colorScheme.error) }
+                                OutlinedButton(onClick = { answer(false, false) }, enabled = !answering) { Text("Delete") }
+                                Button(onClick = { answer(true, false) }, enabled = !answering) { Text("Accept") }
+                            }
+                        }
+                    }
                     sendWarning?.let { warning ->
                         Text(
                             warning, color = MaterialTheme.colorScheme.error,
@@ -1459,7 +1493,7 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
                             modifier = Modifier.padding(bottom = 5.dp)
                         )
                     }
-                    if (!pendingSendLimitReached) {
+                    if (!pendingSendLimitReached && page?.requestPending != true) {
                         Row(
                             Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)

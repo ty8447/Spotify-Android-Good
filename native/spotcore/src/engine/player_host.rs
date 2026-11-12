@@ -196,6 +196,22 @@ async fn get_or_create(rebind: Option<&Session>, settings: &EngineSettings) -> A
     }
 }
 
+/// A Player for Vibe DJ (deck B, the analysis deck) on the main Player's online session, or on a
+/// never-connected one with the explicit filter applied. It shares the process's audio keys and
+/// downloads (offline source) but not the main Player's events, sink or Connect state.
+pub(crate) fn new_deck_player<F>(sink: F) -> Arc<Player>
+where
+    F: FnOnce() -> Box<dyn librespot_playback::audio_backend::Sink> + Send + 'static,
+{
+    crate::offline::observe_audio_keys();
+    let session = BOUND.lock().clone().unwrap_or_else(|| {
+        let session = Session::new(config::session_config(), None);
+        apply_offline_filter(&session, &super::settings());
+        session
+    });
+    Player::new(config::player_config(&super::settings()), session, mixer_or_default().get_soft_volume(), sink)
+}
+
 /// Binds `session` to the Player, creating it first if there is none (or it died).
 pub(crate) async fn bind(session: &Session, settings: &EngineSettings) -> Arc<Player> {
     get_or_create(Some(session), settings).await

@@ -51,7 +51,11 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
+import com.taehagen.spotifygood.data.rpcArgs
+import kotlinx.serialization.json.put
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -102,6 +106,14 @@ class AppGraph(val app: Application) {
             appScope.launch {
                 engine.awaitReady()
                 engine.isLoggedIn.collect { routeProviderSwitch.update(it) }
+            }
+            // A mixed playlist playing here: its songs flow into each other as Spotify mixed them.
+            appScope.launch {
+                engine.awaitReady()
+                events.playback
+                    .map { it.context?.uri.takeIf { _ -> it.source != com.taehagen.spotifygood.model.PlaybackSource.REMOTE } }
+                    .distinctUntilChanged()
+                    .collect { uri -> rpc.fire("dj.context", rpcArgs { put("uri", uri) }) }
             }
         }
     }
@@ -182,6 +194,11 @@ class AppGraph(val app: Application) {
     val playbackConnector: PlaybackServiceConnector by lazy { PlaybackServiceConnector(app) }
 
     val responseCache: ResponseCache by lazy { ResponseCache(database.responseCache(), json) }
+    val playLog: com.taehagen.spotifygood.data.PlayLog by lazy {
+        com.taehagen.spotifygood.data.PlayLog(app, json).also { it.start(appScope, events.playback) }
+    }
+    val podcastSettings: com.taehagen.spotifygood.data.PodcastSettings by lazy { com.taehagen.spotifygood.data.PodcastSettings(app) }
+    val vibeDj: com.taehagen.spotifygood.vibedj.VibeDjRepository by lazy { com.taehagen.spotifygood.vibedj.VibeDjRepository(this) }
     val catalog: CatalogRepository by lazy { CatalogRepository(rpc, responseCache, episodeProgress) }
     /** Account-synced `ylpin` collection; preserves a local copy when the service is unavailable. */
     val accountPins: com.taehagen.spotifygood.data.AccountPinsRepository by lazy {

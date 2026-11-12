@@ -31,12 +31,14 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Notifications
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.People
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -85,6 +87,7 @@ import androidx.lifecycle.viewModelScope
 import com.taehagen.spotifygood.AppGraph
 import com.taehagen.spotifygood.R
 import com.taehagen.spotifygood.auth.BrowserLauncher
+import com.taehagen.spotifygood.data.ServerRecent
 import com.taehagen.spotifygood.model.FriendActivity
 import com.taehagen.spotifygood.model.MediaType
 import com.taehagen.spotifygood.playback.PlayRequest
@@ -277,6 +280,7 @@ fun ProfileMenu(onClosed: () -> Unit) {
                     }
                 }
                 MenuItem(Icons.Rounded.History, R.string.browse_menu_recents) { go { navigator.navigate(Route.Recents) } }
+                MenuItem(Icons.Rounded.GraphicEq, R.string.browse_menu_vibe_dj) { go { navigator.navigate(Route.VibeDj) } }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.weight(1f)) {
                         MenuItem(Icons.Rounded.Bolt, R.string.browse_menu_updates) {
@@ -422,7 +426,12 @@ private fun MenuItem(icon: ImageVector, label: Int, onClick: () -> Unit) {
 data class FeedState<T>(val items: List<T> = emptyList(), val loading: Boolean = true, val error: BrowseError? = null)
 
 /** A list loaded once the session can answer, again on [refresh]. */
-class FeedViewModel<T>(private val graph: AppGraph, private val load: suspend (AppGraph) -> List<T>) : ViewModel() {
+class FeedViewModel<T>(
+    private val graph: AppGraph,
+    /** The next page after the items loaded so far (empty at the end), for lists that page. */
+    private val more: (suspend (AppGraph, List<T>) -> List<T>)? = null,
+    private val load: suspend (AppGraph) -> List<T>,
+) : ViewModel() {
     private val _state = MutableStateFlow(FeedState<T>())
     val state: StateFlow<FeedState<T>> = _state.asStateFlow()
 
@@ -442,12 +451,25 @@ class FeedViewModel<T>(private val graph: AppGraph, private val load: suspend (A
                     load(graph)
                 }
                 _state.value = FeedState(items, loading = false)
+                ended = false
             } catch (cancel: CancellationException) {
                 throw cancel
             } catch (failure: Exception) {
                 // Keep the previous list until a successful refresh.
                 _state.update { it.copy(loading = false, error = failure.toBrowseError()) }
             }
+        }
+    }
+
+    private var ended = false
+
+    /** Appends the next page (once the list's end is on screen); a failed page is retried next time. */
+    fun loadMore() {
+        val next = more ?: return
+        if (ended || refreshJob?.isActive == true) return
+        refreshJob = viewModelScope.launch {
+            val page = runCatching { next(graph, _state.value.items) }.getOrNull() ?: return@launch
+            if (page.isEmpty()) ended = true else _state.update { it.copy(items = it.items + page) }
         }
     }
 }
@@ -464,7 +486,7 @@ private fun <T> FeedScreen(
     row: @Composable (T) -> Unit,
 ) {
     @Suppress("UNCHECKED_CAST")
-    val vm = appViewModel<FeedViewModel<*>>(key = key) { FeedViewModel(it, load) } as FeedViewModel<T>
+    val vm = appViewModel<FeedViewModel<*>>(key = key) { FeedViewModel(it, load = load) } as FeedViewModel<T>
     val state by vm.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val error = state.error
@@ -499,34 +521,158 @@ private fun MediaFeedScreen(key: String, title: Int, empty: Int, contentPadding:
 
 /** One Recents row: a context (or a day's loose songs, [loose]) and the songs played from it. */
 @Immutable
-data class RecentRow(val ref: MediaRef, val timestampMs: Long, val songs: List<MediaRef>, val loose: Boolean = false)
+data class RecentRow(
+    val ref: MediaRef,
+    val timestampMs: Long,
+    val songs: List<MediaRef>,
+    val loose: Boolean = false,
+    /** Explicit flags and podcast progress of the row and its songs, by URI. */
+    val info: Map<String, RecentInfo> = emptyMap(),
+    /** Offset of Spotify's next Recents page (0: none). */
+    val next: Int = 0,
+)
+
+data class RecentInfo(val explicit: Boolean = false, val progress: Float? = null, val left: String? = null)
+
+/** Explicit flags (tracks, episodes) and how much of each episode is left, like Spotify's Recents. */
+private suspend fun recentInfo(graph: AppGraph, refs: List<MediaRef>): Map<String, RecentInfo> {
+    val tracks = refs.filter { it.type == MediaType.TRACK }.map { it.uri }.distinct()
+    val episodes = refs.filter { it.type == MediaType.EPISODE }.map { it.uri }.distinct()
+    val out = mutableMapOf<String, RecentInfo>()
+    tracks.chunked(50).forEach { chunk ->
+        runCatching { graph.catalog.tracks(chunk) }.getOrNull()?.forEach { out[it.uri] = RecentInfo(explicit = it.explicit) }
+    }
+    episodes.chunked(20).forEach { chunk ->
+        runCatching { graph.catalog.episodes(chunk) }.getOrNull()?.forEach { e ->
+            val pos = if (e.fullyPlayed == true) e.durationMs else e.resumePositionMs ?: 0L
+            val left = (e.durationMs - pos).coerceAtLeast(0)
+            out[e.uri] = RecentInfo(
+                explicit = e.explicit,
+                progress = if (e.durationMs > 0) pos.toFloat() / e.durationMs else null,
+                left = when {
+                    e.fullyPlayed == true -> "Played"
+                    left >= 3_600_000 -> "${left / 3_600_000} hr ${left % 3_600_000 / 60_000} min left"
+                    else -> "${(left / 60_000).coerceAtLeast(1)} min left"
+                },
+            )
+        }
+    }
+    return out
+}
+
+private fun recentKind(r: MediaRef) = if (r.type == MediaType.COLLECTION) "Playlist" else r.type.name.lowercase().replaceFirstChar { it.uppercase() }
+
+private fun playedLabel(refs: List<MediaRef>, n: Int = refs.size): String =
+    if (refs.isNotEmpty() && refs.all { it.type == MediaType.EPISODE }) "$n episode${if (n == 1) "" else "s"} played"
+    else "$n song${if (n == 1) "" else "s"} played"
+
+/** Rows for song and episode URIs (metadata lookups for the ones not in [known]). */
+private suspend fun songRefs(graph: AppGraph, uris: List<String>, known: Map<String, MediaRef> = emptyMap()): MutableMap<String, MediaRef> {
+    val out = known.toMutableMap()
+    val wanted = uris.distinct().filter { it !in out }
+    wanted.filter { it.startsWith("spotify:track:") }.chunked(50).forEach { chunk ->
+        runCatching { graph.catalog.tracks(chunk) }.getOrNull()?.forEach { out[it.uri] = it.toMediaRef() }
+    }
+    wanted.filter { it.startsWith("spotify:episode:") }.chunked(20).forEach { chunk ->
+        runCatching { graph.catalog.episodes(chunk) }.getOrNull()?.forEach { out[it.uri] = it.toMediaRef() }
+    }
+    return out
+}
+
+/** Explicit flags and progress; a show's row carries the progress of its latest episode, like Spotify. */
+private suspend fun withInfo(graph: AppGraph, rows: List<RecentRow>): List<RecentRow> {
+    val info = recentInfo(graph, rows.flatMap { r -> listOf(r.ref) + r.songs }).toMutableMap()
+    rows.filter { it.ref.type == MediaType.SHOW }.forEach { r -> r.songs.firstNotNullOfOrNull { info[it.uri] }?.let { info[r.ref.uri] = it } }
+    return rows.map { r -> r.copy(info = info) }
+}
 
 /**
- * Contexts from the listening history, each with the songs played from it that day (play history keeps the
- * last 50 plays; older contexts fall back to their last track, without a count). Songs played outside any
- * context are grouped per day as "N songs played".
+ * Spotify's Recents page from [offset], as the official app shows it: each context with every song
+ * played from it. Null when Spotify's page can't be read (the caller falls back to the play history).
  */
-private suspend fun recentRows(graph: AppGraph): List<RecentRow> {
-    val history = graph.catalog.recentHistory()
-    val plays = runCatching { graph.catalog.playHistory() }.getOrDefault(emptyList())
+private suspend fun serverRecentRows(graph: AppGraph, offset: Int): List<RecentRow>? {
+    val page = runCatching { graph.catalog.recents(offset) }.getOrNull()?.takeIf { it.items.isNotEmpty() } ?: return null
+    val items = page.items.filter { it.kind != "shared" }
+    val songs = songRefs(graph, items.flatMap { it.entityUris } + items.map { it.uri }.filter { it.startsWith("spotify:track:") || it.startsWith("spotify:episode:") })
+    val contexts = runCatching { graph.catalog.refs(items.map { it.uri }.filter { it !in songs }.distinct()) }.getOrDefault(emptyList()).associateBy { it.uri }
     val zone = java.time.ZoneId.systemDefault()
     val day = { ms: Long -> Instant.ofEpochMilli(ms).atZone(zone).toLocalDate() }
-    val played = { n: Int -> "$n song${if (n == 1) "" else "s"} played" }
-    val kind = { r: MediaRef -> r.type.name.lowercase().replaceFirstChar { it.uppercase() } }
-    val songsOf = { ps: List<com.taehagen.spotifygood.data.PlayedTrack> -> ps.map { p -> p.track }.distinctBy { t -> t.uri } }
-    val last = runCatching { graph.catalog.tracks(history.mapNotNull { e -> e.lastTrackUri }.distinct()) }
-        .getOrDefault(emptyList()).associateBy { t -> t.uri }
-    val rows = history.map { e ->
-        val songs = songsOf(plays.filter { p -> p.contextUri == e.context.uri && day(p.playedAtMs) == day(e.timestampMs) })
-        val subtitle = listOfNotNull(songs.size.takeIf { it > 0 }?.let(played), kind(e.context), e.context.subtitle).joinToString(" â€¢ ")
-        RecentRow(e.context.copy(subtitle = subtitle), e.timestampMs,
-            songs.ifEmpty { listOfNotNull(e.lastTrackUri?.let(last::get)?.toMediaRef()) })
+    // Consecutive plays from the same context on the same day are one row, like Spotify's Recents.
+    val merged = mutableListOf<ServerRecent>()
+    items.forEach { r ->
+        val last = merged.lastOrNull()
+        if (last != null && last.uri == r.uri && last.kind == r.kind && r.uri !in songs && day(last.timestampMs) == day(r.timestampMs)) {
+            val uris = (last.entityUris + r.entityUris).distinct()
+            merged[merged.lastIndex] = last.copy(entityUris = uris, itemsCount = maxOf(uris.size, last.itemsCount + r.itemsCount), timestampMs = maxOf(last.timestampMs, r.timestampMs))
+        } else merged += r
     }
-    val loose = plays.filter { p -> p.contextUri == null }.groupBy { p -> day(p.playedAtMs) }.map { (d, ps) ->
-        val songs = songsOf(ps)
-        RecentRow(MediaRef(MediaType.TRACK, "loose:$d", played(songs.size), images = songs.first().images), ps.first().playedAtMs, songs, loose = true)
+    val rows = merged.mapNotNull { r ->
+        songs[r.uri]?.let { return@mapNotNull RecentRow(it, r.timestampMs, emptyList(), next = page.next ?: 0) }
+        val ctx = contexts[r.uri] ?: return@mapNotNull null
+        val played = r.entityUris.mapNotNull(songs::get).distinctBy { it.uri }
+        val n = maxOf(r.itemsCount, played.size)
+        val what = when {
+            n <= 0 -> null
+            r.kind == "saved" -> "$n song${if (n == 1) "" else "s"} added"
+            else -> playedLabel(played, n)
+        }
+        val subtitle = listOfNotNull(what, recentKind(ctx), ctx.subtitle).distinct().joinToString(" • ")
+        RecentRow(ctx.copy(subtitle = subtitle), r.timestampMs, played, next = page.next ?: 0)
     }
-    return (rows + loose).sortedByDescending { r -> r.timestampMs }
+    return withInfo(graph, rows)
+}
+
+private suspend fun recentRows(graph: AppGraph): List<RecentRow> = serverRecentRows(graph, 0) ?: historyRows(graph)
+
+/**
+ * Fallback when Spotify's Recents page can't be read: contexts from the listening history, each with the songs
+ * played from it that day (play history keeps the last 50 plays; older contexts fall back to their last track).
+ * Songs played outside any context are grouped per day as "N songs played".
+ */
+private suspend fun historyRows(graph: AppGraph): List<RecentRow> {
+    val history = graph.catalog.recentHistory()
+    val server = runCatching { graph.catalog.playHistory() }.getOrDefault(emptyList())
+    val local = runCatching { graph.playLog.entries() }.getOrDefault(emptyList())
+    val zone = java.time.ZoneId.systemDefault()
+    val day = { ms: Long -> Instant.ofEpochMilli(ms).atZone(zone).toLocalDate() }
+    val kind = ::recentKind
+
+    // Every play known: Spotify's last 50 (any device) and this phone's own log, one per song and minute.
+    data class Play(val uri: String, val context: String?, val at: Long)
+    val plays = (server.map { Play(it.track.uri, it.contextUri, it.playedAtMs) } + local.map { Play(it.uri, it.contextUri, it.playedAtMs) })
+        .sortedByDescending { it.at }
+        .fold(mutableListOf<Play>()) { acc, p ->
+            if (acc.none { it.uri == p.uri && kotlin.math.abs(it.at - p.at) < 120_000 }) acc += p
+            acc
+        }
+    // Rows for the songs and episodes: Spotify's answer first, then metadata lookups.
+    val songRefs = songRefs(graph, plays.map { it.uri } + history.mapNotNull { it.lastTrackUri }, server.associate { it.track.uri to it.track })
+    // Rows for the contexts: the server's, then lookups for the ones only this phone played.
+    val contexts = history.associate { it.context.uri to it.context }.toMutableMap()
+    runCatching { graph.catalog.refs(plays.mapNotNull { it.context }.distinct().filter { it !in contexts }) }
+        .getOrNull()?.forEach { contexts[it.uri] = it }
+
+    val played = { refs: List<MediaRef> -> playedLabel(refs) }
+    // One row per context and day (Spotify's Recents), the songs played from it that day.
+    val grouped = plays.groupBy { (it.context?.takeIf { c -> c in contexts } ?: "loose") to day(it.at) }
+    val rows = grouped.map { (key, ps) ->
+        val songs = ps.mapNotNull { songRefs[it.uri] }.distinctBy { it.uri }
+        val at = ps.maxOf { it.at }
+        val ctx = contexts[key.first]
+        if (ctx == null) {
+            RecentRow(MediaRef(MediaType.TRACK, "loose:${key.second}", played(songs), images = songs.firstOrNull()?.images.orEmpty()), at, songs, loose = true)
+        } else {
+            val subtitle = listOfNotNull(songs.size.takeIf { it > 0 }?.let { played(songs) }, kind(ctx), ctx.subtitle).distinct().joinToString(" • ")
+            RecentRow(ctx.copy(subtitle = subtitle), at, songs)
+        }
+    }.filter { it.songs.isNotEmpty() || !it.loose }
+    // Contexts older than the known plays: their last song only.
+    val covered = rows.map { it.ref.uri }.toSet()
+    val older = history.filter { it.context.uri !in covered }.map { e ->
+        val songs = listOfNotNull(e.lastTrackUri?.let(songRefs::get))
+        RecentRow(e.context.copy(subtitle = listOfNotNull(kind(e.context), e.context.subtitle).distinct().joinToString(" • ")), e.timestampMs, songs)
+    }
+    return withInfo(graph, (rows + older).sortedByDescending { r -> r.timestampMs })
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -534,14 +680,17 @@ private suspend fun recentRows(graph: AppGraph): List<RecentRow> {
 fun RecentsScreen(contentPadding: PaddingValues) {
     @Suppress("UNCHECKED_CAST")
     val vm = appViewModel<FeedViewModel<*>>(key = "menu:recents-history") {
-        FeedViewModel(it) { graph -> recentRows(graph) }
+        FeedViewModel(it, more = { graph, rows -> rows.lastOrNull()?.next?.takeIf { n -> n > 0 }?.let { n -> serverRecentRows(graph, n) }.orEmpty() }) { graph -> recentRows(graph) }
     } as FeedViewModel<RecentRow>
     val graph = rememberAppGraph()
     val state by vm.state.collectAsStateWithLifecycle()
     val navigator = LocalAppNavigator.current
     val zone = java.time.ZoneId.systemDefault()
     val today = java.time.LocalDate.now(zone)
-    val grouped = state.items.groupBy { entry ->
+    // Spotify's Music / Podcasts chips.
+    var filter by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf<Boolean?>(null) }
+    val podcast = { r: RecentRow -> r.ref.type == MediaType.SHOW || r.ref.type == MediaType.EPISODE }
+    val grouped = state.items.filter { filter == null || podcast(it) == filter }.groupBy { entry ->
         if (entry.timestampMs <= 0) "Earlier" else {
             val day = java.time.Instant.ofEpochMilli(entry.timestampMs).atZone(zone).toLocalDate()
             when (day) {
@@ -556,6 +705,11 @@ fun RecentsScreen(contentPadding: PaddingValues) {
             navigationIcon = { IconButton(onClick = navigator::back) {
                 Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
             } })
+        Row(Modifier.padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Music" to false, "Podcasts" to true).forEach { (label, value) ->
+                androidx.compose.material3.FilterChip(selected = filter == value, onClick = { filter = if (filter == value) null else value }, label = { Text(label) })
+            }
+        }
         when {
             state.loading && state.items.isEmpty() -> LoadingState()
             state.error != null && state.items.isEmpty() -> StateBox {
@@ -568,25 +722,32 @@ fun RecentsScreen(contentPadding: PaddingValues) {
                         Text(day, modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 8.dp),
                             style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     }
-                    items(entries, key = { r -> "${r.ref.uri}:${r.timestampMs}" }) { row ->
+                    // Two rows can share a context and a time (a song added and played): the position keeps keys unique.
+                    itemsIndexed(entries, key = { i, r -> "$day:$i:${r.ref.uri}" }) { _, row ->
                         var expanded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
                         val flip by animateFloatAsState(if (expanded) 180f else 0f, label = "chevron")
                         val expandable = row.loose || (row.songs.isNotEmpty() && row.ref.type != MediaType.TRACK)
                         Column {
+                            val own = row.info[row.ref.uri]
                             MediaRow(ref = row.ref, onClick = { if (row.loose) expanded = !expanded else navigator.open(row.ref) },
+                                explicit = own?.explicit == true, progress = own?.progress, progressLabel = own?.left,
                                 trailing = if (!expandable) null else { {
                                     IconButton(onClick = { expanded = !expanded }) {
                                         Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.graphicsLayer { rotationX = flip })
                                     }
                                 } })
                             if (expanded) row.songs.forEach { song ->
+                                val songInfo = row.info[song.uri]
                                 MediaRow(ref = song, modifier = Modifier.padding(start = 24.dp),
+                                    explicit = songInfo?.explicit == true, progress = songInfo?.progress, progressLabel = songInfo?.left,
                                     onClick = { graph.player.play(if (row.loose) PlayRequest(trackUris = listOf(song.uri)) else PlayRequest(contextUri = row.ref.uri, startUri = song.uri)) },
                                     onMoreClick = { song.toActionTarget()?.let(navigator::showActions) })
                             }
                         }
                     }
                 }
+                // The end of the list is on screen: Spotify's next page (50 at a time, never all at once).
+                item(key = "more") { LaunchedEffect(state.items.size) { vm.loadMore() } }
             }
         }
     }
@@ -1332,7 +1493,7 @@ private fun FriendRow(friend: FriendActivity, onUser: () -> Unit, onTrack: () ->
                 }
             }
             Text(
-                text = listOfNotNull(friend.track.name, friend.track.subtitle).joinToString(" â€¢ "),
+                text = listOfNotNull(friend.track.name, friend.track.subtitle).joinToString(" • "),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

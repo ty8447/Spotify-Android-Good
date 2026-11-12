@@ -60,6 +60,8 @@ fun buildDownloadsContent(
     collections: List<DownloadedCollection>,
     metadata: (DownloadItem) -> DownloadMetadata?,
     activeUri: String? = null,
+    /** Error text of downloads that failed because the item isn't available: left out silently. */
+    unplayableReason: String? = null,
 ): DownloadsContent {
     val inCollections = HashSet<String>()
     collections.forEach { inCollections.addAll(it.itemUris) }
@@ -71,6 +73,7 @@ fun buildDownloadsContent(
     var active: DownloadEntry? = null
     val completedUris = HashSet<String>()
     for (item in items.asReversed()) {
+        if (item.state == DownloadState.FAILED && unplayableReason != null && item.error == unplayableReason) continue
         when (item.state) {
             DownloadState.COMPLETED -> {
                 completed++

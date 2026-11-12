@@ -239,6 +239,7 @@ pub(crate) fn episode(v: &Value) -> Option<Episode> {
         playable: playable(v),
         resume_position_ms: v.pointer("/playedState/playPositionMilliseconds").and_then(Value::as_u64),
         fully_played: str_at(v, "/playedState/state").map(|s| s.eq_ignore_ascii_case("COMPLETED")),
+        thumbnail: Vec::new(),
     })
 }
 

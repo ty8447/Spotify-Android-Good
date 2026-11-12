@@ -230,9 +230,10 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.common)
-    // Android Auto Car API 8+: custom Now Playing header. The Media3 browser remains for old hosts.
-    implementation("androidx.car.app:app:1.7.0")
-    implementation("androidx.car.app:app-projected:1.7.0")
+    // Music videos and video podcasts (HLS + Widevine), played in-app.
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.exoplayer.hls)
+    implementation(libs.androidx.media3.ui)
     implementation("androidx.media:media:1.7.1")
     implementation(libs.androidx.mediarouter)
     implementation(libs.androidx.room.runtime)

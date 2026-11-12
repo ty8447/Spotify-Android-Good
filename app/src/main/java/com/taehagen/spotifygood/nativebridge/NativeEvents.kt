@@ -55,6 +55,11 @@ class NativeEvents(private val json: Json) {
     private val _playback = MutableStateFlow(PlaybackSnapshot.EMPTY)
     val playback: StateFlow<PlaybackSnapshot> = _playback.asStateFlow()
 
+    private val _djState = MutableStateFlow(com.taehagen.spotifygood.vibedj.DjState())
+    val djState: StateFlow<com.taehagen.spotifygood.vibedj.DjState> = _djState.asStateFlow()
+    private val _djPlan = MutableStateFlow<com.taehagen.spotifygood.vibedj.DjPlan?>(null)
+    val djPlan: StateFlow<com.taehagen.spotifygood.vibedj.DjPlan?> = _djPlan.asStateFlow()
+
     private val _devices = MutableStateFlow(DeviceList())
     val devices: StateFlow<DeviceList> = _devices.asStateFlow()
 
@@ -104,6 +109,8 @@ class NativeEvents(private val json: Json) {
                     }
                     _playback.value = update
                 }
+                "dj.state" -> _djState.value = json.decodeFromString<com.taehagen.spotifygood.vibedj.DjState>(payload)
+                "dj.plan" -> _djPlan.value = json.decodeFromString<com.taehagen.spotifygood.vibedj.DjPlan?>(payload)
                 "devices" -> _devices.value = json.decodeFromString<DeviceList>(payload)
                 "credentials" -> _credentials.tryEmit(json.decodeFromString<StoredCredentials>(payload))
                 "queueMetadata" -> _queueMetadata.tryEmit(json.decodeFromString<QueueMetadataEvent>(payload))

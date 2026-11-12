@@ -210,6 +210,7 @@ pub fn episode_model(uri: &str, episode: &Episode, msg: &pm::Episode) -> models:
         playable: true,
         resume_position_ms: None,
         fully_played: None,
+        thumbnail: Vec::new(),
     }
 }
 
@@ -467,6 +468,7 @@ mod tests {
             playable: true,
             resume_position_ms: None,
             fully_played: None,
+            thumbnail: vec![],
         };
         let item = episode_audio_item(&uri, &e.uri, &e, AudioFileFormat::MP3_96, FileId([1; 20]));
         assert_eq!(item.covers.len(), 1, "falls back to the show images");

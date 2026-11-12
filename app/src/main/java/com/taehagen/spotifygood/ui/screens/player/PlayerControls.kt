@@ -82,6 +82,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerInputChange
@@ -364,6 +365,10 @@ internal fun PlayerSeekBar(
     trackKey: String? = null,
     showTimes: Boolean = true,
     cinematicTheme: CinematicTheme? = null,
+    /** Where chapters start (ms): the bar is cut into a segment per chapter. */
+    segments: List<Long> = emptyList(),
+    /** The name shown under the bar for a position (the chapter's), between the times. */
+    label: (Long) -> String? = { null },
 ) {
     val positionMs by position
     var dragFraction by remember { mutableStateOf<Float?>(null) }
@@ -386,7 +391,7 @@ internal fun PlayerSeekBar(
     val seekEnabled = enabled && duration > 0
     val elapsedText = formatPlaybackTime(shownMs)
     val durationText = formatPlaybackTime(duration)
-    val label = stringResource(R.string.player_seek)
+    val seekLabel = stringResource(R.string.player_seek)
     val state = stringResource(R.string.player_seek_state, elapsedText, durationText)
 
     Column(modifier) {
@@ -404,8 +409,9 @@ internal fun PlayerSeekBar(
             enabled = seekEnabled,
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (segments.isEmpty() || duration <= 0) Modifier else Modifier.chapterGaps(segments.map { it.toFloat() / duration }))
                 .semantics {
-                    contentDescription = label
+                    contentDescription = seekLabel
                     stateDescription = state
                 },
             thumb = { SeekThumb(seekEnabled, dragging = dragFraction != null, saber = cinematicTheme == CinematicTheme.STAR_WARS) },
@@ -420,12 +426,35 @@ internal fun PlayerSeekBar(
             ) {
                 val timeColor = LocalContentColor.current.copy(alpha = 0.7f)
                 Text(elapsedText, style = MaterialTheme.typography.labelSmall, color = timeColor)
-                Spacer(Modifier.weight(1f))
+                Text(
+                    label(shownMs).orEmpty(), style = MaterialTheme.typography.labelSmall, color = timeColor,
+                    maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                )
                 Text(durationText, style = MaterialTheme.typography.labelSmall, color = timeColor)
             }
         }
     }
 }
+
+/** Cuts thin gaps into the slider's track at [fractions] (Spotify's chapter segments). */
+private fun Modifier.chapterGaps(fractions: List<Float>): Modifier = this
+    .graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen)
+    .drawWithContent {
+        drawContent()
+        // The track runs between the thumb's centres (its 16 dp box).
+        val inset = 8.dp.toPx()
+        val gap = 2.dp.toPx()
+        val h = 8.dp.toPx()
+        fractions.filter { it in 0.001f..0.999f }.forEach { f ->
+            val x = inset + f * (size.width - 2 * inset)
+            drawRect(
+                androidx.compose.ui.graphics.Color.Black, topLeft = androidx.compose.ui.geometry.Offset(x - gap / 2, size.height / 2 - h / 2),
+                size = androidx.compose.ui.geometry.Size(gap, h), blendMode = androidx.compose.ui.graphics.BlendMode.Clear,
+            )
+        }
+    }
 
 @Composable
 private fun SeekThumb(enabled: Boolean, dragging: Boolean, saber: Boolean = false) {

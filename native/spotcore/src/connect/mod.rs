@@ -908,6 +908,11 @@ async fn push(
 // ---------------------------------------------------------------------------------------------
 
 /// A new Spirc is up (not yet declared online).
+/// The playback state the app shows (local, remote or offline), for Vibe DJ.
+pub(crate) fn playback_snapshot() -> crate::models::PlaybackSnapshot {
+    hub::compose()
+}
+
 pub(crate) fn attach(attachment: Attachment) {
     hub::attach(attachment);
 }

@@ -30,6 +30,11 @@ data class FailedCounts(val retryable: Int = 0, val unavailable: Int = 0) {
 }
 
 internal object DownloadRules {
+    /** Failure contexts that mean "not available" (not an error worth showing or retrying). */
+    val UNAVAILABLE_CONTEXTS = setOf(
+        "notReleased", "countryRestricted", "catalogUnavailable", "noDuration", "noAudioFile", "externallyHosted",
+    )
+
     /** An item is marked FAILED after this many failed attempts. */
     const val MAX_ATTEMPTS = 3
     const val BASE_BACKOFF_MS = 5_000L

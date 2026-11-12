@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.LibraryBooks
 import androidx.compose.material.icons.automirrored.rounded.Sort
@@ -125,7 +126,29 @@ import androidx.compose.material.icons.rounded.PushPin
 @Composable
 fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) {
     val viewModel = appViewModel { graph -> LibraryViewModel(graph) }
-    val state by viewModel.state.collectAsStateWithLifecycle()
+    val fullState by viewModel.state.collectAsStateWithLifecycle()
+    // Spotify's "Filter by" (Genres, Moods, Activities): only the items of the chosen tags.
+    var tagFilter by remember { mutableStateOf<Set<LibraryTag>>(emptySet()) }
+    var showTags by remember { mutableStateOf(false) }
+    // Like Spotify: with filters on, sorted by relevance until another sort is picked.
+    var byRelevance by remember { mutableStateOf(true) }
+    val relevance = remember(tagFilter) {
+        // Any chosen filter matches (their union); an item's relevance adds up over them (its rank when unscored).
+        buildMap<String, Double> {
+            tagFilter.forEach { t ->
+                t.items.forEachIndexed { i, u ->
+                    merge(u, t.scores.getOrNull(i)?.takeIf { it != 0.0 } ?: (1.0 - i.toDouble() / t.items.size), Double::plus)
+                }
+            }
+        }
+    }
+    val state = if (tagFilter.isEmpty()) fullState else fullState.copy(
+        items = fullState.items.filter { it.id in relevance }.let { l -> if (byRelevance) l.sortedByDescending { relevance[it.id] } else l },
+        pinned = emptyList(),
+        // Matching pins stay pinned at the top.
+        shortcuts = fullState.shortcuts.filter { it.id in relevance },
+    )
+    if (showTags) LibraryTagsSheet(tagFilter, onDismiss = { showTags = false }) { tagFilter = it; byRelevance = true; showTags = false }
     val navigator = LocalAppNavigator.current
     var showCreate by rememberSaveable { mutableStateOf(false) }
     var reorderingPins by rememberSaveable { mutableStateOf(false) }
@@ -152,19 +175,32 @@ fun LibraryScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier) 
                 onClose = { viewModel.setSearchActive(false) },
             )
         }
-        ChipRow(
-            options = LibraryFilter.entries,
-            selected = state.filter,
-            onSelect = viewModel::selectFilter,
-            label = { libraryFilterLabel(it) },
-            modifier = Modifier.padding(vertical = 4.dp),
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { showTags = true }, modifier = Modifier.padding(start = 8.dp)) {
+                Icon(
+                    Icons.Rounded.Tune, contentDescription = "Filter by",
+                    tint = if (tagFilter.isEmpty()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary,
+                )
+            }
+            ChipRow(
+                options = LibraryFilter.entries,
+                selected = state.filter,
+                onSelect = viewModel::selectFilter,
+                label = { libraryFilterLabel(it) },
+                modifier = Modifier.padding(vertical = 4.dp).weight(1f),
+                contentPadding = PaddingValues(start = 4.dp, end = 16.dp),
+                // The chosen filters, tapped to drop them.
+                chosen = tagFilter.map { t -> t.name to { tagFilter = tagFilter - t } },
+            )
+        }
         if (state.offline) OfflineBanner(Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
         if (!state.showEpisodes) {
             SortViewRow(
                 sort = state.sort,
                 view = state.view,
-                onSort = viewModel::setSort,
+                onSort = { byRelevance = false; viewModel.setSort(it) },
+                relevance = if (tagFilter.isEmpty()) null else byRelevance,
+                onRelevance = { byRelevance = true },
                 onToggleView = viewModel::toggleView,
                 canReorderPins = canReorderPins,
                 reorderingPins = reorderingPins,
@@ -345,6 +381,9 @@ private fun SortViewRow(
     canReorderPins: Boolean,
     reorderingPins: Boolean,
     onReorderPins: () -> Unit,
+    /** With library filters on: whether sorted by relevance (null: filters off, no such sort). */
+    relevance: Boolean? = null,
+    onRelevance: () -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
@@ -356,7 +395,7 @@ private fun SortViewRow(
                 Icon(Icons.AutoMirrored.Rounded.Sort, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.size(8.dp))
                 Text(
-                    text = sortLabel(sort),
+                    text = if (relevance == true) "Relevance" else sortLabel(sort),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -368,6 +407,15 @@ private fun SortViewRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
+                if (relevance != null) {
+                    DropdownMenuItem(
+                        text = { Text("Relevance") },
+                        onClick = { menuOpen = false; onRelevance() },
+                        trailingIcon = if (relevance) {
+                            { Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
+                        } else null,
+                    )
+                }
                 LibrarySort.entries.forEach { option ->
                     DropdownMenuItem(
                         text = { Text(sortLabel(option)) },
@@ -375,7 +423,7 @@ private fun SortViewRow(
                             menuOpen = false
                             onSort(option)
                         },
-                        trailingIcon = if (option == sort) {
+                        trailingIcon = if (option == sort && relevance != true) {
                             { Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
                         } else {
                             null
@@ -437,6 +485,11 @@ private fun LibraryList(
     // Before the items: the folder's back row and the pinned rows.
     val itemsStart = (if (state.folders.isNotEmpty()) 1 else 0) + state.pinned.size + state.shortcuts.size
     val datePattern = rememberFastScrollDatePattern()
+    // Prompted / mixed playlists by URI (pins carry no format).
+    val formats = remember(state.tree) {
+        buildMap { fun walk(l: List<LibraryItem>) { l.forEach { i -> i.format?.let { put(i.id, it) }; walk(i.children) } }; walk(state.tree) }
+    }
+    val me = state.user?.let { it.displayName ?: it.username }
     val items = state.items
     val sort = state.sort
     val label: (Int) -> String? = remember(items, sort, datePattern) {
@@ -464,7 +517,8 @@ private fun LibraryList(
                         title = pin.name, subtitle = "Pinned folder", pinned = true)
                 } else if (ref != null) {
                     MediaRow(ref = ref, onClick = { navigator.open(ref) },
-                        subtitle = typedSubtitle(ref.type, pin.creator), pinned = true,
+                        subtitle = typedSubtitle(ref.type, pin.creator, formats[pin.id], me), pinned = true,
+                        badge = formatBadge(formats[pin.id]),
                         onLongClick = { navigator.showActions(pinActions(pin, state.user?.username)) })
                 } else {
                     // Keep unknown server pin types visible instead of silently losing them.
@@ -487,7 +541,8 @@ private fun LibraryList(
                     MediaRow(
                         ref = ref,
                         onClick = { navigator.openLibraryItem(item) },
-                        subtitle = typedSubtitle(ref.type, item.creator),
+                        subtitle = typedSubtitle(ref.type, item.creator, item.format, me),
+                        badge = formatBadge(item.format),
                         onLongClick = { navigator.showActions(itemPinActions(item, state.user?.username)) },
                         trailing = {
                             if (item.id in state.downloaded) CollectionDownloadBadge(item.id, downloadState)

@@ -129,6 +129,16 @@ class CatalogRepository(
     /** The last (up to 50) songs played, newest first, each with when and where it played. */
     suspend fun playHistory(): List<PlayedTrack> = rpc.callOffMain<PlayHistoryResult>("catalog.playHistory").items
 
+    /** A page of Spotify's own Recents page (the official app's list), newest first. */
+    suspend fun recents(offset: Int = 0): RecentsPage =
+        rpc.callOffMain("catalog.recents", rpcArgs { put("offset", offset); put("limit", 50) })
+
+    /** Rows (name, type, artwork) for entity URIs, the user's collections included. */
+    suspend fun refs(uris: List<String>): List<MediaRef> = if (uris.isEmpty()) emptyList() else
+        rpc.callOffMain<MediaRefs>("catalog.refs", rpcArgs {
+            put("uris", kotlinx.serialization.json.JsonArray(uris.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+        }).items
+
     /** New releases of followed artists and new episodes of followed shows ("What's new"). */
     suspend fun whatsNew(): List<MediaRef> = rpc.callOffMain<MediaRefs>("catalog.whatsNew").items
 
@@ -363,6 +373,13 @@ internal data class PlayHistoryResult(val items: List<PlayedTrack> = emptyList()
 @Serializable
 data class RecentHistoryEntry(val context: MediaRef, val timestampMs: Long = 0, val lastTrackUri: String? = null)
 
+/** A row of Spotify's Recents page: a context (or a song) and what played in it. */
+@Serializable
+data class ServerRecent(val uri: String, val timestampMs: Long = 0, val entityUris: List<String> = emptyList(), val itemsCount: Int = 0, val kind: String = "played")
+
+@Serializable
+data class RecentsPage(val items: List<ServerRecent> = emptyList(), val next: Int? = null)
+
 @Serializable
 internal data class RecentHistoryResult(val items: List<RecentHistoryEntry> = emptyList())
 
@@ -386,6 +403,8 @@ data class ListeningAudienceUser(
     val username: String,
     val restricted: Boolean = false,
     val hidden: Boolean = false,
+    /** 1: a direct chat, 2: a group chat with you. */
+    val source: Int = 0,
 )
 
 @Serializable

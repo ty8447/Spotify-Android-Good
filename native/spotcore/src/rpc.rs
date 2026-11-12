@@ -101,6 +101,7 @@ async fn route(method: &str, args: Value) -> AppResult<Value> {
             connect::handle(method, args).await
         }
         "catalog" | "library" | "playlist" => catalog::handle(method, args).await,
+        "dj" => crate::dj::handle(method, args).await,
         "download" | "offline" => {
             let result = offline::handle(method, args).await;
             if method == "offline.setIndex" && result.is_ok() {

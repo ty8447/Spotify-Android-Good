@@ -273,6 +273,15 @@ pub(super) async fn details(args: Value) -> AppResult<Value> {
 /// Sticker reads use a token minted under the official Spotify Android client id. The lyric
 /// stickers backend answers an intentional empty 200 to clients whose token carries a client id
 /// not entitled to the feature, so we set that Bearer ourselves over the raw client.
+/// A non-2xx answer is an error (never parsed as a sticker protobuf).
+fn ensure_success(status: u16) -> Result<(), http::HttpError> {
+    if (200..300).contains(&status) {
+        Ok(())
+    } else {
+        Err(http::HttpError { status: Some(status), error: AppError::unavailable("Sticker Webgate HTTP request was not successful") })
+    }
+}
+
 async fn webgate_get_stickers(session: &librespot_core::Session, path: &str) -> Result<bytes::Bytes, http::HttpError> {
     use ::http::{Method, Request};
     use ::http::header::{ACCEPT, AUTHORIZATION, HeaderName, HeaderValue};
@@ -300,9 +309,7 @@ async fn webgate_get_stickers(session: &librespot_core::Session, path: &str) -> 
         .map_err(|_| http::HttpError { status: Some(status), error: AppError::unavailable("Sticker Webgate response could not be read") })?
         .to_bytes();
     log::info!("SpotifyGoodLyricStickers: transport=webgate tokenSource=android-client status={} bytes={}", status, bytes.len());
-    if !(200..300).contains(&status) {
-        return Err(http::HttpError { status: Some(status), error: AppError::unavailable("Sticker Webgate HTTP request was not successful") });
-    }
+    ensure_success(status)?;
     Ok(bytes)
 }
 

@@ -519,6 +519,8 @@ class PlaybackService : MediaLibraryService() {
                     val name = try {
                         withContext(Dispatchers.IO) {
                             tree.item(uri)?.mediaMetadata?.title?.toString()?.takeIf(String::isNotBlank)
+                                // Playlists and albums outside the browse tree: their row from the catalog.
+                                ?: graph.catalog.refs(listOf(uri)).firstOrNull()?.name?.takeIf(String::isNotBlank)
                         }
                     } catch (e: CancellationException) {
                         throw e
@@ -526,6 +528,7 @@ class PlaybackService : MediaLibraryService() {
                         Log.d(TAG, "Android Auto context title unavailable: $uri", e)
                         null
                     }
+                    Log.i(TAG, "Android Auto header: ${if (name != null) "set" else "no name"} for a ${uri.split(':').getOrNull(1).orEmpty()}")
                     if (name != null) {
                         currentContextName = uri to name
                         player.refresh()
@@ -954,8 +957,6 @@ class PlaybackService : MediaLibraryService() {
             if (isTrusted(session, controller)) {
                 val commands = ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 PlaybackSessionCommands.ALL.forEach { commands.add(it) }
-                // Never expose the platform media token to external car or browser apps.
-                if (controller.uid == Process.myUid()) commands.add(CarPlaybackBridge.TOKEN_COMMAND)
                 builder.setAvailableSessionCommands(commands.build())
                     .setAvailablePlayerCommands(ConnectionResult.DEFAULT_PLAYER_COMMANDS)
                     .setMediaButtonPreferences(buttons)
@@ -1000,14 +1001,6 @@ class PlaybackService : MediaLibraryService() {
             args: Bundle,
         ): ListenableFuture<SessionResult> {
             val uri = graph.playback.snapshot.value.track?.uri
-            if (customCommand.customAction == CarPlaybackBridge.ACTION_TOKEN) {
-                if (controller.uid != Process.myUid()) {
-                    return Futures.immediateFuture(SessionResult(SessionError.ERROR_PERMISSION_DENIED))
-                }
-                val token = session.platformToken
-                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS,
-                    Bundle().apply { putParcelable(CarPlaybackBridge.KEY_PLATFORM_TOKEN, token) }))
-            }
             when (customCommand.customAction) {
                 PlaybackSessionCommands.ACTION_LIKE -> setLiked(uri, true)
                 PlaybackSessionCommands.ACTION_UNLIKE -> setLiked(uri, false)

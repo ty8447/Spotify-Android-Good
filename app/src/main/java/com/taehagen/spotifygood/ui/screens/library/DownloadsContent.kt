@@ -564,14 +564,6 @@ private fun StorageHeader(state: DownloadsUiState, onRetryFailed: () -> Unit) {
                 TextButton(onClick = onRetryFailed) { Text(stringResource(R.string.browse_retry)) }
             }
         }
-        if (failed.unavailable > 0) {
-            Text(
-                text = pluralStringResource(R.plurals.browse_downloads_unavailable, failed.unavailable, failed.unavailable),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
     }
 }
 

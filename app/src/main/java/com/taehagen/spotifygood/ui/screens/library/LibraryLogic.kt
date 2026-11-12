@@ -64,6 +64,8 @@ data class LibraryItem(
     /** Position in its source list (rootlist order for playlists). */
     val sourceIndex: Int = 0,
     val children: List<LibraryItem> = emptyList(),
+    /** "prompted" or "mixed" playlists. */
+    val format: String? = null,
 ) {
     val key: String get() = "${kind.name}:$id"
     val imageUrl: String? get() = images.best(160)
@@ -125,6 +127,7 @@ fun Rootlist.toLibraryItems(): List<LibraryItem> {
                     creator = entry.owner?.displayName ?: entry.owner?.username,
                     ownerUsername = entry.owner?.username,
                     sourceIndex = index,
+                    format = entry.format,
                 )
             }
         }

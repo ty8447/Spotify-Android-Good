@@ -31,9 +31,6 @@
     <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
 
     <!-- Android Auto -->
-    <!-- Car App Library media playback templates; old hosts continue using MediaLibraryService. -->
-    <uses-permission android:name="androidx.car.app.MEDIA_TEMPLATES" />
-    <uses-feature android:name="android.software.car.templates_host.media" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
@@ -65,10 +62,6 @@
         android:theme="@style/Theme.SpotifyGood"
         tools:targetApi="36">
 
-        <!-- Car App Library playback header requires Car API 8. The legacy media browser
-             remains exported separately for unsupported hosts. -->
-        <meta-data android:name="androidx.car.app.minCarApiLevel" android:value="8" />
-
         <!-- Android Auto media app declaration -->
         <meta-data
             android:name="com.google.android.gms.car.application"
@@ -87,6 +80,8 @@
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:theme="@style/Theme.SpotifyGood.Splash"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -154,16 +149,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
-
-        <!-- Templated playback is selected only by a compatible Android Auto host. -->
-        <service
-            android:name=".playback.SpotifyGoodCarService"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="androidx.car.app.CarAppService" />
-                <category android:name="androidx.car.app.category.MEDIA" />
-            </intent-filter>
-        </service>
 
         <!-- Media playback + Spotify Connect presence (docs/ARCHITECTURE.md §9.4) -->
         <service

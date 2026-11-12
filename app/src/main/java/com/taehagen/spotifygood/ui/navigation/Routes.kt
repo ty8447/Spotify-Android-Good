@@ -27,6 +27,7 @@ sealed interface Route {
     @Serializable data object StorageBreakdown : Route
     @Serializable data object Settings : Route
     @Serializable data object Recents : Route
+    @Serializable data object VibeDj : Route
     @Serializable data object Updates : Route
     @Serializable data object WhatsNew : Route
     @Serializable data object Messages : Route

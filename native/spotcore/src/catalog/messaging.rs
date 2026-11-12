@@ -58,6 +58,11 @@ struct ConversationSummary {
     is_group: bool,
     group_member_count: usize,
     pending_member_count: usize,
+    /// A message request to the current user (HierarchyMetadata.current_user_participation_status
+    /// = PENDING): Spotify asks to accept it before replying.
+    request_pending: bool,
+    /// Who started the chat (HierarchyMetadata.initiator_username).
+    initiator_username: Option<String>,
     // Status UNSPECIFIED(0) members beyond self; excludes opted-out/left/pending.
     // Status zero is not independent evidence of acceptance.
     active_other_member_count: usize,
@@ -106,6 +111,8 @@ struct MessageHistory {
     group_name: Option<String>,
     group_member_count: usize,
     pending_member_count: usize,
+    request_pending: bool,
+    initiator_username: Option<String>,
     active_other_member_count: usize,
     participants: Vec<ChatParticipant>,
     messages: Vec<HistoryEntry>,
@@ -898,6 +905,39 @@ fn encode_delete_contribution(node_id: &str, for_all: bool) -> Vec<u8> {
 /// BulkMessageRequest.addHierarchyActivity (2) ->
 /// AddHierarchyActivity.hierarchyId (1), request (2) ->
 /// ActivityRequest.ackType (3) = ACKTYPE_USER_SEEN (1).
+/// ClientNodeRequest{node_request: NodeRequest{hierarchy_request: HierarchyRequest{
+/// participation_status(4): SetParticipationStatus{hierarchy_id(1), user_participation_status(2)}}}}.
+fn encode_participation(hierarchy_id: &str, status: u64) -> Vec<u8> {
+    let mut set = Vec::new();
+    append_pb_string(&mut set, 1, hierarchy_id);
+    set.push(2 << 3);
+    append_pb_varint(&mut set, status);
+    let mut hierarchy = Vec::new();
+    append_pb_message(&mut hierarchy, 4, &set);
+    let mut node = Vec::new();
+    append_pb_message(&mut node, 1, &hierarchy);
+    let mut client = Vec::new();
+    append_pb_message(&mut client, 1, &node);
+    client
+}
+
+/// `catalog.respondChatRequest {hierarchyId, accept, block}`: accepts a message request (or
+/// declines it, or blocks the sender), as Spotify's "Accept" / "Delete" / "Block" on a request.
+pub(super) async fn respond_request(args: Value) -> AppResult<Value> {
+    let hierarchy_id = chat_hierarchy_id(&args)?;
+    let accept = args.get("accept").and_then(Value::as_bool).unwrap_or(false);
+    let block = args.get("block").and_then(Value::as_bool).unwrap_or(false);
+    let status = if accept { 2 } else if block { 5 } else { 4 };
+    let session = engine::session()?;
+    let reply = http::spc_send_once(&session, Method::POST, SUBMIT_PATH, PROTOBUF, PROTOBUF, encode_participation(hierarchy_id, status))
+        .await
+        .map_err(|e| AppError::unavailable(format!("Request answer uncertain: {}", e.status.map(|s| format!("HTTP {s}")).unwrap_or_else(|| "network error".into()))))?;
+    if reply.len() > MAX_REPLY_BYTES {
+        return Err(AppError::unavailable("Request reply exceeds safe limit"));
+    }
+    to_value(&serde_json::json!({ "accepted": accept }))
+}
+
 fn encode_mark_seen(hierarchy_id: &str) -> Vec<u8> {
     let activity = vec![0x18, 0x01]; // ackType field 3, enum 1
     let mut hierarchy = Vec::new();
@@ -1134,7 +1174,7 @@ pub(super) async fn mute_chat(args: Value) -> AppResult<Value> {
     to_value(&true)
 }
 
-fn append_pb_varint(buf: &mut Vec<u8>, mut value: u64) {
+pub(super) fn append_pb_varint(buf: &mut Vec<u8>, mut value: u64) {
     while value >= 128 {
         buf.push((value as u8 & 127) | 128);
         value >>= 7;
@@ -1142,7 +1182,7 @@ fn append_pb_varint(buf: &mut Vec<u8>, mut value: u64) {
     buf.push(value as u8);
 }
 
-fn append_pb_string(buf: &mut Vec<u8>, tag: u8, content: &str) {
+pub(super) fn append_pb_string(buf: &mut Vec<u8>, tag: u8, content: &str) {
     buf.push(tag << 3 | 2);
     let mut remaining = content.len();
     while remaining >= 128 {
@@ -1153,7 +1193,7 @@ fn append_pb_string(buf: &mut Vec<u8>, tag: u8, content: &str) {
     buf.extend_from_slice(content.as_bytes());
 }
 
-fn append_pb_message(buf: &mut Vec<u8>, field: u8, bytes: &[u8]) {
+pub(super) fn append_pb_message(buf: &mut Vec<u8>, field: u8, bytes: &[u8]) {
     buf.push(field << 3 | 2);
     append_pb_varint(buf, bytes.len() as u64);
     buf.extend_from_slice(bytes);
@@ -1173,6 +1213,8 @@ fn decode_history(bytes: &[u8], requested_id: &str) -> AppResult<MessageHistory>
                 }
                 result.group_name = h.group_name;
                 result.group_member_count = h.group_member_count;
+                result.request_pending = h.request_pending;
+                result.initiator_username = h.initiator_username.clone();
                 // Status values verified: 0=UNSPECIFIED, 1=OPTED_OUT,
                 // 2=PENDING, 3=LEFT. A pending recipient has not yet accepted.
                 // Treat default/unspecified as not explicitly pending; this is
@@ -1555,6 +1597,19 @@ fn decode_hierarchy(buf: &[u8]) -> AppResult<ConversationSummary> {
                 row.unseen_events = stats.events;
                 row.unseen_contributions = stats.contributions;
             },
+            // HierarchyMetadata: initiator_username=1, current_user_participation_status=3
+            // (1 INITIATOR, 2 ACCEPTED, 3 PENDING, 4 REJECTED, 5 BLOCKED, 6 DELETED, 7 LEFT).
+            4 => visit_fields(expect_bytes(field)?, |meta_tag, meta_value| {
+                match meta_tag {
+                    1 => {
+                        let name = parse_string(expect_bytes(meta_value)?, 256)?;
+                        if !name.is_empty() { row.initiator_username = Some(name); }
+                    }
+                    3 => row.request_pending = expect_varint(meta_value)? == 3,
+                    _ => {}
+                }
+                Ok(())
+            })?,
             5 => {
                 row.is_group = true;
                 visit_fields(expect_bytes(field)?, |group_tag, group_value| {
@@ -2019,6 +2074,7 @@ mod tests {
         assert_eq!(result.conversations[0], ConversationSummary {
             hierarchy_id: "chat123".into(), group_name: Some("Friends".into()),
             is_group: true, group_member_count: 1, pending_member_count: 0,
+            request_pending: false, initiator_username: None,
             active_other_member_count: 0, unseen_events: 3,
             unseen_contributions: 0,
             latest_node_kind: "contribution".into(),
@@ -2032,6 +2088,24 @@ mod tests {
             member_usernames: vec![],
             member_statuses: vec![],
         });
+    }
+
+    #[test]
+    fn a_message_request_is_pending_and_answers_encode() {
+        // Hierarchy{identifier(1){id(1)="h"}, metadata(4){initiator(1)="ann", status(3)=PENDING}}
+        let mut id = Vec::new();
+        append_pb_string(&mut id, 1, "h");
+        let mut meta = Vec::new();
+        append_pb_string(&mut meta, 1, "ann");
+        meta.extend([3 << 3, 3]);
+        let mut h = Vec::new();
+        append_pb_message(&mut h, 1, &id);
+        append_pb_message(&mut h, 4, &meta);
+        let row = decode_hierarchy(&h).unwrap();
+        assert!(row.request_pending);
+        assert_eq!(row.initiator_username.as_deref(), Some("ann"));
+        // 0a 07 | 0a 05 | 22 03 | 0a 01 'h' 10 02
+        assert_eq!(encode_participation("h", 2), vec![0x0a, 0x09, 0x0a, 0x07, 0x22, 0x05, 0x0a, 0x01, b'h', 0x10, 0x02]);
     }
 
     #[test]

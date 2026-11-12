@@ -88,6 +88,12 @@ internal fun existingDirectConversation(
         (chat.groupMemberCount <= 2 || chat.groupMemberCount == 0)
 }
 
+@kotlinx.serialization.Serializable
+private data class FriendSuggestion(val username: String = "", val reasons: List<String> = emptyList())
+
+@kotlinx.serialization.Serializable
+private data class FriendSuggestions(val items: List<FriendSuggestion> = emptyList())
+
 /** Route marker for an unsent direct-message draft. Does not create a server chat. */
 internal const val PENDING_DIRECT_PREFIX = "pending-direct:"
 
@@ -177,6 +183,19 @@ internal fun InviteFriendsMessagesSheet(
                     directory[key] = previous.copy(person = previous.person.copy(avatarUrl = person.avatarUrl))
                 }
             }
+            // Spotify's own suggestions first, with its reasons (family plan, follow each other,
+            // shared content, Blends, Jams…): speechless sharelist.
+            // Names from the chats and social lists; a few profile lookups for the rest (their rows showed raw ids).
+            val social = (following + followers).associateBy { it.username.lowercase(Locale.ROOT) }
+            var lookups = 0
+            runCatching { graph.rpc.call<FriendSuggestions>("catalog.friendSuggestions") }.getOrNull()?.items?.forEach { sug ->
+                val known = chats.flatMap { it.participants }.firstOrNull { it.username.equals(sug.username, true) }
+                    ?: social[sug.username.lowercase(Locale.ROOT)]?.takeIf { it.displayName.isNotBlank() }?.let { ChatParticipant(it.username, it.displayName, it.imageUrl) }
+                    ?: (if (lookups++ < 15) runCatching { graph.catalog.user(sug.username) }.getOrNull() else null)
+                        ?.takeIf { !it.displayName.isNullOrBlank() }?.let { ChatParticipant(sug.username, it.displayName.orEmpty(), it.images.firstOrNull()?.url) }
+                include(known ?: ChatParticipant(sug.username, sug.username, null),
+                    sug.reasons.firstOrNull() ?: "Suggested by Spotify", -1)
+            }
             chats.forEach { chat ->
                 chat.participants.forEach { participant ->
                     include(participant, "Connected through Messages", 0)
@@ -260,7 +279,7 @@ internal fun InviteFriendsMessagesSheet(
     ModalBottomSheet(onDismissRequest = { if (busyUsername == null) onDismiss() }) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Invite friends to messages", style = MaterialTheme.typography.titleLarge,
+            Text("Add friends", style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold)
             Row(
                 Modifier.fillMaxWidth().clickable(enabled = busyUsername == null && self.isNotBlank()) {
@@ -355,10 +374,6 @@ internal fun InviteFriendsMessagesSheet(
                     }
                 }
             }
-            Text("Suggestions use verified conversations, follows and listening activity. " +
-                "Shared plans, Jams and Blends are not inferred.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.labelSmall)
             Spacer(Modifier.size(12.dp))
         }
     }

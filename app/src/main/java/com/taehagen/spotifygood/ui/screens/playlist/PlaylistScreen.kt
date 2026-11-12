@@ -37,6 +37,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -150,6 +151,7 @@ fun PlaylistScreen(uri: String, contentPadding: PaddingValues, modifier: Modifie
             onRetryPage = viewModel::retryPage,
             onAddSongs = { showAddSongs = true },
             onEditDetails = { showEditDetails = true },
+            onEdit = { viewModel.setEditMode(true) },
             onDelete = { confirmDelete = true },
             onSetPublic = viewModel::setPublic,
             onSetCollaborative = viewModel::setCollaborative,
@@ -258,6 +260,7 @@ private class PlaylistActions(
     val onRetryPage: () -> Unit,
     val onAddSongs: () -> Unit,
     val onEditDetails: () -> Unit,
+    val onEdit: () -> Unit,
     val onDelete: () -> Unit,
     val onSetPublic: (Boolean) -> Unit,
     val onSetCollaborative: (Boolean) -> Unit,
@@ -317,10 +320,32 @@ private fun PlaylistList(
         { index -> playlistScrollLabel(rowAt(index)?.item, index, rowCount, shownSort, datePattern) }
     }
 
+    // An owned playlist's "Recommended Songs"; a mixed playlist's BPM and key on every song.
+    val graph = com.taehagen.spotifygood.ui.components.rememberAppGraph()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val owned = meta.isOwnedByMe && !playlist.downloadedCopy && !state.editMode
+    val recommended = remember(uri) { RecommendedSongsState(graph, uri) }
+    val trackUris = loadedRows.mapNotNull { it.item.track?.uri }
+    androidx.compose.runtime.LaunchedEffect(uri, owned, loadedRows.isNotEmpty()) { if (owned) recommended.load(meta.name, trackUris) }
+    val attrs = rememberAudioAttributes(graph, trackUris + recommended.songs.map { it.uri }, meta.mixed)
+    var showNotes by androidx.compose.runtime.saveable.rememberSaveable(uri) { androidx.compose.runtime.mutableStateOf(true) }
+    val changes = rememberPlaylistChanges(graph, uri, actions.onRetry)
+
     Box(Modifier.fillMaxSize()) {
         LazyColumn(state = listState, contentPadding = contentPadding, modifier = Modifier.fillMaxSize()) {
             item(key = "header", contentType = "header") {
-                PlaylistHeader(playlist, state, navigator, actions)
+                Column {
+                    PlaylistHeader(playlist, state, navigator, actions, changes)
+                    val prompt = meta.prompt
+                    if (prompt != null && !state.editMode) {
+                        PromptedPlaylistBar(prompt, meta.mixed, meta.canEdit && !playlist.downloadedCopy, showNotes,
+                            onToggleNotes = { showNotes = !showNotes }, changes = changes,
+                            onAdd = actions.onAddSongs, onEdit = actions.onEdit, onDetails = actions.onEditDetails)
+                    } else if (owned) {
+                        // Any playlist of the user's can be mixed (smooth transitions), like Spotify's "Mix".
+                        Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) { MixChip(meta.mixed, changes) }
+                    }
+                }
             }
             if (playlist.downloadedCopy) {
                 item(key = "downloaded", contentType = "notice") {
@@ -379,15 +404,18 @@ private fun PlaylistList(
                             ),
                     )
                 } else {
-                    PlaylistItemRow(
-                        uri = uri,
-                        visible = visible,
-                        playlist = playlist,
-                        state = state,
-                        navigator = navigator,
-                        onPlay = actions.onPlayItem,
-                        modifier = Modifier.animateItem(),
-                    )
+                    Column(Modifier.animateItem()) {
+                        PlaylistItemRow(
+                            uri = uri,
+                            visible = visible,
+                            playlist = playlist,
+                            state = state,
+                            navigator = navigator,
+                            onPlay = actions.onPlayItem,
+                            attr = attrs[visible.row.item.uri],
+                        )
+                        if (showNotes) visible.row.item.note?.let { SongNote(it) }
+                    }
                 }
             }
             if (placeholders > 0) {
@@ -404,6 +432,7 @@ private fun PlaylistList(
                             state = state,
                             navigator = navigator,
                             onPlay = actions.onPlayItem,
+                            attr = attrs[row.item.uri],
                         )
                     } else {
                         PlaceholderTrackRow()
@@ -440,6 +469,12 @@ private fun PlaylistList(
                     )
                 }
             }
+            if (owned && !state.list.filterActive) recommendedSongs(
+                recommended, attrs, meta.mixed,
+                onPlay = { graph.player.play(com.taehagen.spotifygood.playback.PlayRequest(trackUris = listOf(it.uri))) },
+                onAdd = { song -> scope.launch { recommended.add(song) } },
+                onRefresh = { scope.launch { recommended.load(meta.name, trackUris) } },
+            )
         }
         // Edit mode drags rows by their handle on the same edge: no fast scroller there.
         FastScroller(
@@ -476,6 +511,7 @@ private fun PlaylistHeader(
     state: PlaylistUiState,
     navigator: AppNavigator,
     actions: PlaylistActions,
+    changes: PlaylistChanges,
 ) {
     val meta = playlist.meta
     val description = rememberRichText(playlist.description)
@@ -498,22 +534,36 @@ private fun PlaylistHeader(
                 if (!playlist.description.isEmpty) {
                     ExpandableText(text = description, collapsedLines = 2)
                 }
-                if (meta.contributors.isNotEmpty()) {
+                // Spotify's list, but "Prompted by" whoever prompted it (their picture too); the user's
+                // own when Spotify doesn't say and it's theirs to edit.
+                val me by rememberAppGraph().engine.user.collectAsStateWithLifecycle()
+                val prompter = meta.promptedBy ?: me?.username?.takeIf { meta.prompt != null && meta.canEdit }
+                if (meta.prompt != null && prompter != null) {
+                    PromptedByLine(rememberAppGraph(), prompter) { navigator.navigate(Route.Profile(prompter)) }
+                } else if (meta.contributors.isNotEmpty()) {
                     PeopleLine(
                         meta.contributors.map { Person(it.displayName?.takeIf(String::isNotBlank) ?: it.username, it.images.best(64)) },
                         stringResource(R.string.detail_contributors),
                         { navigator.navigate(Route.Profile(meta.contributors[it].username)) },
                     )
                 } else meta.owner?.let { owner ->
-                    OwnerLine(
-                        owner = owner,
-                        collaborative = meta.collaborative,
-                        onClick = { navigator.navigate(Route.Profile(owner.username)) },
-                    )
+                    if (meta.mixed) {
+                        // "Mixed by" its owner, with their picture.
+                        PromptedByLine(rememberAppGraph(), owner.username, prefix = "Mixed by") { navigator.navigate(Route.Profile(owner.username)) }
+                    } else {
+                        OwnerLine(
+                            owner = owner,
+                            collaborative = meta.collaborative,
+                            onClick = { navigator.navigate(Route.Profile(owner.username)) },
+                        )
+                    }
                 }
                 val privacy = privacyLabel(meta)
                 val songs = songsAndDuration(playlist.total, state.list.totalDurationMs)
-                HeaderMetaText(if (privacy != null) "$privacy • $songs" else songs)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    HeaderMetaText(if (privacy != null) "$privacy • $songs" else songs)
+                    if (meta.prompt != null && meta.canEdit && !state.editMode) UpdatePromptedButton(changes)
+                }
                 if (state.editMode) {
                     EditToolbar(
                         isOwned = meta.isOwnedByMe,
@@ -612,6 +662,7 @@ private fun PlaylistItemRow(
     navigator: AppNavigator,
     onPlay: (VisibleRow) -> Unit,
     modifier: Modifier = Modifier,
+    attr: AudioAttr? = null,
 ) {
     val item = visible.row.item
     val track = item.track
@@ -653,6 +704,7 @@ private fun PlaylistItemRow(
                 onMoreClick = showActions,
                 onLongClick = showActions,
                 enabled = playable,
+                trailing = if (playlist.meta.mixed) { { BpmKeyBadge(attr) } } else null,
             )
         }
         episode != null -> {

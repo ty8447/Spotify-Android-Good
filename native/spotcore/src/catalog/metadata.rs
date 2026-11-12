@@ -422,6 +422,16 @@ impl<T> Partial<T> {
 /// Fetches one extension kind for `uris` in batches. Returns `entity_uri → Any.value` for the
 /// entities the server answered and the URIs of failed batches; fails only if every batch failed.
 pub(crate) async fn fetch_extended(session: &Session, kind: ExtensionKind, uris: &[String]) -> AppResult<Partial<Vec<u8>>> {
+    fetch_kind(session, EnumOrUnknown::new(kind), uris).await
+}
+
+/// [`fetch_extended`] for extension kinds librespot's enum doesn't name (e.g. `PODCAST_RATING`
+/// = 37, `PODCAST_TOPICS` = 3, from the Android client).
+pub(crate) async fn fetch_extension_raw(session: &Session, kind: i32, uris: &[String]) -> AppResult<Partial<Vec<u8>>> {
+    fetch_kind(session, EnumOrUnknown::from_i32(kind), uris).await
+}
+
+async fn fetch_kind(session: &Session, kind: EnumOrUnknown<ExtensionKind>, uris: &[String]) -> AppResult<Partial<Vec<u8>>> {
     let mut seen = HashSet::new();
     let uniq: Vec<String> = uris.iter().filter(|u| seen.insert(u.as_str())).cloned().collect();
     if uniq.is_empty() {
@@ -464,7 +474,7 @@ pub(crate) async fn fetch_extended(session: &Session, kind: ExtensionKind, uris:
     }
 }
 
-fn build_request(kind: ExtensionKind, uris: &[String], ctx: &Ctx) -> BatchedEntityRequest {
+fn build_request(kind: EnumOrUnknown<ExtensionKind>, uris: &[String], ctx: &Ctx) -> BatchedEntityRequest {
     let mut req = BatchedEntityRequest::new();
     if !ctx.country.is_empty() {
         let mut header = BatchedEntityRequestHeader::new();
@@ -476,7 +486,7 @@ fn build_request(kind: ExtensionKind, uris: &[String], ctx: &Ctx) -> BatchedEnti
         .iter()
         .map(|uri| {
             let mut q = ExtensionQuery::new();
-            q.extension_kind = EnumOrUnknown::new(kind);
+            q.extension_kind = kind;
             let mut e = EntityRequest::new();
             e.entity_uri = uri.clone();
             e.query.push(q);
@@ -956,6 +966,10 @@ fn track_playable(msg: &pm::Track, ctx: &Ctx) -> bool {
     if live > 0 && ctx.now_ms > 0 && ctx.now_ms < live {
         return false;
     }
+    // No audio at all (taken down): the player and the downloader refuse it ("no duration").
+    if msg.has_duration() && msg.duration() <= 0 && msg.alternative.iter().all(|a| a.duration() <= 0) {
+        return false;
+    }
     if available(&msg.availability, ctx) && allowed(&msg.restriction, ctx) {
         return true;
     }
@@ -1031,6 +1045,7 @@ pub(crate) fn convert_episode(msg: &pm::Episode, uri: &str, ctx: &Ctx) -> Option
         playable,
         resume_position_ms: None,
         fully_played: None,
+        thumbnail: self::images(&msg.freeze_frame.image),
     })
 }
 
@@ -1405,7 +1420,7 @@ pub(crate) mod tests {
         let c = ctx();
         let ok = tracks_from_raw(parsed.clone(), &[], &c);
         assert_eq!(ok.len(), 1, "garbage entity skipped, not fatal");
-        let req = build_request(ExtensionKind::TRACK_V4, &["spotify:track:4uLU6hMCjMI75M1A2tKUQC".into()], &c);
+        let req = build_request(EnumOrUnknown::new(ExtensionKind::TRACK_V4), &["spotify:track:4uLU6hMCjMI75M1A2tKUQC".into()], &c);
         assert_eq!(req.header.country, "DE");
         assert_eq!(req.entity_request[0].query[0].extension_kind.value(), ExtensionKind::TRACK_V4 as i32);
     }

@@ -28,6 +28,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.AllInclusive
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material3.AlertDialog
@@ -101,7 +103,24 @@ internal fun mediaTypeLabel(type: MediaType): String = stringResource(
     },
 )
 
-/** "Type • detail" subtitle line. */
+/** "Type • detail" subtitle line; [me]: the user's name, for "Made for" on prompted playlists. */
+@Composable
+internal fun typedSubtitle(type: MediaType, detail: String?, format: String?, me: String? = null): String = when {
+    // Spotify's "Prompted Playlist • Made for Cole R." (made for whoever prompted it) and "Mixed Playlist • Cole R.".
+    format?.contains("prompted") == true ->
+        listOfNotNull("Prompted Playlist", (me ?: detail)?.takeIf { it.isNotBlank() }?.let { "Made for $it" }).joinToString(" • ")
+    format?.contains("mixed") == true -> listOfNotNull("Mixed Playlist", detail?.takeIf { it.isNotBlank() }).joinToString(" • ")
+    else -> typedSubtitle(type, detail)
+}
+
+/** The small icon before a library row's subtitle, like Spotify's: mix when the playlist is mixed, else prompted. */
+internal fun formatBadge(format: String?): androidx.compose.ui.graphics.vector.ImageVector? = when {
+    format == null -> null
+    "mixed" in format -> Icons.Rounded.AllInclusive
+    "prompted" in format -> Icons.Rounded.AutoAwesome
+    else -> null
+}
+
 @Composable
 internal fun typedSubtitle(type: MediaType, detail: String?): String {
     val label = mediaTypeLabel(type)
@@ -155,35 +174,40 @@ internal fun <T> ChipRow(
     label: @Composable (T) -> String,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp),
+    /** Chips shown selected before [options] (label to its tap, e.g. the library's chosen filters). */
+    chosen: List<Pair<String, () -> Unit>> = emptyList(),
 ) {
     LazyRow(
         modifier = modifier,
         contentPadding = contentPadding,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(options, key = { it.toString() }) { option ->
-            val isSelected = option == selected
-            FilterChip(
-                selected = isSelected,
-                onClick = { onSelect(option) },
-                label = { Text(label(option), maxLines = 1) },
-                leadingIcon = if (isSelected) {
-                    { Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
-                } else {
-                    null
-                },
-                shape = CircleShape,
-                colors = FilterChipDefaults.filterChipColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    labelColor = MaterialTheme.colorScheme.onSurface,
-                    selectedContainerColor = MaterialTheme.colorScheme.primary,
-                    selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
-                    selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary,
-                ),
-                border = null,
-            )
-        }
+        items(chosen.size, key = { "chosen:${chosen[it].first}" }) { ChipRowChip(chosen[it].first, true, chosen[it].second) }
+        items(options, key = { it.toString() }) { option -> ChipRowChip(label(option), option == selected) { onSelect(option) } }
     }
+}
+
+@Composable
+private fun ChipRowChip(text: String, isSelected: Boolean, onClick: () -> Unit) {
+    FilterChip(
+        selected = isSelected,
+        onClick = onClick,
+        label = { Text(text, maxLines = 1) },
+        leadingIcon = if (isSelected) {
+            { Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(FilterChipDefaults.IconSize)) }
+        } else {
+            null
+        },
+        shape = CircleShape,
+        colors = FilterChipDefaults.filterChipColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            labelColor = MaterialTheme.colorScheme.onSurface,
+            selectedContainerColor = MaterialTheme.colorScheme.primary,
+            selectedLabelColor = MaterialTheme.colorScheme.onPrimary,
+            selectedLeadingIconColor = MaterialTheme.colorScheme.onPrimary,
+        ),
+        border = null,
+    )
 }
 
 /** Square gradient artwork with a centred icon (Liked Songs, Downloads, Your Episodes, folders). */

@@ -787,6 +787,87 @@ User         {"username","displayName","images","product","country","explicitFil
               "publicPlaylists"?:[PlaylistRef]}   (publicPlaylists: other users only, up to 50; mine come from the rootlist)
 ```
 
+### 6.6 Vibe DJ and crossfade (`dj.*`, `spotcore/src/dj/`)
+
+* **Analysis** (`dj/analysis.rs`): from decoded PCM (44.1 kHz stereo), decimated to 11 025 Hz mono:
+  onset envelope (octave-band spectral flux), tempo (weighted autocorrelation folded into 78–175
+  BPM), beats (Ellis DP tracker; a least-squares grid when steady), meter and first downbeat (kick
+  accents), key (Krumhansl–Kessler on chroma; Camelot), loudness, per-bar intensity, 8-bar phrases
+  (intro / body / drop / breakdown / outro), a 16-step kick/hat groove per phrase and a coarse timbre
+  vector. Cached per track in `files_dir/vibedj/<id>.json` (0.5–3 KB; `analysis::VERSION` bumps
+  invalidate), failures marked for a week (`dj/store.rs`).
+* **Decks** (`dj/decks.rs`): deck B and the analysis deck are extra librespot Players on the main
+  Player's session (`player_host::new_deck_player`); they share the offline source and the
+  process's audio keys, never Spirc or the main Player's events. The analysis deck decodes at most
+  20× real time (uncapped for `dj.analyze {background:true}`, the charging-and-idle worker).
+* **Mixer** (`dj/mixer.rs`, `dj/dsp.rs`): while Vibe DJ or crossfade is on, `AndroidSink` pushes
+  tagged PCM (track, position from `Player::last_decoded`) to ring A (~93 ms) and one mixer thread
+  owns the AudioTrack. A transition starts sample-exactly at the planned downbeat; deck B is
+  tempo-matched (WSOLA with key lock, else a resampler), EQ'd (shelves, sweeps, echo) per the
+  style, then eases back to its own tempo; the main Player is told to play B's song (`queue.skipTo`
+  / `player.seek`) and its frames are dropped until they line up with B's, then a 30 ms fade hands
+  back. Spotify Connect follows the main Player throughout. Local playback only.
+* **Planner** (`dj/planner.rs`): next-song score (tempo incl. double/half time, Camelot key, energy
+  arc, timbre, groove; artist and history penalties), the mix point (phrase boundaries inside the
+  length window: full songs → outro, club → 25–50 %, quick → 30–60 s), the entry (bar 0, or so the
+  next song's first drop lands as the mix ends) and the style; `route` finds a chain of songs to a
+  target (Dijkstra; "as soon as possible" weighs hops heavily).
+* **RPC**: `dj.start {pool, source, prefs}`, `dj.stop`, `dj.setPool {pool, append}`, `dj.setPrefs`,
+  `dj.setTarget {uri, asap}`, `dj.lockNext {uri}`, `dj.swapNext`, `dj.mixNow`, `dj.crossfade
+  {seconds, smart}` (Settings › Crossfade / Automix), `dj.analyze {uris, background}`,
+  `dj.trackInfo {uri}`, `dj.cacheInfo`, `dj.clearCache`, `dj.state`. Events: `dj.state` (4 Hz while
+  mixing, 1 Hz otherwise) and `dj.plan` (on change, with both songs' bars, energy and phrases).
+
+* **Tempo glide and handoff** (patch 2): without key lock (the default) the current song eases to
+  the meeting tempo over 8 bars before the mix (`a_speed`, `pre_glide_ms`, both through the
+  resampler, so pitch follows tempo), the next song plays at the other half of the gap
+  (`speed`). The main player is told to play the next song right as the mix ends (`queue.skipTo`,
+  then `player.seek` once it is on that song; never a plain `player.next`); its stream joins deck
+  B's in phase through its own resampler and eases back to 1× over 16 bars (`Glide`). With key
+  lock (WSOLA) the old order stays: B settles to 1× first, then the handoff.
+
+### 6.7 Reversed from the Android client (patch 2)
+
+* `catalog.showExtras {uri}` → `{rating, topics, notify}`: extended-metadata `PODCAST_RATING` (37)
+  and `PODCAST_TOPICS` (3) (`metadata::fetch_extension_raw`), and `GET
+  /newepisodenotifications/v1/optin?s=<showId>`. `catalog.rateShow {uri, rating}` (`POST|DELETE
+  /ratings/v1/rating/show/<uri>`, `RateRequest{1: rating}`), `catalog.setShowNotify {uri, on}`
+  (`PUT|DELETE` optin).
+* `catalog.respondChatRequest {hierarchyId, accept, block}`: `speechless/v1/submit/request` with
+  `HierarchyRequest.participation_status(4) = SetParticipationStatus{1: id, 2: ACCEPTED 2 |
+  REJECTED 4 | BLOCKED 5}`; a received request is `HierarchyMetadata(4).current_user_participation_status(3)
+  = PENDING (3)` (`requestPending`, `initiatorUsername` in `catalog.messageHistory`).
+* `catalog.friendSuggestions`: `speechless/v1/retrieve/sharelist` → users with their reasons
+  (family plan, follow each other, shared content, Blends, Jams, …).
+* `catalog.recents {offset, limit}`: the official Recents page, the list-platform list
+  `spotify:list:recents:page` (`POST /playlist/spotify.list.v1.ListReadService/GetLists`, 50 per
+  page, the next page when the list's end is on screen). Each row's `group_metadata` format
+  attribute (base64 `GroupMetadata{1: items_count, 2: entity_uris}`) lists every song played in it.
+  The play-history merge below is the fallback.
+* `catalog.showExtras` also reads `ON_PLATFORM_REPUTATION_TRAIT` (185: chart position, rating,
+  verified), `CONSUMPTION_EXPERIENCE_TRAIT` (182: genres) and `SHOW_V4.trailer_uri`;
+  `catalog.showRecommendations` ("More like this") runs the web player's
+  `internalLinkRecommenderShow`.
+* Recents rows: consecutive items with the same `group_id_<x>` format key (x ≠ 0) are one row,
+  the context heading the songs played in it; same-context rows of one day merge.
+* `catalog.showRecommendations` ("More like this"): the list `spotify:list:more-like-this:show%3A{id}`
+  (the client builds it with `Uri.encode("show:{id}")`).
+* `catalog.playlistRecommendations`: `POST playlistextender/v2/extendp` (JSON `{title, numResults,
+  playlistURI, trackIDs, trackSkipIDs}` → `recommendedTracks`). `catalog.audioAttributes`:
+  `AUDIO_ATTRIBUTES_V2` (222, BPM, key, Camelot key and color) for mixed playlists (format attribute
+  `mix=true`, set by `playlist.create {mixed}`). `playlist.create` sends the name again as a change.
+* `playlist.createPrompted`: `spotbot-api2/…PromptablePlaylistApi/CreatePromptablePlaylist`.
+* `library.tags`: `tags-service/spotify.tags.v1.SuggestionService/GetSuggestions` (tags with their
+  library items), names from the tags' lists (`GetLists`).
+* `catalog.video`: music videos (`VIDEO_ASSOCIATIONS` → the video track's `original_video`) and
+  video episodes (`Episode.video`) as HLS (`manifests/v9/hls/sources/{id}/master.m3u8`) with Widevine
+  (`widevine-license/v1/video/license`), played by ExoPlayer (`ui/screens/video`).
+* Android Auto uses only the Media3 browser; the queue title (`setPlaylistMetadata`) is the Now
+  Playing header (the Car App Library templates were removed).
+* `catalog.refs {uris}`: rows for any entity URIs (Recents rows for contexts only this phone
+  played). Recents also merges the app's own play log (`data/PlayLog.kt`, 120 days), as the
+  official client keeps `spotify:list:play-history:v1`, since Spotify's servers return 50 plays.
+
 ## 7. Smart shuffle
 
 Implemented inside the vendored Spirc (`Spirc::smart_shuffle`). Turning it on enables
