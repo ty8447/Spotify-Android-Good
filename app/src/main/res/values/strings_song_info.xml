@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="song_info_about_song">About the song</string>
+    <string name="song_info_open_album">View album</string>
+    <string name="song_info_about_artist">About the artist</string>
+    <string name="song_info_explore_artist">View artist</string>
+    <string name="song_info_more_by_artist">More from this artist</string>
+    <string name="song_info_discover_artists">Discover more artists</string>
+    <string name="song_info_credits">Credits</string>
+    <string name="song_info_performers">Performed by</string>
+    <string name="song_info_label">Record label</string>
+</resources>
