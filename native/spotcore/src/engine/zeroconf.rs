@@ -57,7 +57,7 @@ impl Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         if let Some(d) = self.discovery.take() {
-            // Cancelled: finish the shutdown (mDNS goodbye, server stop) in the background.
+            // Canceled: finish the shutdown (mDNS goodbye, server stop) in the background.
             runtime::handle().spawn(async move {
                 let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, d.shutdown()).await;
             });

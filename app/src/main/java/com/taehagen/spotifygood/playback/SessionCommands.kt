@@ -16,7 +16,7 @@ import com.taehagen.spotifygood.model.RepeatMode
  * notification and the Now Playing screen).
  *
  * Shuffle uses a custom command because Media3 has no third shuffle state; repeat uses a
- * parameterised player command (`COMMAND_SET_REPEAT_MODE`), which Media3 maps for legacy
+ * parameterized player command (`COMMAND_SET_REPEAT_MODE`), which Media3 maps for legacy
  * controllers itself.
  */
 internal object PlaybackSessionCommands {

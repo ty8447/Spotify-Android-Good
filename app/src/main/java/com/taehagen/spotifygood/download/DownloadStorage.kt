@@ -104,7 +104,7 @@ internal class DownloadStorage(context: Context) {
     /**
      * Removes files no download row refers to, on every available location: audio no row has as
      * its path there ([paths]), files and `.part` files an unfinished row may resume
-     * ([unfinishedFileIds]: failed and cancelled rows resume theirs when retried) and unreferenced
+     * ([unfinishedFileIds]: failed and canceled rows resume theirs when retried) and unreferenced
      * images ([DownloadRules.audioGarbage]). Only call this while no download can be in flight and
      * nothing is [relocating] (a file being written, copied or just reused is not referenced yet).
      * A card that is not mounted is left alone. Returns the number of bytes freed.

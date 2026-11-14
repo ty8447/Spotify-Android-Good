@@ -19,7 +19,7 @@ fn dir() -> Option<PathBuf> {
     runtime::is_initialized().then(|| runtime::config().files_dir.join("vibedj"))
 }
 
-/// File stem for a track URI (`spotify:track:<id>` → `<id>`; anything else is sanitised).
+/// File stem for a track URI (`spotify:track:<id>` → `<id>`; anything else is sanitized).
 fn stem(uri: &str) -> String {
     uri.rsplit(':').next().unwrap_or(uri).chars().filter(char::is_ascii_alphanumeric).collect()
 }
@@ -72,7 +72,7 @@ pub(crate) fn failed_recently(uri: &str) -> bool {
         .is_some_and(|at| crate::connect::now_ms() - at < RETRY_FAILED_MS)
 }
 
-/// (analysed tracks, bytes on disk).
+/// (analyzed tracks, bytes on disk).
 pub(crate) fn info() -> (usize, u64) {
     let Some(dir) = dir() else { return (0, 0) };
     let Ok(entries) = std::fs::read_dir(dir) else { return (0, 0) };

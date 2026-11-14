@@ -64,6 +64,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -148,7 +149,7 @@ internal fun NowPlayingContent(onCollapse: () -> Unit, modifier: Modifier = Modi
     }
 
     val track = snapshot.track
-    // Read only in the draw phase / leaf composables: the colour animates on every track change.
+    // Read only in the draw phase / leaf composables: the color animates on every track change.
     val artworkColor = rememberArtworkColor(artwork)
 
     PlayerSurfaceTheme {
@@ -272,6 +273,8 @@ internal fun NowPlayingBody(
     val subtitlePanel = videoAvailable && !videoOn && subtitlesOn && subtitleLines.isNotEmpty()
     val artAspect = if (videoOn || subtitlePanel) videoAspect else 1f
     val chapters = rememberChapters(track.uri, track.isEpisode)
+    // A song's Canvas plays behind Now Playing in the art's place.
+    val canvas = com.taehagen.spotifygood.ui.screens.video.rememberCanvas(track.uri)
     // The art's slot: the moving art lands here, and the art drawn in it shows once at rest.
     val coverUrl = artwork
     val artwork: @Composable (Modifier) -> Unit = { artworkModifier ->
@@ -286,7 +289,8 @@ internal fun NowPlayingBody(
                 onCollapse = onCollapse,
                 modifier = Modifier
                     .fillMaxSize()
-                    .playerArtworkAtRest(sheet),
+                    .playerArtworkAtRest(sheet)
+                    .alpha(if (canvas != null) 0f else 1f),
             )
             if (videoOn) com.taehagen.spotifygood.ui.screens.video.VideoOverlay(subtitleLines, position, Modifier.matchParentSize())
             if (subtitlePanel) com.taehagen.spotifygood.ui.screens.video.SubtitlesPanel(subtitleLines, position, Modifier.matchParentSize())
@@ -410,12 +414,13 @@ internal fun NowPlayingBody(
         if (track.isEpisode) EpisodeComments(track.uri, Modifier.playerDetailsMotion(sheet, besideArtwork))
     }
 
+    if (canvas != null) com.taehagen.spotifygood.ui.screens.video.CanvasBackdrop(canvas, Modifier.fillMaxSize())
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
-        if (cinematic == null) AmbientAlbumBackdrop(lyricsFallbackColor.value, Modifier.fillMaxSize())
+        if (cinematic == null && canvas == null) AmbientAlbumBackdrop(lyricsFallbackColor.value, Modifier.fillMaxSize())
         CinematicAtmosphere(cinematic)
         val wide = maxWidth > maxHeight && maxWidth >= 600.dp
         // Too short to give the artwork a useful share of one screen (split screen, huge fonts:

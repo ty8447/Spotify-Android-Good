@@ -122,7 +122,7 @@ class NowPlayingWidgetScreenshotTest {
         }
     }
 
-    /** What the launcher shows: the views applied and laid out at [size] over a wallpaper grey. */
+    /** What the launcher shows: the views applied and laid out at [size] over a wallpaper gray. */
     private fun draw(views: RemoteViews, size: WidgetSize): Bitmap {
         val density = context.resources.displayMetrics.density
         val width = (size.width * density).roundToInt()

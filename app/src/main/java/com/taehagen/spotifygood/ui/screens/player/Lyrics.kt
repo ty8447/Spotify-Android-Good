@@ -109,7 +109,7 @@ private const val LYRICS_LINE_COLOR_MS = 300
 /** Space above and below a row of the preview's text: a row of its viewport is the text and this. */
 private val PreviewLinePadding = 3.dp
 
-/** Colours of a lyrics surface: Spotify's colours when provided, else the artwork colour. */
+/** Colors of a lyrics surface: Spotify's colors when provided, else the artwork color. */
 @Immutable
 internal data class LyricsPalette(
     val background: Color,
@@ -243,7 +243,7 @@ private fun LyricsTopBar(track: PlaybackTrack?, onDismiss: () -> Unit) {
                 )
             }
         }
-        // Balances the close button so the title stays centred.
+        // Balances the close button so the title stays centered.
         Spacer(Modifier.size(48.dp))
     }
 }
@@ -449,7 +449,7 @@ private fun LyricsMiniControls(
  * text. The line before the current one is at the top, the current
  * line in the window's second row, unless the two don't fit: the current line shows whole while
  * it plays, or from its top when it alone is taller ([lyricsPreviewScrollDistance]). As it
- * advances the lines scroll with the full screen's motion, and each line's colour fades between
+ * advances the lines scroll with the full screen's motion, and each line's color fades between
  * past, current and upcoming. Larger moves snap ([lyricsPreviewMove]); another song starts in
  * place, with nothing carried over.
  *
@@ -485,7 +485,7 @@ internal fun LyricsPreviewLines(lyrics: Lyrics, position: State<Long>, palette: 
     val spoken = remember(lines, window, instrumental) {
         window.map { AnnotatedString(lines[it].words.ifBlank { instrumental }) }
     }
-    // The lines use only these colours; the background can animate with the artwork.
+    // The lines use only these colors; the background can animate with the artwork.
     val linePalette = remember(palette.highlight, palette.upcoming, palette.past) {
         palette.copy(background = Color.Unspecified)
     }
@@ -493,7 +493,7 @@ internal fun LyricsPreviewLines(lyrics: Lyrics, position: State<Long>, palette: 
     val density = LocalDensity.current
     val measurer = rememberTextMeasurer(cacheSize = 16)
     // A row of the viewport: a row of the text with its padding. The lines set their rows that far
-    // apart (centred, so a single row looks as with the padding), which puts every row of every
+    // apart (centered, so a single row looks as with the padding), which puts every row of every
     // line on the viewport's grid.
     val rowHeight = remember(measurer, typography, density) {
         val text = measurer.measure("A", typography.titleLarge.copy(fontWeight = FontWeight.Bold)).size.height
@@ -663,7 +663,7 @@ private fun previewScrollDistance(
 
 /**
  * One preview line in [style] (its rows [rowHeight] apart), exactly its [lyricsPreviewLineRows]
- * rows tall, so a pixel of rounding never moves it off the grid. Its colour is read when drawing:
+ * rows tall, so a pixel of rounding never moves it off the grid. Its color is read when drawing:
  * a fade redraws the line, nothing more.
  */
 @Composable

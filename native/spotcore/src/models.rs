@@ -740,6 +740,9 @@ pub struct EngineSettings {
     /// foreground or a PLAYBACK / PRESENCE holder is held; otherwise the session runs without
     /// Spirc (catalog and downloads keep working).
     pub connect_visible: bool,
+    /// Mono audio: left and right mixed into both channels.
+    #[serde(default)]
+    pub mono: bool,
 }
 
 impl Default for EngineSettings {
@@ -757,6 +760,7 @@ impl Default for EngineSettings {
             filter_explicit: false,
             account_filter_explicit: false,
             connect_visible: true,
+            mono: false,
         }
     }
 }

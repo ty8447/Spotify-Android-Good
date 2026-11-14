@@ -364,7 +364,7 @@ mod tests {
         assert!(ok(vec![restriction("premium", Some(&["DE", "US"]), None)], "DE").is_ok());
         assert!(matches!(ok(vec![restriction("premium", Some(&["US"]), None)], "DE"), Err(UnavailabilityReason::NotWhitelisted)));
         assert!(matches!(ok(vec![restriction("premium", None, Some(&["DE"]))], "DE"), Err(UnavailabilityReason::Blacklisted)));
-        assert!(ok(vec![restriction("free", Some(&["US"]), None)], "DE").is_ok(), "other catalogue ignored");
+        assert!(ok(vec![restriction("free", Some(&["US"]), None)], "DE").is_ok(), "other catalog ignored");
 
         let future = Date::from_timestamp_ms(now.as_timestamp_ms() + 86_400_000).expect("date");
         let past = Date::from_timestamp_ms(now.as_timestamp_ms() - 86_400_000).expect("date");

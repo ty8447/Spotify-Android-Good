@@ -150,7 +150,7 @@ impl AnalysisDeck {
         Self { player, analyzer, cap, events }
     }
 
-    /// Analyses `uri` (stored in the cache); false if it can't be played or analysed.
+    /// Analyses `uri` (stored in the cache); false if it can't be played or analyzed.
     /// `background`: uncapped (charging and idle); otherwise 20× real time at most.
     pub(crate) async fn analyze(&mut self, uri: &str, background: bool) -> bool {
         let Ok(id) = SpotifyUri::from_uri(uri) else { return false };

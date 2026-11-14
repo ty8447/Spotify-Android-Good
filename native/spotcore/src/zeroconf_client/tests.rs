@@ -220,7 +220,7 @@ struct FakeState {
 }
 
 /// A ZeroConf device: getInfo / addUser handled like librespot-discovery 0.8.0's server (same
-/// decrypt and `with_blob`), plus the NOT-LOADED wake-up behaviour of eSDK speakers.
+/// decrypt and `with_blob`), plus the NOT-LOADED wake-up behavior of eSDK speakers.
 struct FakeDevice {
     keys: DhLocalKeys,
     token_type: &'static str,

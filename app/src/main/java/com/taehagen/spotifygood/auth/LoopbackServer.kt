@@ -38,7 +38,7 @@ internal class LoopbackServer private constructor(private val server: ServerSock
         data class Error(val error: String) : Result
     }
 
-    /** User-visible texts of the page shown in the browser (already localised). */
+    /** User-visible texts of the page shown in the browser (already localized). */
     data class Page(
         val title: String,
         val successMessage: String,
@@ -54,7 +54,7 @@ internal class LoopbackServer private constructor(private val server: ServerSock
 
     /**
      * Serves until a valid callback arrives (returned), [timeoutMs] passes
-     * ([SocketTimeoutException]) or the coroutine is cancelled. Closes the server in every case.
+     * ([SocketTimeoutException]) or the coroutine is canceled. Closes the server in every case.
      */
     suspend fun awaitResult(expectedState: String, timeoutMs: Long, page: Page): Result = try {
         coroutineScope {

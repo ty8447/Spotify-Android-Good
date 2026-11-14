@@ -51,7 +51,7 @@ data class DownloadsContent(
 
 /**
  * Groups [items] (in download order) and [collections] (newest first) into screen sections.
- * [metadata] decodes an item's Track/Episode (memoised by the caller). [activeUri] is the item the
+ * [metadata] decodes an item's Track/Episode (memoized by the caller). [activeUri] is the item the
  * downloader works on ([com.taehagen.spotifygood.download.DownloadActivity.currentUri]); without
  * it the first DOWNLOADING row counts as active.
  */

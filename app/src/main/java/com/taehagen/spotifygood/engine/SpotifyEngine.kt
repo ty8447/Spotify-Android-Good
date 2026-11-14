@@ -140,6 +140,8 @@ class SpotifyEngine(
      * when it matters (a holder is taken, the engine stops, [currentNetworkAvailable]).
      */
     val isNetworkAvailable: StateFlow<Boolean> = _networkAvailable.asStateFlow()
+    /** The current network (metered: cellular or a metered hotspot). */
+    val network: StateFlow<NetworkStatus> get() = networkMonitor.status
     /** True while the native session is started (any state but STOPPED); listeners may register. */
     val isRunning: StateFlow<Boolean> = _running.asStateFlow()
 
@@ -784,7 +786,7 @@ class SpotifyEngine(
         }
         // At once, whatever the session state: the native index needs no session, and downloads
         // must play while the session is still connecting (a captive portal, a dead mobile link)
-        // or reconnecting. Retried until it went through; cancelled with the engine run.
+        // or reconnecting. Retried until it went through; canceled with the engine run.
         launchLogged("offline-index") {
             if (!offlineIndexPushed) pushOfflineIndex()
         }
@@ -983,7 +985,7 @@ class SpotifyEngine(
         try {
             start.await()
         } catch (e: CancellationException) {
-            // Our own cancellation propagates; the start call being cancelled (logout) is a failure.
+            // Our own cancellation propagates; the start call being canceled (logout) is a failure.
             currentCoroutineContext().ensureActive()
             throw NativeException(NativeErrorInfo(NativeErrorCode.CANCELLED, "Login interrupted"))
         }

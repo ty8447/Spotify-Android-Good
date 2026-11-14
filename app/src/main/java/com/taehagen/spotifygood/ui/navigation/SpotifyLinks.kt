@@ -6,7 +6,7 @@ import java.net.URLEncoder
 
 /** A parsed `spotify:` URI or open.spotify.com link. Pure Kotlin (JVM-testable). */
 sealed interface SpotifyLink {
-    /** A catalog entity; [uri] is canonical (`spotify:<type>:<id>`, user playlists normalised). */
+    /** A catalog entity; [uri] is canonical (`spotify:<type>:<id>`, user playlists normalized). */
     data class Media(val type: MediaType, val id: String) : SpotifyLink {
         val uri: String get() = "spotify:${type.wire}:$id"
     }

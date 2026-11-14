@@ -17,7 +17,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Random access into a long paged list by window: what loads, when, and what is cancelled. */
+/** Random access into a long paged list by window: what loads, when, and what is canceled. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PageWindowsTest {
     private val total = 5_000
@@ -355,7 +355,7 @@ class PageWindowsTest {
         f.partial = 1
         f.windows.show(2_000, 2_010, from = 100, total = total)
         settle()
-        // Scrolled away before its load again: that one is cancelled, and runs once it is back.
+        // Scrolled away before its load again: that one is canceled, and runs once it is back.
         f.windows.show(3_000, 3_010, from = 100, total = total)
         settle()
         f.windows.show(2_000, 2_010, from = 100, total = total)

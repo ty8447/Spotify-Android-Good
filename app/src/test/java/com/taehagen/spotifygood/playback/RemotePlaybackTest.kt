@@ -118,7 +118,7 @@ class RemotePlaybackTest {
         ).forEach { requester ->
             assertFalse("$requester", RemotePlayback.playMeansPause(remotePlaying, suppressed = true, requester, localLoadPending = true))
             assertFalse("$requester", RemotePlayback.playMeansPause(remoteLoading, suppressed = true, requester, localLoadPending = true))
-            // Once the load settled (shown here, failed, cancelled, replaced), the toggle is back.
+            // Once the load settled (shown here, failed, canceled, replaced), the toggle is back.
             assertTrue("$requester", RemotePlayback.playMeansPause(remotePlaying, suppressed = true, requester, localLoadPending = false))
         }
         RemotePlayback.VOICE_ASSISTANTS.forEach { assistant ->

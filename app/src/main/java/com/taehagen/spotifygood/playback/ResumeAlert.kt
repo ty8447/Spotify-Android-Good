@@ -14,7 +14,7 @@ import com.taehagen.spotifygood.R
  * because the app could not start its media foreground service from the background. Tapping it
  * starts [PlaybackService] with [PlaybackService.ACTION_RESUME] (through [PlaybackActionReceiver]);
  * the tap's temporary allowlist lets the service go foreground. Posted by the service or by [PlaybackCoordinator] (also while the
- * service does not exist); cancelled when playback runs again.
+ * service does not exist); canceled when playback runs again.
  */
 internal object ResumeAlert {
     private const val TAG = "ResumeAlert"

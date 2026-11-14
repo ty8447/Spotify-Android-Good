@@ -46,7 +46,7 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The speed the app's sink plays at (`player.setSpeed`, as f64 bits), for the Player's position
 /// corrections; every new Player gets it.
 static SPEED: AtomicU64 = AtomicU64::new(1.0f64.to_bits());
-/// Serialises Player creation (online bind vs. offline playback). The offline path must never
+/// Serializes Player creation (online bind vs. offline playback). The offline path must never
 /// rebind an existing Player: a connect attempt may have just bound it to the online session.
 static CREATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -244,7 +244,7 @@ pub(crate) async fn release() {
     }
 }
 
-/// Applies bitrate / normalisation / gapless to the running Player through its runtime setters
+/// Applies bitrate / normalization / gapless to the running Player through its runtime setters
 /// (no re-creation needed). A Player created later is built from the new settings.
 pub(crate) fn apply_settings(old: &EngineSettings, new: &EngineSettings) {
     let Some(p) = player() else { return };

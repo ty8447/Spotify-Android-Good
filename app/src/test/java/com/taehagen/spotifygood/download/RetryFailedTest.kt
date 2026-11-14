@@ -13,7 +13,7 @@ class RetryFailedTest {
         val rows = listOf(
             RetryRow("network", DownloadState.FAILED, "Network error. Will retry."),
             RetryRow("cancelled", DownloadState.CANCELLED, null),
-            // A greyed-out member of a downloaded collection: it would only fail again.
+            // A grayed-out member of a downloaded collection: it would only fail again.
             RetryRow("greyed", DownloadState.FAILED, "Not available on Spotify."),
             // Failed by re-validation: sync queues it once it is playable again.
             RetryRow("revalidated", DownloadState.FAILED, unplayable),

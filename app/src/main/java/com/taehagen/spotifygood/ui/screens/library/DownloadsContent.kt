@@ -420,6 +420,7 @@ private fun collectionStatusText(collection: DownloadedCollection, status: Colle
     } else {
         stringResource(R.string.browse_download_waiting_progress, status.done, status.total)
     }
+    is CollectionDownloadStatus.Available -> pluralStringResource(R.plurals.browse_downloaded_available, status.done, status.done, status.missing)
     else -> {
         val count = collection.itemUris.size
         typedSubtitle(

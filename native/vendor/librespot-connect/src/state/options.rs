@@ -140,6 +140,15 @@ impl ConnectState {
         let ctx = self.get_context_mut(ContextType::Default)?;
         ctx.tracks
             .shuffle_with_seed(seed, |f| f.uri == initial_track);
+        // SPOTIFYGOOD: Shuffle › Fewer repeats: songs heard lately follow the others (each part
+        // keeps its shuffled order, the first track stays first)
+        let heard: Vec<bool> = ctx.tracks.iter().map(|t| crate::shuffle_vec::heard_lately(&t.uri)).collect();
+        if heard.iter().skip(1).any(|h| *h) && heard.iter().skip(1).any(|h| !*h) {
+            let pos = ctx.tracks.original_positions();
+            let (fresh, lately): (Vec<usize>, Vec<usize>) = (1..pos.len()).partition(|&k| !heard[k]);
+            let order: Vec<usize> = std::iter::once(0).chain(fresh).chain(lately).map(|k| pos[k]).collect();
+            ctx.tracks.shuffle_to_order(&order);
+        }
 
         ctx.set_initial_track(initial_track);
         ctx.set_shuffle_seed(seed);

@@ -210,7 +210,7 @@ private fun ChipRowChip(text: String, isSelected: Boolean, onClick: () -> Unit) 
     )
 }
 
-/** Square gradient artwork with a centred icon (Liked Songs, Downloads, Your Episodes, folders). */
+/** Square gradient artwork with a centered icon (Liked Songs, Downloads, Your Episodes, folders). */
 @Composable
 internal fun GradientTile(
     colors: List<Color>,
@@ -324,7 +324,7 @@ internal fun AvatarButton(user: User?, onClick: () -> Unit, modifier: Modifier =
 }
 
 /**
- * Centred full-size wrapper for loading/error/empty states that are not part of a list. It is
+ * Centered full-size wrapper for loading/error/empty states that are not part of a list. It is
  * vertically scrollable so a surrounding pull-to-refresh still receives the gesture.
  */
 @Composable

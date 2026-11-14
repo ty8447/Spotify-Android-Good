@@ -22,7 +22,7 @@ data class DownloadListRow(
     val error: String?,
 )
 
-/** A failed or cancelled download "Retry failed" may put back into the queue. */
+/** A failed or canceled download "Retry failed" may put back into the queue. */
 data class RetryRow(val uri: String, val state: DownloadState, val error: String?)
 
 /** Sync bookkeeping of a downloaded collection (without its member list). */
@@ -202,7 +202,7 @@ interface DownloadDao {
     )
     suspend fun requeueFailedKeepingAttempts(uris: List<String>): Int
 
-    /** Like [requeueFailed] for failed items only: one the user cancelled stays cancelled. */
+    /** Like [requeueFailed] for failed items only: one the user canceled stays canceled. */
     @Query(
         "UPDATE downloads SET state = 'queued', attempts = 0, retryAt = NULL, error = NULL " +
             "WHERE uri IN (:uris) AND state = 'failed'",
@@ -235,7 +235,7 @@ interface DownloadDao {
     @Query("SELECT DISTINCT fileId FROM downloads WHERE fileId IS NOT NULL")
     suspend fun allFileIds(): List<String>
 
-    /** Files whose `.part` an unfinished row (pending, failed, cancelled) may resume. */
+    /** Files whose `.part` an unfinished row (pending, failed, canceled) may resume. */
     @Query("SELECT DISTINCT fileId FROM downloads WHERE fileId IS NOT NULL AND state != 'completed'")
     suspend fun unfinishedFileIds(): List<String>
 

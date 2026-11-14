@@ -53,7 +53,7 @@ data class Settings(
     val crossfadeSeconds: Int = 0,
     /** The navigation bar's fourth button: "downloads" or "create" (Settings › Display). */
     val navButton: String = "downloads",
-    /** Songs that can't be played are listed greyed out (true) or hidden. */
+    /** Songs that can't be played are listed grayed out (true) or hidden. */
     val showUnplayable: Boolean = true,
     val monoAudio: Boolean = false,
     val hideExplicit: Boolean = false,
@@ -81,6 +81,18 @@ data class Settings(
     val libraryView: LibraryView = LibraryView.LIST,
     val librarySort: LibrarySort = LibrarySort.RECENT,
     val showLyricsOnNowPlaying: Boolean = true,
+    /** Settings › Reduce animations: autoplaying and moving animations finish at once. */
+    val reduceAnimations: Boolean = false,
+    /** Settings › Device broadcast status: other apps on this phone see what's playing (Spotify's broadcasts). */
+    val deviceBroadcast: Boolean = false,
+    /** Settings › Include Smart Shuffle in play modes (the shuffle button's third state). */
+    val smartShuffleMode: Boolean = true,
+    /** Settings › Shuffle: "Fewer repeats" (songs heard lately come after the rest) or standard. */
+    val shuffleFewerRepeats: Boolean = false,
+    /** Settings › Actions next to play button: episode and audiobook actions beside its play button. */
+    val trailingActions: Boolean = false,
+    /** Settings › See what others are playing: friends' and groups' listening in the side menu. */
+    val showFriendActivity: Boolean = true,
     /**
      * Not a user setting: the account's own explicit filter (Spotify's parental setting) as an
      * online session last reported it, for a start without a network
@@ -105,6 +117,7 @@ fun Settings.toEngineSettings(metered: Boolean, defaultDeviceName: String): Engi
     offline = offlineMode,
     filterExplicit = hideExplicit,
     accountFilterExplicit = accountExplicitFilter,
+    mono = monoAudio,
 )
 
 /**

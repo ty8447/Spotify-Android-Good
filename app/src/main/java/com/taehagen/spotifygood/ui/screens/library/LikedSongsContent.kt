@@ -217,7 +217,7 @@ internal fun LikedSongsContent(contentPadding: PaddingValues, modifier: Modifier
                     }
                 }
                 items(state.tracks, key = { "track:${it.uri}" }, contentType = { "track" }) { track ->
-                    // Settings › Show unplayable songs: greyed out (TrackRow dims them) or left out.
+                    // Settings › Show unplayable songs: grayed out (TrackRow dims them) or left out.
                     if (showUnplayable || track.playable || track.isPlaceholder) {
                         LikedTrackRow(track, state, onPlay = viewModel::playTrack, onActions = navigator::showActions)
                     }
@@ -374,6 +374,7 @@ private fun LikedActions(
             text = when (progress) {
                 is CollectionDownloadStatus.InProgress -> stringResource(R.string.browse_download_progress, progress.done, progress.total)
                 CollectionDownloadStatus.Complete -> stringResource(R.string.browse_downloaded)
+                is CollectionDownloadStatus.Available -> pluralStringResource(R.plurals.browse_downloaded_available, progress.done, progress.done, progress.missing)
                 CollectionDownloadStatus.None -> ""
             },
             style = MaterialTheme.typography.bodySmall,

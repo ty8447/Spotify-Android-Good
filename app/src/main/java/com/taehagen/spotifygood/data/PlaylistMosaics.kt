@@ -382,7 +382,7 @@ fun mosaicTiles(width: Int, height: Int): List<MosaicTile> {
     )
 }
 
-/** The centre square of a [width] x [height] cover: a tile is square, a cover that isn't is cropped, not squeezed. */
+/** The center square of a [width] x [height] cover: a tile is square, a cover that isn't is cropped, not squeezed. */
 fun centerSquare(width: Int, height: Int): MosaicTile {
     val side = minOf(width, height)
     val left = (width - side) / 2

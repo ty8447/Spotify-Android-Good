@@ -313,7 +313,7 @@ internal fun HeartButton(saved: Boolean?, onClick: () -> Unit, modifier: Modifie
     }
 }
 
-/** Accent when saved, the muted icon colour when not, the disabled colour while unknown. */
+/** Accent when saved, the muted icon color when not, the disabled color while unknown. */
 @Composable
 private fun savedTint(saved: Boolean?): Color = when (saved) {
     true -> MaterialTheme.colorScheme.primary

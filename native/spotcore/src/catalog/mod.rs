@@ -39,6 +39,7 @@ mod radio;
 mod showextras;
 mod playlistextras;
 mod video;
+mod watchfeed;
 mod recent;
 mod refs;
 mod search;
@@ -144,6 +145,9 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "catalog.muteChat" => messaging::mute_chat(args).await,
         "catalog.unmuteChat" => messaging::unmute_chat(args).await,
         "catalog.chatMuteStatus" => messaging::chat_mute_status(args).await,
+        "catalog.setChatReceipt" => messaging::set_chat_receipt(args).await,
+        "catalog.blockedUsers" => social::blocked_users(args).await,
+        "catalog.setBlocked" => social::set_blocked(args).await,
         "catalog.home" => home::rpc(args).await,
         "catalog.lyrics" => lyrics::lyrics(args).await,
         "catalog.radio" => radio::rpc(args).await,
@@ -162,6 +166,8 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "playlist.createPrompted" => playlistextras::create_prompted(args).await,
         "library.tags" => playlistextras::library_tags(args).await,
         "catalog.video" => video::video(args).await,
+        "catalog.canvas" => video::canvas(args).await,
+        "catalog.watchFeed" => watchfeed::watch_feed(args).await,
         "playlist.refreshPrompted" => playlistextras::refresh_prompted(args).await,
         "playlist.editPrompt" => playlistextras::edit_prompt(args).await,
         "playlist.setMixed" => playlist::set_mixed_rpc(args).await,
@@ -222,7 +228,7 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
     }
 }
 
-/// Serialises the tests (of any catalog module) that use the process-wide library caches.
+/// Serializes the tests (of any catalog module) that use the process-wide library caches.
 #[cfg(test)]
 pub(crate) static TEST_CACHES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 

@@ -65,7 +65,7 @@ class DownloadJobService : JobService() {
                 // only when the queue goes on in bursts (docs/ARCHITECTURE.md §9.7).
                 manager.runner.runHosted(host)
             } catch (e: CancellationException) {
-                // Our scope cancelled (onStopJob / onDestroy) → propagate; a run stopped by removeAll /
+                // Our scope canceled (onStopJob / onDestroy) → propagate; a run stopped by removeAll /
                 // logout while the job itself is still alive → finish without reschedule.
                 if (!currentCoroutineContext().isActive) throw e
                 RunOutcome.STOPPED

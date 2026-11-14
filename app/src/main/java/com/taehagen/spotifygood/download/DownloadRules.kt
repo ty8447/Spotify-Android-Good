@@ -152,7 +152,7 @@ internal object DownloadRules {
         /**
          * Spotify refused audio keys for the account (`PLAYBACK_REFUSED` from `download.track`, as
          * the engine judges it from refusals of songs of several albums with no key for a day): this
-         * item fails and the run stops, but what was not tried yet stays queued (the judgement can
+         * item fails and the run stops, but what was not tried yet stays queued (the judgment can
          * be wrong; "Resume", the app coming back or a user action try again).
          */
         data object AccountRefused : FailureAction
@@ -330,10 +330,11 @@ internal object DownloadRules {
                 else -> if (isPending(state)) active = true
             }
         }
-        return if (done == distinct.size) {
-            CollectionDownloadStatus.Complete
-        } else {
-            CollectionDownloadStatus.InProgress(done, distinct.size, active)
+        return when {
+            done == distinct.size -> CollectionDownloadStatus.Complete
+            // Nothing in progress: what downloaded is what's there (the rest is retried daily).
+            !active && done > 0 -> CollectionDownloadStatus.Available(done, distinct.size - done)
+            else -> CollectionDownloadStatus.InProgress(done, distinct.size, active)
         }
     }
 
@@ -374,7 +375,7 @@ internal object DownloadRules {
     }
 
     /**
-     * The failed and cancelled downloads "Retry failed" puts back into the queue: all of them except
+     * The failed and canceled downloads "Retry failed" puts back into the queue: all of them except
      * members a downloaded collection records as not playable here ([unavailable]) and downloads that
      * re-validation failed as no longer playable (error [unplayableReason]). Those would only fail
      * again; a sync queues them once the catalog reports them playable.
@@ -463,7 +464,7 @@ internal object DownloadRules {
     }
 
     /**
-     * Brings the memoised cover sources [known] (uri → source) in line with the completed downloads'
+     * Brings the memoized cover sources [known] (uri → source) in line with the completed downloads'
      * current cover files [paths] (uri → path), without the ones on storage that is not mounted
      * ([gone]): drops downloads that are gone, follows a cover that moved to another location (its
      * URLs come from the metadata, which a move does not touch) and returns the URIs to read.
@@ -540,7 +541,7 @@ internal object DownloadRules {
     }
 
     /**
-     * Whether scheduled download work is cancelled after removals: when nothing is pending any more
+     * Whether scheduled download work is canceled after removals: when nothing is pending any more
      * and no run or job is active (a later enqueue schedules again).
      */
     fun cancelIdleWork(pending: Int, running: Boolean, jobExecuting: Boolean): Boolean = pending == 0 && !running && !jobExecuting
@@ -761,7 +762,7 @@ internal object DownloadRules {
 
     /**
      * Whether the unique download work, whose parts are given as (running, a resume that waits),
-     * is cancelled for a user-initiated job that takes the queue: only a waiting resume, never while
+     * is canceled for a user-initiated job that takes the queue: only a waiting resume, never while
      * a part runs.
      */
     fun cancelsWaitingResume(parts: List<Pair<Boolean, Boolean>>): Boolean =
@@ -926,7 +927,7 @@ internal object DownloadRules {
     data class ItemRequest(
         /** No row yet: new single downloads (the only ones marked individual). */
         val newSingles: List<String>,
-        /** Failed or cancelled: queued again. */
+        /** Failed or canceled: queued again. */
         val requeue: List<String>,
         /** Completed on a card that is no longer used: downloaded again to the chosen location. */
         val redownload: List<String>,
@@ -1060,7 +1061,7 @@ internal object DownloadRules {
     /**
      * Names in the audio directory garbage collection deletes: completed files no row uses ([paths],
      * [fileIds]) and `.part` files no unfinished row is downloading ([unfinishedFileIds], any state:
-     * failed and cancelled rows resume them when retried).
+     * failed and canceled rows resume them when retried).
      */
     fun audioGarbage(
         names: Collection<String>,

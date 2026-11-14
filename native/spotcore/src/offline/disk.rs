@@ -129,7 +129,7 @@ fn verify_blocking(path: &Path, format: AudioFileFormat, key: Option<AudioKey>) 
 }
 
 /// Decrypts and checks the start of `path` (see [`format::verify_header`]); `None` if the file
-/// is missing, too short or does not verify. For Ogg it also reads the normalisation data.
+/// is missing, too short or does not verify. For Ogg it also reads the normalization data.
 pub async fn verify(path: &Path, format: AudioFileFormat, key: Option<AudioKey>) -> AppResult<Option<Verified>> {
     let path = path.to_owned();
     blocking(move || verify_blocking(&path, format, key)).await

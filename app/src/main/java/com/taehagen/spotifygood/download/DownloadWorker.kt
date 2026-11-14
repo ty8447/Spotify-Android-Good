@@ -18,7 +18,7 @@ import kotlinx.coroutines.isActive
  * Runs as a dataSync foreground service when allowed; if the app is in the background and the FGS
  * start is refused, it continues as ordinary work within the job window. When WorkManager stops
  * the worker (constraints lost, Android 15 dataSync `onTimeout` after 6 h, quota) the coroutine is
- * cancelled, the runner requeues its item (partial files are kept) and WorkManager reschedules.
+ * canceled, the runner requeues its item (partial files are kept) and WorkManager reschedules.
  * A run that ends because the whole queue waits until a known time ([RunOutcome.PAUSED]: Spotify's
  * key limit, a rate limit) schedules one delayed request for then and succeeds; in the background
  * on battery the queue runs in bursts this way. On API 34+ with the app visible the worker hands the

@@ -16,6 +16,9 @@ use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::OnceLock;
 
+/// Settings › Mono audio (`EngineSettings::mono`), applied to everything written to the AudioTrack.
+pub(crate) static MONO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 static JVM: OnceLock<JavaVM> = OnceLock::new();
 static CALLBACKS: OnceLock<Callbacks> = OnceLock::new();
 static AUDIO: OnceLock<AudioBridge> = OnceLock::new();
@@ -135,6 +138,14 @@ impl AudioBridge {
     /// Copies interleaved stereo f32 samples into the shared buffer and performs blocking writes.
     /// Returns false on a fatal sink error.
     pub fn write_f32(&self, samples: &[f32]) -> bool {
+        // Mono audio: both channels carry their average.
+        let mixed: Vec<f32>;
+        let samples = if MONO.load(std::sync::atomic::Ordering::Relaxed) {
+            mixed = samples.chunks_exact(2).flat_map(|f| [0.5 * (f[0] + f[1]); 2]).collect();
+            &mixed[..]
+        } else {
+            samples
+        };
         let frames_total = samples.len() / 2;
         let mut offset = 0usize;
         while offset < frames_total {
@@ -260,7 +271,7 @@ pub extern "system" fn Java_com_taehagen_spotifygood_nativebridge_NativeBridge_n
             let _ = AUDIO.set(ab);
         }
         runtime::init(config)?;
-        log::info!("spotcore {} initialised (librespot {})", env!("CARGO_PKG_VERSION"), librespot_core::version::SEMVER);
+        log::info!("spotcore {} initialized (librespot {})", env!("CARGO_PKG_VERSION"), librespot_core::version::SEMVER);
         Ok(())
     }));
     match result {

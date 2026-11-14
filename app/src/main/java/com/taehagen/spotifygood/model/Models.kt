@@ -630,6 +630,8 @@ data class EngineSettings(
     val accountFilterExplicit: Boolean = false,
     /** Listed as a Spotify Connect target (Spirc runs); set by [com.taehagen.spotifygood.engine.SpotifyEngine]. */
     val connectVisible: Boolean = true,
+    /** Settings › Mono audio: both channels play their average. */
+    val mono: Boolean = false,
 )
 
 // ---------------------------------------------------------------------------------------------

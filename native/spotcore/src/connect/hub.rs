@@ -4,7 +4,7 @@
 //!   snapshot / cluster / command-error streams into [`HubState`] and republishes.
 //! * [`publish`] composes the current `PlaybackSnapshot` (local Spirc → offline queue →
 //!   reconnect placeholder → remote device → none), enriches it with metadata and emits it only
-//!   when the serialised JSON changed. [`publish_devices`] does the same for the device list.
+//!   when the serialized JSON changed. [`publish_devices`] does the same for the device list.
 //!
 //! Lock order: `EMIT` may be held while the leaf locks (`HUB`, offline queue, metadata caches)
 //! are taken briefly; no code takes `EMIT` while holding a leaf lock.
@@ -857,7 +857,7 @@ pub(crate) fn publish() {
             emit.playback = json;
         }
         Ok(_) => {}
-        Err(e) => log::error!("playback snapshot serialisation failed: {e}"),
+        Err(e) => log::error!("playback snapshot serialization failed: {e}"),
     }
 }
 
@@ -894,7 +894,7 @@ fn publish_devices_locked(emit: &mut EmitState) -> DeviceList {
             emit.devices = json;
         }
         Ok(_) => {}
-        Err(e) => log::error!("device list serialisation failed: {e}"),
+        Err(e) => log::error!("device list serialization failed: {e}"),
     }
     list
 }

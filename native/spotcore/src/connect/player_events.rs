@@ -5,7 +5,7 @@
 //! Load brake: Spirc skips an unavailable track and loads the next one, which fails again, and so
 //! on through the whole queue (and autoplay). Only failed *loads* count (the Player's `Loading`
 //! for that request and track came before); a failed preload while a track plays doesn't, it
-//! never interrupts the playing track. Playback is paused, the Player stopped (cancelling the
+//! never interrupts the playing track. Playback is paused, the Player stopped (canceling the
 //! in-flight load), an `error` event emitted and `lastError` set after
 //! * 3 permanent denials (`PLAYBACK_REFUSED`), or
 //! * 3 transient failures (audio key timeout, network): `RATE_LIMITED` with `retryAfterMs`, or

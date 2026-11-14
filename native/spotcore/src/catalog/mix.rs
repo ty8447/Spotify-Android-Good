@@ -230,9 +230,70 @@ pub(crate) fn vocals_cached(uri: &str) -> Option<Vocals> {
     VOCALS.lock().get(uri).cloned().flatten()
 }
 
+/// Extended-metadata 222 (the APK's AudioAttributesV2): `{1: bpm (double), 2: Key{1: key, 2:
+/// mode, 3: Camelot{1: value ("8A"), 2: color}}}`.
+const AUDIO_ATTRIBUTES: i32 = 222;
+
+/// Spotify's own tempo and key of a song: enough to rank songs before they're analyzed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Attrs {
+    pub bpm: f32,
+    /// Camelot number (1–12) and whether it's the minor (A) side.
+    pub camelot: Option<(u8, bool)>,
+}
+
+static ATTRS: LazyLock<Mutex<HashMap<String, Option<Attrs>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn parse_attrs(b: &[u8]) -> Option<Attrs> {
+    let f = fields(b);
+    let bpm = f.iter().find(|x| x.0 == 1 && x.2.len() == 8).map(|x| f64::from_bits(x.1) as f32).filter(|b| (40.0..=250.0).contains(b))?;
+    let camelot = f.iter().find(|x| x.0 == 2).and_then(|k| fields(k.2).into_iter().find(|x| x.0 == 3)).and_then(|c| {
+        let v = String::from_utf8_lossy(fields(c.2).into_iter().find(|x| x.0 == 1)?.2).trim().to_ascii_uppercase();
+        let (n, side) = v.split_at(v.len().checked_sub(1)?);
+        let n: u8 = n.parse().ok().filter(|n| (1..=12).contains(n))?;
+        matches!(side, "A" | "B").then_some((n, side == "A"))
+    });
+    Some(Attrs { bpm, camelot })
+}
+
+/// Fetches (in batches) the attributes of the songs not asked for yet.
+pub(crate) async fn attributes(session: &Session, uris: &[String]) {
+    let missing: Vec<String> = {
+        let m = ATTRS.lock();
+        uris.iter().filter(|u| u.starts_with("spotify:track:") && !m.contains_key(*u)).cloned().collect()
+    };
+    if missing.is_empty() {
+        return;
+    }
+    let Ok(raw) = metadata::fetch_extension_raw(session, AUDIO_ATTRIBUTES, &missing).await else { return };
+    let mut m = ATTRS.lock();
+    if m.len() > 5_000 {
+        m.clear();
+    }
+    for u in missing {
+        let a = raw.found.get(&u).and_then(|b| parse_attrs(b));
+        m.insert(u, a);
+    }
+}
+
+/// The cached attributes of `uri` (no request).
+pub(crate) fn attributes_cached(uri: &str) -> Option<Attrs> {
+    ATTRS.lock().get(uri).copied().flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_audio_attributes() {
+        let mut b = vec![0x09];
+        b.extend(124.5f64.to_bits().to_le_bytes());
+        // Key{1: "A", 2: 2, 3: Camelot{1: "11B"}}
+        b.extend([0x12, 0x0c, 0x0a, 0x01, b'A', 0x10, 0x02, 0x1a, 0x05, 0x0a, 0x03, b'1', b'1', b'B']);
+        assert_eq!(parse_attrs(&b), Some(Attrs { bpm: 124.5, camelot: Some((11, false)) }));
+        assert_eq!(parse_attrs(&[0x12, 0x00]), None);
+    }
 
     #[test]
     fn decodes_a_recipe() {

@@ -102,7 +102,7 @@ data class PlaybackFailure(val kind: PlaybackErrorKind, val message: String)
 /**
  * Playback commands. All commands are routed natively to the active device (this phone or a
  * remote Connect device). Methods never throw: failures are reported on [errors] (user-visible
- * message) and logged. Commands are serialised in call order.
+ * message) and logged. Commands are serialized in call order.
  *
  * One consumer coroutine executes the queued commands one after the other (each bounded by a
  * timeout, so a lost native reply cannot wedge the queue). Bursty commands (seek, volume) are
@@ -260,7 +260,7 @@ class PlayerController internal constructor(
     /** Sequence number of the next queued command (guarded by [lock]). */
     private var nextSeq = 0L
     /**
-     * Start-playback commands queued before this sequence number were cancelled by a pause while
+     * Start-playback commands queued before this sequence number were canceled by a pause while
      * the session was starting (guarded by [lock]): the pause wins over every pending start.
      */
     private var cancelStartsBefore = 0L
@@ -327,7 +327,7 @@ class PlayerController internal constructor(
 
     /**
      * [user]: false for pauses the app sends by itself (focus loss, unplugged, refused start).
-     * [deliberate]: a pending focus resume is cancelled ([onDeliberatePause]).
+     * [deliberate]: a pending focus resume is canceled ([onDeliberatePause]).
      */
     fun pause(user: Boolean = true, deliberate: Boolean = user) {
         DiagnosticLogs.record(DiagnosticLogs.Level.INFO, "playback", "pause_requested", "user=$user,deliberate=$deliberate")
@@ -942,7 +942,7 @@ class PlayerController internal constructor(
                 val needsSession = command.request?.preferOffline != true
                 cancelled = cancelledByPause(command) || (needsSession && env != null && awaitSession(command, env)) || cancelledByPause(command)
                 if (cancelled) {
-                    warn("${command.name} cancelled by a pause while the session was starting")
+                    warn("${command.name} canceled by a pause while the session was starting")
                     command.done.complete(false)
                     return
                 }
@@ -952,7 +952,7 @@ class PlayerController internal constructor(
             // Native commands wait briefly for a connecting session themselves: allow for it.
             val allowance = if (env?.reach() == EngineReach.CONNECTING) NATIVE_ONLINE_WAIT_MS else 0L
             // Native waits can outlast mobile coverage. Cancel the *suspended* RPC for a
-            // superseded load without cancelling this queue's consumer coroutine.
+            // superseded load without canceling this queue's consumer coroutine.
             val task = scope.async { withTimeout(command.timeoutMs + allowance) { block() } }
             synchronized(lock) {
                 command.running = task
@@ -1005,7 +1005,7 @@ class PlayerController internal constructor(
     private fun cancelledByPause(command: Command): Boolean = synchronized(lock) { command.seq < cancelStartsBefore }
 
     /**
-     * Waits (bounded) for a starting session before [command]. Returns true when a pause cancelled
+     * Waits (bounded) for a starting session before [command]. Returns true when a pause canceled
      * the command meanwhile.
      */
     private suspend fun awaitSession(command: Command, env: PlaybackEnvironment): Boolean {

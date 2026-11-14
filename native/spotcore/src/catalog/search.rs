@@ -502,7 +502,7 @@ pub(crate) async fn rpc(args: Value) -> AppResult<Value> {
             let e: AppError = e.into();
             log::info!("pathfinder search failed: {e}");
             // Pathfinder runs on another host with its own limits, so searchview is still worth
-            // trying when it was offline or throttled; not when the call was cancelled.
+            // trying when it was offline or throttled; not when the call was canceled.
             if e.code == ErrorCode::Cancelled {
                 return Err(e);
             }

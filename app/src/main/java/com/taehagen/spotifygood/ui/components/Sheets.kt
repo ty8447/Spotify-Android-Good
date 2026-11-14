@@ -85,6 +85,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -165,6 +167,7 @@ private sealed interface SheetPage {
     data object Rename : SheetPage
     data object ConfirmDelete : SheetPage
     data class MoveToFolder(val uri: String) : SheetPage
+    data class RateShow(val uri: String) : SheetPage
 }
 
 /** Everything an action row needs. */
@@ -279,6 +282,7 @@ private fun MediaActionsContent(target: MediaActionTarget, dismiss: () -> Unit, 
                     ?: (target as? MediaActionTarget.LibraryPinTarget)?.media as? MediaActionTarget.PlaylistTarget)
                     ?.let { ConfirmDeletePlaylist(it, scope) }
                 is SheetPage.MoveToFolder -> MoveToFolderPage(current.uri, scope)
+                is SheetPage.RateShow -> RateShowPage(current.uri, scope)
             }
         }
     }
@@ -577,10 +581,45 @@ private fun ShowActions(t: MediaActionTarget.ShowTarget, s: ActionScope, pin: Li
     }
     pin?.let { LibraryPinAction(it, s) }
     SheetAction(Icons.Rounded.Podcasts, stringResource(R.string.shell_action_go_to_show)) { s.go(Route.Show(show.uri)) }
+    SheetAction(Icons.Rounded.StarBorder, "Rate show") { s.setPage(SheetPage.RateShow(show.uri)) }
     SheetAction(Icons.Rounded.Share, stringResource(R.string.shell_action_share)) { s.share(show.uri, show.name) }
     SheetAction(Icons.Rounded.GraphicEq, "Show Spotify Code") {
         s.dismissNow()
         s.navigator?.navigate(Route.SpotifyCode(show.uri, show.images.best(300)))
+    }
+}
+
+/** Spotify's "Rate show" (1–5 stars, or taking the rating back), from the show's ⋮ menu. */
+@Composable
+private fun RateShowPage(uri: String, s: ActionScope) {
+    var mine by remember(uri) { mutableStateOf(0) }
+    var stars by remember(uri) { mutableStateOf(0) }
+    LaunchedEffect(uri) {
+        mine = runCatching {
+            val extras = s.graph.rpc.callRaw("catalog.showExtras", kotlinx.serialization.json.buildJsonObject { put("uri", uri) })
+            (((extras as? kotlinx.serialization.json.JsonObject)?.get("rating") as? kotlinx.serialization.json.JsonObject)?.get("mine")
+                as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull()
+        }.getOrNull() ?: 0
+        if (stars == 0) stars = mine
+    }
+    val rate: (Int) -> Unit = { n ->
+        s.dismiss()
+        s.runner.launch {
+            s.graph.rpc.callRaw("catalog.rateShow", kotlinx.serialization.json.buildJsonObject { put("uri", uri); put("rating", n) })
+        }
+    }
+    SubPageTitle("Rate this show") { s.setPage(SheetPage.Main) }
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
+        (1..5).forEach { n ->
+            IconButton(onClick = { stars = n }) {
+                Icon(if (n <= stars) Icons.Rounded.Star else Icons.Rounded.StarBorder, contentDescription = "$n stars",
+                    tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+            }
+        }
+    }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
+        if (mine > 0) TextButton(onClick = { rate(0) }) { Text("Remove rating") }
+        Button(onClick = { rate(stars) }, enabled = stars > 0) { Text("Rate") }
     }
 }
 

@@ -64,7 +64,7 @@ internal fun copyVerified(
 /**
  * Copies [batch] with [copy], one item at a time, and always hands the items copied so far to
  * [switch]: also when a copy stops the batch (no space, an error about the target, the card gone)
- * or the pass is cancelled, so a verified copy is never thrown away and redone at the next pass.
+ * or the pass is canceled, so a verified copy is never thrown away and redone at the next pass.
  * An item whose original is gone ([FileNotFoundException]) is skipped. An item whose original
  * cannot be read ([SourceUnreadableException]: a damaged file) is always skipped and handed to
  * [skip] (downloaded again), and the batch goes on, however many damaged files lie next to each

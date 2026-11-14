@@ -81,7 +81,7 @@ class DownloadsLogicTest {
         assertEquals(listOf(CollectionType.LIKED_SONGS, CollectionType.PLAYLIST), content.playlists.map { it.type })
         assertEquals(listOf("spotify:album:a"), content.albums.map { it.uri })
         assertTrue(content.podcasts.isEmpty())
-        // Newest first; collection items and cancelled items are not listed individually.
+        // Newest first; collection items and canceled items are not listed individually.
         assertEquals(listOf("spotify:track:5"), content.songs.map { it.uri })
         assertEquals(listOf("spotify:episode:4"), content.episodes.map { it.uri })
         assertEquals("Episode 4", content.episodes.single().episode?.name)

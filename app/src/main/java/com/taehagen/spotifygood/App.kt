@@ -25,8 +25,9 @@ import com.taehagen.spotifygood.nativebridge.NativeCallbacksImpl
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okio.Path.Companion.toOkioPath
+import com.taehagen.spotifygood.playback.startSettingsEffects
 
-/** Application entry point. Owns the [AppGraph]; initialises the native engine runtime. */
+/** Application entry point. Owns the [AppGraph]; initializes the native engine runtime. */
 class App : Application() {
     lateinit var graph: AppGraph
         private set
@@ -39,7 +40,7 @@ class App : Application() {
 }
 
 /**
- * One-time process initialisation (owned by the foundation): calls `NativeBridge.nativeInit`,
+ * One-time process initialization (owned by the foundation): calls `NativeBridge.nativeInit`,
  * registers the UI engine holder with ProcessLifecycleOwner, sets up Coil and the notification
  * channels, and checks that the output switcher's route provider is enabled exactly while logged
  * in. Runs on the main thread in `Application.onCreate`, so it only does cheap work; every
@@ -66,6 +67,7 @@ object AppInitializer {
         // Vibe DJ: re-applies the crossfade per session and schedules the downloads' analysis.
         graph.vibeDj
         graph.playLog
+        graph.startSettingsEffects()
     }
 
     private fun initNative(app: App, graph: AppGraph) {
@@ -84,7 +86,7 @@ object AppInitializer {
             // UnsatisfiedLinkError / ExceptionInInitializerError / a native panic surfaced as an
             // exception: keep the process alive, the engine reports the error state to the UI.
             NativeStatus.initError = t
-            Log.e(TAG, "Native engine initialisation failed", t)
+            Log.e(TAG, "Native engine initialization failed", t)
             DiagnosticLogs.record(DiagnosticLogs.Level.ERROR, "native", "init_failed", t.javaClass.simpleName)
         }
     }

@@ -104,7 +104,7 @@ pub(crate) struct Shared {
     pub network_changes: watch::Sender<()>,
     /// Message channel of the running supervisor (quick access without the supervisor slot).
     pub supervisor_tx: Mutex<Option<mpsc::UnboundedSender<Msg>>>,
-    /// The running supervisor; serialises start / stop / logout.
+    /// The running supervisor; serializes start / stop / logout.
     pub supervisor: tokio::sync::Mutex<Option<super::supervisor::SupervisorHandle>>,
 }
 
@@ -144,7 +144,7 @@ pub(crate) fn update_status(f: impl FnOnce(&mut Status)) {
                 *last_json = json;
             }
             Ok(_) => {}
-            Err(e) => log::error!("session event serialisation failed: {e}"),
+            Err(e) => log::error!("session event serialization failed: {e}"),
         }
         s.status.send_replace(next);
     }

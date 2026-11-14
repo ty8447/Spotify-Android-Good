@@ -67,7 +67,7 @@ class DownloadRulesTest {
         // The first limit in a row follows the server (a fresh breaker each).
         assertEquals(120_000L, QueueBreaker().onFailure(NativeErrorCode.RATE_LIMITED, online = true, retryAfterMs = 120_000L))
         assertEquals(20_000L, QueueBreaker().onFailure(NativeErrorCode.RATE_LIMITED, online = true, retryAfterMs = 20_000L))
-        // Longer than the per-item backoff cap: a server delay is honoured up to the queue cap.
+        // Longer than the per-item backoff cap: a server delay is honored up to the queue cap.
         assertEquals(20 * 60_000L, QueueBreaker().onFailure(NativeErrorCode.RATE_LIMITED, online = true, retryAfterMs = 20 * 60_000L))
         assertEquals(DownloadRules.MAX_QUEUE_PAUSE_MS, QueueBreaker().onFailure(NativeErrorCode.RATE_LIMITED, online = true, retryAfterMs = 5 * 3_600_000L))
         assertEquals(DownloadRules.BASE_BACKOFF_MS, QueueBreaker().onFailure(NativeErrorCode.RATE_LIMITED, online = true, retryAfterMs = 0L))
@@ -163,7 +163,7 @@ class DownloadRulesTest {
 
     @Test
     fun unplayableMembersAreTrackedAndRevived() {
-        // b and c are greyed out; then b becomes playable and a short lookup does not list c.
+        // b and c are grayed out; then b becomes playable and a short lookup does not list c.
         val first = DownloadRules.updateAvailability(emptySet(), listed = setOf("a", "b", "c"), listedUnavailable = setOf("b", "c"), complete = true)
         assertEquals(setOf("b", "c"), first.unavailable)
         assertEquals(emptySet<String>(), first.revived)
@@ -183,7 +183,7 @@ class DownloadRulesTest {
             DownloadRules.collectionStatus(listOf("a", "b", "c", "d"), states, unavailable = setOf("b", "c", "d")),
         )
         assertEquals(
-            CollectionDownloadStatus.InProgress(2, 3, active = false),
+            CollectionDownloadStatus.Available(done = 2, missing = 1),
             DownloadRules.collectionStatus(listOf("a", "b", "c", "d"), states, unavailable = setOf("c")),
         )
     }
@@ -296,7 +296,7 @@ class DownloadRulesTest {
             DownloadRules.collectionStatus(listOf("a", "b", "c", "d"), states),
         )
         assertEquals(
-            CollectionDownloadStatus.InProgress(done = 1, total = 3, active = false),
+            CollectionDownloadStatus.Available(done = 1, missing = 2),
             DownloadRules.collectionStatus(listOf("a", "c", "d"), states),
         )
     }

@@ -348,17 +348,36 @@ pub(crate) async fn headers(session: &Session, uris: &[String], max_fetches: usi
         .buffer_unordered(6)
         .collect()
         .await;
-    let mut cache = HEADERS.lock();
-    for (uri, outcome) in fetched {
-        match outcome {
-            HeaderOutcome::Found(r) => {
-                cache.put(uri.clone(), (Instant::now(), Some(r.clone())));
-                out.refs.insert(uri, r);
+    {
+        let mut cache = HEADERS.lock();
+        for (uri, outcome) in fetched {
+            match outcome {
+                HeaderOutcome::Found(r) => {
+                    cache.put(uri.clone(), (Instant::now(), Some(r.clone())));
+                    out.refs.insert(uri, r);
+                }
+                HeaderOutcome::Gone => {
+                    cache.put(uri, (Instant::now(), None));
+                }
+                HeaderOutcome::Failed => out.incomplete = true,
             }
-            HeaderOutcome::Gone => {
-                cache.put(uri, (Instant::now(), None));
+        }
+    }
+    // Owners known only by their user id (list headers carry no names): their profile names, so
+    // shelves read "radar base 2025 · Cole R." rather than a raw id.
+    let unnamed: Vec<String> = out
+        .refs
+        .values()
+        .filter_map(|r| r.owner.as_ref())
+        .filter(|o| o.display_name.is_none())
+        .map(|o| o.username.clone())
+        .collect();
+    if !unnamed.is_empty() {
+        super::user::resolve_names(session, unnamed.iter().map(String::as_str)).await;
+        for r in out.refs.values_mut() {
+            if let Some(o) = r.owner.as_mut().filter(|o| o.display_name.is_none()) {
+                o.display_name = super::user::cached_name(&o.username);
             }
-            HeaderOutcome::Failed => out.incomplete = true,
         }
     }
     out
@@ -578,7 +597,7 @@ fn uris_page(items: &[p4::Item], total: u32, revision: Option<String>, offset: u
 }
 
 /// An item's URI as [`build_items`] keys it (so it matches the URIs an add sends): tracks and
-/// episodes normalised, local files and anything else as stored.
+/// episodes normalized, local files and anything else as stored.
 pub(crate) fn item_uri(item: &p4::Item) -> String {
     let uri = item.uri();
     if uri.starts_with("spotify:local:") {
@@ -1951,7 +1970,7 @@ mod tests {
         assert_eq!(out[0].track.as_ref().unwrap().name, "Never Gonna Give You Up");
         assert_eq!(out[0].uid.as_deref(), Some("dead"));
         assert_eq!(out[0].added_at, Some(1_700_000_000_000));
-        assert_eq!(out[1].added_at, Some(1_700_000_000_000), "microseconds normalised");
+        assert_eq!(out[1].added_at, Some(1_700_000_000_000), "microseconds normalized");
         let local = out[1].track.as_ref().unwrap();
         assert_eq!(local.name, "My Song");
         assert_eq!(local.duration_ms, 215_000);
@@ -2021,7 +2040,7 @@ mod tests {
     fn windows_pages() {
         let v: Vec<u32> = (0..10).collect();
         assert_eq!(window(&v, 0, 3, 2), Some(vec![3, 4]));
-        // Server honoured `from`: the returned items already start at the offset.
+        // Server honored `from`: the returned items already start at the offset.
         assert_eq!(window(&v, 3, 3, 2), Some(vec![0, 1]));
         assert_eq!(window(&v, 2, 3, 2), Some(vec![1, 2]));
         assert_eq!(window(&v, 5, 3, 2), None);

@@ -111,7 +111,7 @@ private val SpotifyGreen = Color(0xFF1ED760)
 
 /**
  * Spotify's Create sheet. Playlists open the naming screen and then [onPlaylistCreated]; a folder is
- * added to the library; Blend opens its invite page; Jam is not available yet.
+ * added to the library; Blend opens its invite page; Jam opens the Jam sheet.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -144,7 +144,9 @@ fun CreateSheet(
                 Row(
                     Modifier.fillMaxWidth().clickable(role = Role.Button) {
                         if (kind == CreateKind.Jam) {
-                            Toast.makeText(context, "Jams are coming soon", Toast.LENGTH_SHORT).show()
+                            // The Jam sheet (start one on this device, invite, join nearby).
+                            onDismiss()
+                            com.taehagen.spotifygood.ui.screens.menu.JamGlobalState.open()
                         } else naming = kind
                     }.padding(horizontal = 20.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,

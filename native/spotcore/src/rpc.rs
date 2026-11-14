@@ -60,7 +60,7 @@ fn finish(request_id: i64, method: &str, result: AppResult<Value>) {
         return;
     }
     if registry().lock().remove(&request_id).is_none() {
-        return; // cancelled; the canceller already answered
+        return; // canceled; the canceller already answered
     }
     match result {
         Ok(v) => bridge::post_result(request_id, true, &v.to_string()),
@@ -118,9 +118,9 @@ pub fn parse_args<T: serde::de::DeserializeOwned>(args: Value) -> AppResult<T> {
     serde_json::from_value(args).map_err(|e| AppError::invalid(format!("bad arguments: {e}")))
 }
 
-/// Serialises a handler result.
+/// Serializes a handler result.
 pub fn to_value<T: serde::Serialize>(v: &T) -> AppResult<Value> {
-    serde_json::to_value(v).map_err(|e| AppError::internal(format!("serialise: {e}")))
+    serde_json::to_value(v).map_err(|e| AppError::internal(format!("serialize: {e}")))
 }
 
 pub fn ok() -> AppResult<Value> {

@@ -331,7 +331,7 @@ fun MainScaffold(shell: ShellViewModel, modifier: Modifier = Modifier) {
             }
             !duplicate
         }.collectLatest { message ->
-            // Cancelling the previous showSnackbar (collectLatest) dismisses it: newest wins.
+            // Canceling the previous showSnackbar (collectLatest) dismisses it: newest wins.
             snackbarHostState.showSnackbar(message)
         }
     }

@@ -185,7 +185,7 @@ internal object NowPlayingWidgets {
             .data(url)
             .size(px)
             .precision(Precision.EXACT)
-            // RemoteViews are parcelled: no hardware bitmaps.
+            // RemoteViews are parceled: no hardware bitmaps.
             .allowHardware(false)
             .transformations(RoundedCornersTransformation(px * ART_CORNER))
             .build()

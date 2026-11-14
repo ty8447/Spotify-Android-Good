@@ -692,7 +692,7 @@ fn window_uris(page: &[CollItem]) -> Vec<String> {
 }
 
 /// Errors after which trying another source is pointless or harmful (offline, throttled,
-/// cancelled, logged out): they are returned instead of starting a fallback.
+/// canceled, logged out): they are returned instead of starting a fallback.
 fn stops_fallback(e: &AppError) -> bool {
     matches!(e.code, ErrorCode::NotLoggedIn | ErrorCode::Network | ErrorCode::RateLimited | ErrorCode::Cancelled)
 }

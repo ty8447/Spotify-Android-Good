@@ -88,6 +88,15 @@ object NowPlayingVideo {
     val quality = MutableStateFlow(0)
     val largerInBar = MutableStateFlow(false)
     val pipEnabled = MutableStateFlow(true)
+    /** Settings › Videos and Canvas: when off, music videos / video podcasts play as audio only. */
+    val musicVideos = MutableStateFlow(true)
+    val otherVideos = MutableStateFlow(true)
+    /** Settings › Canvas: songs' short looping visuals behind Now Playing. */
+    val canvas = MutableStateFlow(true)
+    /** Settings › Audio-only streaming for video podcasts: off Wi-Fi they play as audio only. */
+    val audioOnlyStream = MutableStateFlow(false)
+    /** The highest video height off Wi-Fi (0: automatic). */
+    val cellQuality = MutableStateFlow(0)
     private var prefs: android.content.SharedPreferences? = null
 
     fun set(flow: MutableStateFlow<Boolean>, key: String, on: Boolean) {
@@ -95,9 +104,40 @@ object NowPlayingVideo {
         prefs?.edit()?.putBoolean(key, on)?.apply()
     }
 
-    fun setQuality(height: Int) {
-        quality.value = height
-        prefs?.edit()?.putInt("quality", height)?.apply()
+    fun setQuality(height: Int, cellular: Boolean = false) {
+        (if (cellular) cellQuality else quality).value = height
+        prefs?.edit()?.putInt(if (cellular) "cellQuality" else "quality", height)?.apply()
+    }
+
+    /** Loads the saved video settings (once; Settings may ask before Now Playing ran). */
+    fun load(context: Context) {
+        if (prefs != null) return
+        val p = context.applicationContext.getSharedPreferences("video", Context.MODE_PRIVATE)
+        prefs = p
+        subtitles.value = p.getBoolean("subtitles", false)
+        quality.value = p.getInt("quality", 0)
+        cellQuality.value = p.getInt("cellQuality", 0)
+        largerInBar.value = p.getBoolean("largerInBar", false)
+        pipEnabled.value = p.getBoolean("pip", true)
+        musicVideos.value = p.getBoolean("musicVideos", true)
+        otherVideos.value = p.getBoolean("otherVideos", true)
+        canvas.value = p.getBoolean("canvas", true)
+        audioOnlyStream.value = p.getBoolean("audioOnlyStream", false)
+    }
+
+    /** Whether [uri]'s video may play now (Settings' video switches; [metered]: off Wi-Fi). */
+    private fun allowed(uri: String, metered: Boolean) =
+        if (uri.startsWith("spotify:episode:")) otherVideos.value && !(audioOnlyStream.value && metered) else musicVideos.value
+
+    private val canvases = ConcurrentHashMap<String, String>()
+
+    /** A song's Canvas video url ("" none; asked once per song). */
+    suspend fun canvasUrl(graph: AppGraph, uri: String): String? {
+        canvases[uri]?.let { return it.ifEmpty { null } }
+        val r = runCatching { graph.rpc.callOffMain<CanvasSource>("catalog.canvas", buildJsonObject { put("uri", uri) }) }.getOrElse { return null }
+        val url = r.url.takeIf { r.video }.orEmpty()
+        canvases[uri] = url
+        return url.ifEmpty { null }
     }
 
     /** Leaving the app while the video plays: into Picture in Picture, when that's on. */
@@ -152,18 +192,13 @@ object NowPlayingVideo {
 
     /** Runs while the app's UI does (on the main thread): one player per item, released on change. */
     suspend fun run(context: Context, graph: AppGraph, lifecycle: androidx.lifecycle.Lifecycle) {
-        if (prefs == null) {
-            val p = context.applicationContext.getSharedPreferences("video", Context.MODE_PRIVATE)
-            prefs = p
-            subtitles.value = p.getBoolean("subtitles", false)
-            quality.value = p.getInt("quality", 0)
-            largerInBar.value = p.getBoolean("largerInBar", false)
-            pipEnabled.value = p.getBoolean("pip", true)
-        }
+        load(context)
         val local = graph.playback.snapshot.map { s -> s.track?.uri?.takeIf { s.source != PlaybackSource.REMOTE } }.distinctUntilChanged()
-        combine(local, enabled) { uri, on -> uri to on }.collectLatest { (uri, on) ->
+        val metered = graph.engine.network.map { it.metered }.distinctUntilChanged()
+        val gates = combine(musicVideos, otherVideos, audioOnlyStream, metered) { _, _, _, m -> m }
+        combine(local, enabled, gates) { uri, on, m -> Triple(uri, on, m) }.collectLatest { (uri, on, m) ->
             available.value = false
-            if (uri == null) return@collectLatest
+            if (uri == null || !allowed(uri, m)) return@collectLatest
             val s = source(graph, uri) ?: return@collectLatest
             available.value = true
             if (!on) return@collectLatest
@@ -178,7 +213,7 @@ object NowPlayingVideo {
                         // Not in the background: no one sees it there (and it would use data).
                         p.playWhenReady = now.isPlaying && lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
                     }
-                    val maxHeight = quality.value.takeIf { it > 0 } ?: Int.MAX_VALUE
+                    val maxHeight = (if (m) cellQuality.value else quality.value).takeIf { it > 0 } ?: Int.MAX_VALUE
                     if (p.trackSelectionParameters.maxVideoHeight != maxHeight) {
                         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon().setMaxVideoSize(Int.MAX_VALUE, maxHeight).build()
                     }
@@ -189,6 +224,50 @@ object NowPlayingVideo {
                 p.release()
             }
         }
+    }
+}
+
+@Serializable
+private data class CanvasSource(val url: String = "", val video: Boolean = false)
+
+/** Settings › Canvas: the url of [uri]'s Canvas while it should show (on, and no video playing). */
+@Composable
+fun rememberCanvas(uri: String?): String? {
+    val graph = rememberAppGraph()
+    val on by NowPlayingVideo.canvas.collectAsState()
+    val video by NowPlayingVideo.player.collectAsState()
+    val url by androidx.compose.runtime.produceState<String?>(null, uri, on) {
+        value = if (on && uri?.startsWith("spotify:track:") == true) NowPlayingVideo.canvasUrl(graph, uri) else null
+    }
+    return url?.takeIf { video == null }
+}
+
+/** A Canvas ([rememberCanvas]) filling [modifier]: muted, looping, darkened at the edges for the controls, paused with the song. */
+@Composable
+fun CanvasBackdrop(u: String, modifier: Modifier = Modifier) {
+    val graph = rememberAppGraph()
+    val playing by androidx.compose.runtime.remember { graph.playback.snapshot.map { it.isPlaying }.distinctUntilChanged() }.collectAsState(true)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val player = androidx.compose.runtime.remember(u) {
+        ExoPlayer.Builder(context).build().apply {
+            volume = 0f
+            repeatMode = Player.REPEAT_MODE_ONE
+            setMediaItem(MediaItem.fromUri(u))
+            prepare()
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(player) { onDispose { player.release() } }
+    androidx.compose.runtime.SideEffect { player.playWhenReady = playing }
+    Box(modifier) {
+        AndroidView(
+            factory = { PlayerView(it).apply { useController = false; resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM; setShutterBackgroundColor(AndroidColor.TRANSPARENT) } },
+            update = { it.player = player },
+            onRelease = { it.player = null },
+            modifier = Modifier.matchParentSize(),
+        )
+        Box(Modifier.matchParentSize().background(androidx.compose.ui.graphics.Brush.verticalGradient(
+            0f to Color.Black.copy(alpha = 0.45f), 0.35f to Color.Transparent, 0.6f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.8f),
+        )))
     }
 }
 

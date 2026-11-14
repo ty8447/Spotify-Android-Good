@@ -372,10 +372,26 @@ pub(crate) async fn chapters(args: Value) -> AppResult<Value> {
             let s = fields(seg);
             let num = |n: u32| s.iter().find(|x| x.0 == n).map_or(0, |x| x.1);
             let txt = |n: u32| s.iter().find(|x| x.0 == n).map(|x| text(x.2)).unwrap_or_default();
-            json!({ "title": txt(6), "subtitle": txt(7), "startMs": num(4), "stopMs": num(5), "durationMs": num(3), "image": txt(8) })
+            json!({ "title": txt(6), "subtitle": txt(7), "startMs": num(4), "stopMs": num(5), "durationMs": num(3), "image": image_url(&txt(8)) })
         }).filter(|c| c["title"] != "").collect()
     }).unwrap_or_default();
+    log::info!("chapters: {} (image sample: {:?})", items.len(),
+        found.get(&a.uri).and_then(|b| fields(b).into_iter().find(|f| f.0 == 2).and_then(|f| fields(f.2).into_iter().find(|x| x.0 == 8)).map(|x| text(x.2).chars().take(48).collect::<String>())));
     Ok(json!({ "items": items }))
+}
+
+/// An image reference as a URL: `https://…` as it is, `spotify:image:<id>` or a bare image id
+/// (40 hex digits) on Spotify's image CDN.
+pub(crate) fn image_url(s: &str) -> String {
+    let s = s.trim();
+    let id = s.strip_prefix("spotify:image:").unwrap_or(s);
+    if s.starts_with("http") {
+        s.to_string()
+    } else if !id.is_empty() && id.len() >= 32 && id.chars().all(|c| c.is_ascii_hexdigit()) {
+        format!("https://i.scdn.co/image/{}", id.to_ascii_lowercase())
+    } else {
+        String::new()
+    }
 }
 
 /// `catalog.comments {uri, pageToken?}` → `{total, comments: [{uri, text, author, image, createdAt,

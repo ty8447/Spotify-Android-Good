@@ -57,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.taehagen.spotifygood.data.callOffMain
 import com.taehagen.spotifygood.data.dataOrNull
 import com.taehagen.spotifygood.model.PlaylistRef
 import com.taehagen.spotifygood.model.RootlistEntry
@@ -97,28 +98,9 @@ internal val SETTINGS_SECTIONS = listOf(
 internal data class PlannedSetting(val key: String, val title: String, val section: String, val words: String = "")
 
 internal val FUTURE_SETTINGS = listOf(
-    PlannedSetting("smart_shuffle_option", "Include Smart Shuffle in play mode", "h_playback_listening", "shuffle suggested songs"),
-    PlannedSetting("shuffle_repeats", "Shuffle mode: fewer repeats or standard", "h_playback_listening", "random repeat"),
-    PlannedSetting("music_videos", "Music Videos", "h_content_video"),
-    PlannedSetting("canvas", "Canvas", "h_content_video", "looping video artwork"),
-    PlannedSetting("other_videos", "Other Videos", "h_content_video"),
-    PlannedSetting("large_now_playing_video", "Larger video in Now Playing bar", "h_playback_video", "mini player"),
-    PlannedSetting("picture_in_picture", "Picture in picture", "h_playback_video", "pip floating video"),
     PlannedSetting("kids_taste", "Include kids and family music in taste profile", "h_content_preferences", "recommendations child"),
-    PlannedSetting("blocked_users", "Blocked users", "h_privacy_profile", "block profiles"),
-    PlannedSetting("others_playing", "See what others are playing", "h_privacy_social", "friend activity"),
     PlannedSetting("message_suggestions", "Message suggestions", "h_privacy_social", "chat suggestions"),
     PlannedSetting("appear_message_suggestions", "Show up in message suggestions", "h_privacy_social", "discoverable"),
-    PlannedSetting("played_receipts", "Played receipts", "h_privacy_social", "messages read played"),
-    PlannedSetting("saved_receipts", "Saved receipts", "h_privacy_social", "messages saved"),
-    PlannedSetting("device_broadcast", "Device broadcast status", "h_playback_listening", "devices status"),
-    PlannedSetting("reduce_animations", "Reduce animations", "h_content_display", "accessibility motion"),
-    PlannedSetting("play_button_actions", "Actions next to play button", "h_content_display", "player controls"),
-    PlannedSetting("lossless_quality", "Lossless audio quality", "h_quality", "flac hi res streaming"),
-    PlannedSetting("wifi_video_quality", "Wi-Fi video streaming quality", "h_quality", "video high normal low"),
-    PlannedSetting("cell_video_quality", "Cellular video streaming quality", "h_quality", "video cellular high normal low"),
-    PlannedSetting("podcast_audio_download", "Audio-only downloads for video podcasts", "h_data_podcasts"),
-    PlannedSetting("podcast_audio_stream", "Audio-only streaming for video podcasts", "h_data_podcasts"),
 )
 
 internal val PLANNED_PARENT_SECTION: Map<String, String> = mapOf(
@@ -476,5 +458,55 @@ private fun StorageLegendRow(label: String, bytes: Long, color: Color) {
         Spacer(Modifier.width(12.dp))
         Text(label, modifier = Modifier.weight(1f))
         Text(formatBytes(context, bytes), fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@kotlinx.serialization.Serializable
+private data class BlockedUser(val username: String = "", val name: String? = null)
+
+@kotlinx.serialization.Serializable
+private data class BlockedUsers(val users: List<BlockedUser> = emptyList())
+
+/** Settings › Blocked users: the people this account blocks (socialgraph), each with Unblock. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+internal fun BlockedUsersSheet(onDismiss: () -> Unit) {
+    val graph = com.taehagen.spotifygood.ui.components.rememberAppGraph()
+    val scope = rememberCoroutineScope()
+    var users by remember { mutableStateOf<List<BlockedUser>?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    suspend fun load() {
+        runCatching { graph.rpc.callOffMain<BlockedUsers>("catalog.blockedUsers") }
+            .onSuccess { users = it.users; error = null }
+            .onFailure { error = it.message?.take(160) ?: "Unable to load blocked users" }
+    }
+    LaunchedEffect(Unit) { load() }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text("Blocked users", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+        val list = users
+        when {
+            error != null -> Text(error.orEmpty(), color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(20.dp))
+            list == null -> androidx.compose.material3.LinearProgressIndicator(Modifier.fillMaxWidth().padding(20.dp))
+            list.isEmpty() -> Text("You haven't blocked anyone.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(20.dp))
+            else -> list.forEach { u ->
+                ListItem(
+                    headlineContent = { Text(u.name ?: u.username) },
+                    supportingContent = u.name?.let { { Text(u.username) } },
+                    trailingContent = {
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    graph.rpc.callOffMain<Boolean>("catalog.setBlocked", kotlinx.serialization.json.buildJsonObject {
+                                        put("username", kotlinx.serialization.json.JsonPrimitive(u.username)); put("blocked", kotlinx.serialization.json.JsonPrimitive(false))
+                                    })
+                                }.onFailure { error = it.message?.take(160) }
+                                load()
+                            }
+                        }) { Text("Unblock") }
+                    },
+                )
+            }
+        }
+        androidx.compose.foundation.layout.Spacer(Modifier.height(24.dp))
     }
 }

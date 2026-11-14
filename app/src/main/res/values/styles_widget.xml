@@ -33,7 +33,7 @@
         <item name="android:tint">@color/widget_on_surface</item>
     </style>
 
-    <!-- Play / pause: the primary-coloured circle -->
+    <!-- Play / pause: the primary-colored circle -->
     <style name="Widget.SpotifyGood.NowPlaying.Play" parent="">
         <item name="android:background">@drawable/widget_play_background</item>
         <item name="android:scaleType">fitCenter</item>

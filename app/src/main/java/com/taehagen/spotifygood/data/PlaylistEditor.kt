@@ -26,7 +26,7 @@ import kotlinx.serialization.json.putJsonArray
  * After every successful mutation the affected caches (playlist pages, rootlist) are invalidated and
  * [LibraryRepository.changes] emits, so open screens refetch.
  *
- * Mutations run detached in [scope] (the app scope): if the caller is cancelled (its screen closed),
+ * Mutations run detached in [scope] (the app scope): if the caller is canceled (its screen closed),
  * the write and its cache/revision bookkeeping still complete; the caller just stops waiting.
  *
  * Every write is recorded in [own] while it runs and with the revision it produced, so that
@@ -230,7 +230,7 @@ class PlaylistEditor(
 
     suspend fun unfollow(playlistUri: String) = library.setSaved(listOf(playlistUri), false)
 
-    /** Runs [block] in [scope]; cancelling the caller only stops it from waiting for the result. */
+    /** Runs [block] in [scope]; canceling the caller only stops it from waiting for the result. */
     private suspend fun <T> detached(block: suspend () -> T): T = scope.async { block() }.await()
 
     /** [block] edits playlist [uri]: in flight for [own] meanwhile, then with the revision it produced. */

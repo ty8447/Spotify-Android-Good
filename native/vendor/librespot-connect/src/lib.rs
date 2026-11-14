@@ -17,6 +17,7 @@ mod spirc;
 mod state;
 
 pub use model::*;
+pub use shuffle_vec::set_recent_plays;
 pub use snapshot::*;
 pub use spirc::*;
 pub use state::*;

@@ -11,7 +11,7 @@
 //! * `download.keyBatch {keys}` → `{"inMs"}`: how long until downloads may take `keys` audio keys
 //!   in a row (the resume of a queue that runs in bursts); `{}` while the account is not known.
 //! * `download.fileId {uri}` → `{"fileId"}` (omitted when unknown): the file the last
-//!   `download.track` of `uri` in this process chose, also when it failed or was cancelled, so
+//!   `download.track` of `uri` in this process chose, also when it failed or was canceled, so
 //!   Kotlin knows which `<fileId>.part` belongs to an unfinished download.
 //! * `offline.setIndex {tracks:[OfflineTrackRecord], seq?}` replaces the index;
 //!   `offline.add {tracks, seq?}` adds/replaces by `uri`; `offline.remove {uris, seq?}`

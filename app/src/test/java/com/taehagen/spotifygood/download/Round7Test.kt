@@ -55,7 +55,7 @@ class Round7Test {
         gate.complete(Unit)
         advanceUntilIdle()
         assertEquals(listOf(setOf("a"), setOf("b")), calls)
-        assertEquals(2, finished) // the first sync was not cancelled
+        assertEquals(2, finished) // the first sync was not canceled
     }
 
     // ---- end-of-run notice --------------------------------------------------------------------------------

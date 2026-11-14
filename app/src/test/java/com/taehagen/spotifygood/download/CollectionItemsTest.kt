@@ -26,7 +26,7 @@ class CollectionItemsTest {
 
     @Test
     fun aResolvedButUnplayableItemIsUnavailable() {
-        val item = CollectionResolver.trackItem(Track(uri = "spotify:track:2", name = "Greyed out", playable = false), json)
+        val item = CollectionResolver.trackItem(Track(uri = "spotify:track:2", name = "Grayed out", playable = false), json)
         assertTrue(item.unavailable)
         assertNotNull(item.metadataJson)
         val episode = CollectionResolver.episodeItem(Episode(uri = "spotify:episode:2", name = "Region locked", playable = false), json)

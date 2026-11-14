@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Home-screen widget from Android 12, light: the wallpaper's dynamic colours in the Material 3
+<!-- Home-screen widget from Android 12, light: the wallpaper's dynamic colors in the Material 3
      roles widget background, on-surface, on-surface-variant, primary, on-primary, surface-variant. -->
 <resources>
     <color name="widget_background">@android:color/system_accent2_50</color>

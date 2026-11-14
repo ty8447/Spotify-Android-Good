@@ -492,3 +492,58 @@ mod audience_tests {
         assert_eq!(f[1].1, 1);
     }
 }
+
+/// The signed-in username for socialgraph paths.
+fn own_username() -> AppResult<String> {
+    let session = engine::session()?;
+    Ok(engine::username().unwrap_or_else(|| session.username()))
+}
+
+/// `catalog.blockedUsers` → `{users: [{username, name}]}`: `GET socialgraph/v4/{me}/is-blocking`
+/// (`RelationsUsernameResponse{1: repeated {1: username, 2: timestamp}, 2: next_page_token}`).
+pub(super) async fn blocked_users(_args: Value) -> AppResult<Value> {
+    let session = engine::session()?;
+    let me = encode_component(&own_username()?);
+    let mut users: Vec<String> = Vec::new();
+    let mut token = String::new();
+    for _ in 0..10 {
+        let path = format!("/socialgraph/v4/{me}/is-blocking?limit=50&pageToken={}", encode_component(&token));
+        let raw = http::spc_get(&session, &path, Some(http::PROTOBUF)).await
+            .map_err(|e| AppError::unavailable(format!("Unable to load blocked users: {}", e.status.map_or("network error".into(), |s| format!("HTTP {s}")))))?;
+        token.clear();
+        for (field, _, data) in proto_fields(&raw)? {
+            match field {
+                1 => if let Some((_, _, u)) = proto_fields(data)?.into_iter().find(|f| f.0 == 1) {
+                    users.push(String::from_utf8_lossy(u).into_owned());
+                },
+                2 => token = String::from_utf8_lossy(data).into_owned(),
+                _ => {}
+            }
+        }
+        if token.is_empty() {
+            break;
+        }
+    }
+    super::user::resolve_names(&session, users.iter().map(String::as_str)).await;
+    let list: Vec<Value> = users.iter().map(|u| serde_json::json!({ "username": u, "name": super::user::cached_name(u) })).collect();
+    to_value(&serde_json::json!({ "users": list }))
+}
+
+/// `catalog.setBlocked {username, blocked}`: `POST` (block, as the APK) or `DELETE` (unblock)
+/// `socialgraph/v4/{me}/is-blocking/{username}`.
+pub(super) async fn set_blocked(args: Value) -> AppResult<Value> {
+    #[derive(Deserialize)]
+    struct A { username: String, blocked: bool }
+    let a: A = parse_args(args)?;
+    let user = a.username.strip_prefix("spotify:user:").unwrap_or(&a.username);
+    if user.is_empty() || user.len() > 256 || user.chars().any(char::is_control) {
+        return Err(AppError::invalid("Invalid username"));
+    }
+    let session = engine::session()?;
+    let path = format!("/socialgraph/v4/{}/is-blocking/{}", encode_component(&own_username()?), encode_component(user));
+    let method = if a.blocked { Method::POST } else { Method::DELETE };
+    http::spc_send_once(&session, method, &path, http::PROTOBUF, http::PROTOBUF, Vec::new()).await
+        .map_err(|e| AppError::unavailable(format!("Unable to {} {user}: {}", if a.blocked { "block" } else { "unblock" },
+            e.status.map_or("network error".into(), |s| format!("HTTP {s}")))))?;
+    to_value(&true)
+}

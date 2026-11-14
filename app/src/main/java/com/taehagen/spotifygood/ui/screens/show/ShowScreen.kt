@@ -9,6 +9,7 @@ import com.taehagen.spotifygood.model.MediaType
 import com.taehagen.spotifygood.playback.PlayRequest
 import com.taehagen.spotifygood.ui.components.MediaRow
 import androidx.compose.material.icons.rounded.PlayCircle
+import androidx.compose.material.icons.rounded.SmartDisplay
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -182,6 +183,8 @@ private fun ShowList(
 ) {
     val show = header.show
     var settingsOpen by remember { mutableStateOf(false) }
+    var clipsOpen by remember { mutableStateOf(false) }
+    if (clipsOpen) com.taehagen.spotifygood.ui.screens.video.ClipsFeed(show.uri, onOpen = { clipsOpen = false }, onDismiss = { clipsOpen = false })
     var searching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     // "Search in this show": loads the remaining pages while a search is open.
@@ -255,6 +258,9 @@ private fun ShowList(
                                             tint = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                         )
                                     }
+                                }
+                                IconButton(onClick = { clipsOpen = true }) {
+                                    Icon(Icons.Rounded.SmartDisplay, contentDescription = "Clips", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 IconButton(onClick = { settingsOpen = true }) {
                                     Icon(Icons.Rounded.Settings, contentDescription = "Show settings", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -435,11 +441,13 @@ private fun ShowList(
                     actions = {
                         val graph = com.taehagen.spotifygood.ui.components.rememberAppGraph()
                         val saved by remember(episode.uri) { graph.savedFlow(episode.uri) }.collectAsStateWithLifecycle(null)
+                        // Settings › Actions next to play button: the buttons sit beside it instead of across the row.
+                        if (graph.settings.settings.collectAsStateWithLifecycle().value.trailingActions) Spacer(Modifier.weight(1f))
                         AddedButton(saved, { rows.toggleEpisodeSaved(episode.uri, saved) }, R.string.detail_save_episode, R.string.detail_remove_episode)
                         EpisodeDownloadButton(downloadState, onDownload = { rows.downloadEpisode(episode.uri, false) },
                             onRemove = { rows.downloadEpisode(episode.uri, true) })
                         MoreButton(onClick = showActions, label = episode.name)
-                        Spacer(Modifier.weight(1f))
+                        if (!graph.settings.settings.collectAsStateWithLifecycle().value.trailingActions) Spacer(Modifier.weight(1f))
                         if (playable) {
                             androidx.compose.material3.FilledIconButton(onClick = { onPlayEpisode(episode) }) {
                                 Icon(if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,

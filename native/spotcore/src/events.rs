@@ -19,11 +19,11 @@ pub const COLLECTION_CHANGED: &str = "collectionChanged";
 /// The global listening-activity flag (publish-activity) changed, pushed from another client.
 pub const LISTENING_GLOBAL: &str = "listeningGlobal";
 
-/// Serialises and posts an event to Kotlin. Cheap; never blocks on the Kotlin side.
+/// Serializes and posts an event to Kotlin. Cheap; never blocks on the Kotlin side.
 pub fn emit<T: Serialize>(kind: &str, payload: &T) {
     match serde_json::to_string(payload) {
         Ok(json) => bridge::post_event(kind, &json),
-        Err(e) => log::error!("failed to serialise {kind} event: {e}"),
+        Err(e) => log::error!("failed to serialize {kind} event: {e}"),
     }
 }
 

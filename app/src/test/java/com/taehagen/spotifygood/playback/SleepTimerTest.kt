@@ -105,7 +105,7 @@ class SleepTimerTest {
         runCurrent()
         assertEquals(listOf(6 * 60_000L + SleepSchedule.PAUSE_SLACK_MS), h.wakeups.holds)
         assertTrue("not paused yet", h.calls.isEmpty())
-        // The next stage is armed (in Doze the wake lock alone would not be honoured).
+        // The next stage is armed (in Doze the wake lock alone would not be honored).
         val endsAt = h.now + 6 * 60_000L
         assertEquals(listOf(endsAt, endsAt), h.wakeups.scheduled)
         // Within the last seconds no further stage.

@@ -433,8 +433,8 @@ internal fun ExpandingPlayerLayout(
 }
 
 /**
- * The surface's background: the mini player's art-toned card colour, with Now Playing's
- * art-coloured gradient (over the surface's current bounds) fading in with p.
+ * The surface's background: the mini player's art-toned card color, with Now Playing's
+ * art-colored gradient (over the surface's current bounds) fading in with p.
  */
 private fun DrawScope.drawSurfaceBackground(sheet: PlayerSheetState, artworkColor: Color) {
     val p = sheet.progress
@@ -645,7 +645,7 @@ private const val PLAYER_ARTWORK_PX = 640
  *
  * A cover that loads while this copy is [shown] fades in (one taken from another copy too, as its
  * own load would have); one that loads while it is hidden shows at once, since Coil's fade starts
- * at the painter's first draw: it would otherwise run, from the grey placeholder, only when the
+ * at the painter's first draw: it would otherwise run, from the gray placeholder, only when the
  * copy appears. [shape] null: the caller clips.
  */
 @Composable

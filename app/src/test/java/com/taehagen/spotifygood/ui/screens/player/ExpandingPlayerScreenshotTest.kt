@@ -388,7 +388,7 @@ class ExpandingPlayerScreenshotTest {
                 val view = activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
                 val sheet = probe.sheet!!
                 // A new cover while docked: the moving art loads it out of sight and has it on
-                // the first frame it shows (not the grey placeholder fading into it).
+                // the first frame it shows (not the gray placeholder fading into it).
                 cover.value = "$COVER_URL?2"
                 runFrames(view, 300)
                 moveSheet(sheet, 0.5f)
@@ -496,7 +496,7 @@ class ExpandingPlayerScreenshotTest {
 
     /**
      * Draws [view] once and checks that [point] (in its coordinates) shows the cover's middle, or
-     * ([cover] false) doesn't: the grey placeholder, where a fade is starting. [point] is read
+     * ([cover] false) doesn't: the gray placeholder, where a fade is starting. [point] is read
      * after the draw, whose layout pass may have just placed Now Playing's art slot (the moving
      * art's target).
      */
@@ -922,7 +922,7 @@ class ExpandingPlayerScreenshotTest {
         class Download {
             val done = CompletableDeferred<Unit>()
 
-            /** Cancelled before it was done (its request was replaced or went away). */
+            /** Canceled before it was done (its request was replaced or went away). */
             var dropped = false
         }
 

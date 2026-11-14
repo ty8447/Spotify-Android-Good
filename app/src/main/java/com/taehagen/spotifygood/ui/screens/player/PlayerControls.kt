@@ -209,7 +209,7 @@ internal fun SeekStepButton(forward: Boolean, enabled: Boolean, onClick: () -> U
                 fontSize = numberSize,
                 fontWeight = FontWeight.Bold,
                 color = LocalContentColor.current,
-                // The arrow's circle is centred slightly below the icon's centre.
+                // The arrow's circle is centered slightly below the icon's center.
                 modifier = Modifier.offset(y = iconSize / 24),
             )
         }
@@ -443,7 +443,7 @@ private fun Modifier.chapterGaps(fractions: List<Float>): Modifier = this
     .graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen)
     .drawWithContent {
         drawContent()
-        // The track runs between the thumb's centres (its 16 dp box).
+        // The track runs between the thumb's centers (its 16 dp box).
         val inset = 8.dp.toPx()
         val gap = 2.dp.toPx()
         val h = 8.dp.toPx()

@@ -41,7 +41,7 @@ fun ExpandingPlayer(
     val viewModel = appViewModel { graph -> PlayerViewModel(graph) }
     // The downloaded cover while offline, so there is artwork without a network.
     val artwork by viewModel.artwork.collectAsStateWithLifecycle()
-    // Read only in the draw phase: the colour animates on every track change.
+    // Read only in the draw phase: the color animates on every track change.
     val artworkColor = rememberArtworkColor(artwork)
     ExpandingPlayerLayout(
         sheet = sheet,
@@ -63,7 +63,7 @@ fun PlayerDock(sheet: PlayerSheetState, modifier: Modifier = Modifier) {
  * Back on Now Playing while it is the top layer ([enabled]: open, no Queue, Lyrics or
  * playback-refused screen over it): collapses it ([onCollapse]). On Android 14+ the predictive
  * back gesture shrinks the player toward the mini player as it goes and springs it back when
- * cancelled.
+ * canceled.
  *
  * Composed only while enabled, not merely switched on and off: the newest enabled handler takes
  * Back, so each time Now Playing comes on top its handler is added again, above those of the pages
@@ -79,7 +79,7 @@ fun PlayerBackHandler(sheet: PlayerSheetState, enabled: Boolean, onCollapse: () 
             events.collect { event -> sheet.previewBack(event.progress) }
             onCollapse()
         } catch (e: CancellationException) {
-            // Cancelled gesture: spring back (unless the player is closing anyway).
+            // Canceled gesture: spring back (unless the player is closing anyway).
             scope.launch { if (sheet.isExpanded) sheet.animateTo(expanded = true) }
             throw e
         }

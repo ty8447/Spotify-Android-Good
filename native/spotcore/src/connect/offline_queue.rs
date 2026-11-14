@@ -1601,7 +1601,7 @@ mod tests {
         assert!(q.active);
         q.on_event(Event::Playing { id: 2, position_ms: 0 }, 0);
         assert_eq!(q.status(), PlaybackStatus::Playing);
-        // a reset before the id arrived: the late id is still recognised as ours
+        // a reset before the id arrived: the late id is still recognized as ours
         q.load(spec(3, 0, false, RepeatMode::Off), 0);
         q.reset();
         q.on_event(Event::RequestId(3), 0);

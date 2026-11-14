@@ -61,7 +61,7 @@ pub const MAX_LEVEL: usize = 4;
 pub const KEY_PROOF: Duration = Duration::from_secs(24 * 60 * 60);
 /// Different albums (or shows) whose songs must be refused before a refusal counts for the account.
 pub const ACCOUNT_REFUSAL_GROUPS: usize = 3;
-/// Refusals count for that judgement this long.
+/// Refusals count for that judgment this long.
 pub const REFUSAL_WINDOW: Duration = Duration::from_secs(60 * 60);
 /// A refused file is not asked for again for this long.
 pub const REFUSAL_MEMORY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -596,7 +596,7 @@ mod tests {
         for g in 1..=6u8 {
             assert_eq!(b.refused_download(file(g), u64::from(g), T0 + secs(3600 * u64::from(g))), Refusal::Song);
         }
-        // A day without any key: the judgement applies again.
+        // A day without any key: the judgment applies again.
         let later = T0 + KEY_PROOF + secs(10);
         assert_eq!(b.refused_download(file(31), 31, later), Refusal::Song);
         assert_eq!(b.refused_download(file(32), 32, later + secs(1)), Refusal::Song);

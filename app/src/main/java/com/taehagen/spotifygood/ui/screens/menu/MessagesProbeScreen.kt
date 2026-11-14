@@ -116,7 +116,7 @@ internal data class ChatParticipant(
 )
 
 @Serializable
-internal data class ChatMuteStatus(val muted: Boolean = false)
+internal data class ChatMuteStatus(val muted: Boolean = false, val disabledReceipts: List<Int> = emptyList())
 
 /** A shared snapshot of authoritative unread-contribution counts (not activity events).
  * Updated by the inbox/drawer and by verified read acknowledgements. */

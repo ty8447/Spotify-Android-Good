@@ -1,7 +1,7 @@
 //! End to end without the internet: a Spotify-style encrypted file (Ogg: 0xA7-byte header with
-//! normalisation floats at 144; MP3: plain) is downloaded over HTTP from a local fake CDN with
+//! normalization floats at 144; MP3: plain) is downloaded over HTTP from a local fake CDN with
 //! the real `SessionTransport` and resumable downloader (resuming a half-written `.part`,
-//! surviving a stalled response), verified and finalised; its `OfflineTrackRecord` goes through
+//! surviving a stalled response), verified and finalized; its `OfflineTrackRecord` goes through
 //! JSON (as Kotlin persists it) into an index, and the patched librespot Player plays it via the
 //! `OfflineSource` hook with a never-connected `Session`.
 
@@ -68,7 +68,7 @@ async fn download(
     let hex = file_id_hex(&file_id);
     let part = dir.join(format!("{hex}.part"));
     let dest = dir.join(&hex);
-    // Pretend an earlier attempt was cancelled half way.
+    // Pretend an earlier attempt was canceled half way.
     let half = encrypted.len() / 2;
     std::fs::write(&part, &encrypted[..half]).expect("seed part");
     let cdn = FakeCdn::start(encrypted.clone()).await;
@@ -144,7 +144,7 @@ async fn downloaded_files_play_offline_through_the_index() {
     assert_eq!(
         ogg_record.normalisation,
         Normalisation { track_gain_db: NORM[0], track_peak: NORM[1], album_gain_db: NORM[2], album_peak: NORM[3] },
-        "normalisation read from the decrypted header"
+        "normalization read from the decrypted header"
     );
     assert_eq!(mp3_record.normalisation, Normalisation::default());
     assert!(!dir.join(format!("{}.part", ogg_record.file_id)).exists());

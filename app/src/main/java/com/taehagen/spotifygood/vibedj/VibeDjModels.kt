@@ -61,6 +61,10 @@ data class DjTransition(
     val settleMs: Double = 0.0,
     val gainDb: Float = 0f,
     val beatMs: Double = 500.0,
+    /** The current song's pitch by the mix (semitones), reached with its tempo. */
+    val aPitchSemitones: Float = 0f,
+    /** The effect into the mix: none | filter | reverb | echo | loop. */
+    val fx: String = "none",
 )
 
 /** `dj.plan`: the planned mix (null when none). */
@@ -82,12 +86,23 @@ data class DjPrefs(
     val harmonic: Boolean = true,
     /** Off: pitch follows tempo like a turntable (smoother glides); on: WSOLA keeps the key. */
     val keyLock: Boolean = false,
-    val styles: List<String> = DjStyle.entries.filter { it != DjStyle.CUT }.map { it.id },
+    /** EQ blends by default where leads don't clash; cuts on the one otherwise (always allowed). */
+    val styles: List<String> = DjStyle.entries.map { it.id },
     val energyArc: String = "journey",
     val sessionMinutes: Int = 60,
     val noRepeat: Int = 50,
     val maxTempoShift: Float = 0.08f,
+    /** Effects the current song may lead into the cut with. */
+    val fx: List<String> = DjFx.entries.map { it.id },
 )
+
+enum class DjFx(val id: String, val label: String) {
+    FILTER("filter", "Filter sweep"),
+    REVERB("reverb", "Reverb build"),
+    ECHO("echo", "Echo out"),
+    LOOP("loop", "Loop roll"),
+    RISER("riser", "Loop riser"),
+}
 
 @Serializable
 data class DjPoolTrack(val uri: String, val name: String = "", val artist: String = "", val local: Boolean = false)
@@ -97,7 +112,7 @@ enum class DjStyle(val id: String, val label: String) {
     CROSSFADE("crossfade", "Blend"),
     FILTER_SWEEP("filterSweep", "Filter sweep"),
     ECHO_OUT("echoOut", "Echo out"),
-    CUT("cut", "Cut on the drop");
+    CUT("cut", "Cut on the phrase");
 
     companion object {
         fun of(id: String) = entries.firstOrNull { it.id == id } ?: CROSSFADE

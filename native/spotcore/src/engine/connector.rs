@@ -69,7 +69,7 @@ pub(crate) async fn prepare(settings: &EngineSettings) -> AppResult<Session> {
 }
 
 /// Maps a failed `Spirc::new` (login) to the contract's error codes. AP login errors live in a
-/// private librespot module, so they are recognised by their message (research core.md §2.4).
+/// private librespot module, so they are recognized by their message (research core.md §2.4).
 pub(crate) fn classify(session: &Session, e: librespot_core::Error) -> AppError {
     if let Some(err) = premium_error(session) {
         return err;

@@ -30,7 +30,7 @@ use analysis::{key_name, Analysis};
 use decks::{AnalysisDeck, DeckB};
 use mixer::{Armed, Phase};
 use parking_lot::Mutex;
-use planner::{Candidate, Context, Length, Pick, Prefs, Style, Transition};
+use planner::{Candidate, Context, Length, OutFx, Pick, Prefs, Style, Transition};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashSet, VecDeque};
@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 
 /// How long before the mix (and its tempo glide) deck B starts loading the next song.
 const CUE_LEAD_MS: f64 = 10_000.0;
-/// Streamed songs analysed ahead at a time (each costs an audio key and a download).
+/// Streamed songs analyzed ahead at a time (each costs an audio key and a download).
 const ONLINE_LOOKAHEAD: usize = 4;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -50,7 +50,7 @@ struct PoolTrack {
     name: String,
     #[serde(default)]
     artist: String,
-    /// Downloaded (analysed without the network).
+    /// Downloaded (analyzed without the network).
     #[serde(default)]
     local: bool,
 }
@@ -200,8 +200,15 @@ pub async fn handle(method: &str, a: Value) -> AppResult<Value> {
                 let new: Vec<PoolTrack> = p.pool.into_iter().filter(|t| !have.contains(&t.uri)).collect();
                 st.pool.extend(new);
             } else {
+                // A new pool (e.g. explicit songs now hidden): nothing outside it stays lined up.
                 st.pool = p.pool;
+                let keep: HashSet<String> = st.pool.iter().map(|t| t.uri.clone()).collect();
+                st.queue.retain(|u| keep.contains(u));
+                if st.planned.as_ref().is_some_and(|pl| !keep.contains(&pl.pick.uri)) {
+                    replan_unarmed(&mut st);
+                }
             }
+            prefetch_attributes(st.pool.iter().map(|t| t.uri.clone()).collect());
             Ok(json!({ "size": st.pool.len() }))
         }
         "dj.setPrefs" => {
@@ -399,6 +406,47 @@ fn active(st: &State) -> bool {
     st.mode != Mode::Off || st.mixed.is_some()
 }
 
+/// Spotify's tempo and key of these songs (one batched request), to rank them before analysis.
+fn prefetch_attributes(uris: Vec<String>) {
+    crate::runtime::handle().spawn(async move {
+        if let Ok(s) = crate::engine::session() {
+            mix::attributes(&s, &uris).await;
+        }
+    });
+}
+
+/// The playing song's tempo and Camelot key: from its analysis, else Spotify's.
+fn tempo_key(uri: &str, a: Option<&Analysis>) -> Option<(f32, Option<(u8, bool)>)> {
+    match a {
+        Some(a) => Some((a.bpm, Some((analysis::camelot_number(a.key, a.minor), a.minor)))),
+        None => mix::attributes_cached(uri).map(|t| (t.bpm, t.camelot)),
+    }
+}
+
+/// When the playing song runs out before a mix is planned: a cut at its end into the pool song
+/// whose tempo and key are closest (Spotify's), else the queue's next song.
+fn end_cut(st: &State, a_uri: &str, a: Option<&Analysis>, pos: f64, a_duration: u32, next_up: Option<&str>) -> Option<Pick> {
+    let remaining = f64::from(a_duration) - pos;
+    if !(6_000.0..25_000.0).contains(&remaining) {
+        return None;
+    }
+    let tk = tempo_key(a_uri, a);
+    let fresh = |u: &str| u != a_uri && !st.history.iter().any(|h| h == u) && !st.skipped.contains(u);
+    let best = tk.and_then(|(bpm, cam)| {
+        st.pool
+            .iter()
+            .filter(|p| fresh(&p.uri))
+            .filter_map(|p| Some((p, planner::quick_score(bpm, cam, mix::attributes_cached(&p.uri)?, &st.prefs))))
+            .max_by(|x, y| x.1.total_cmp(&y.1))
+            .map(|x| x.0.uri.clone())
+    });
+    let uri = best.or_else(|| next_up.filter(|u| fresh(u)).map(str::to_string))?;
+    let mut t = simple_crossfade(a_duration, 0.03);
+    // A cut at the end (a fade would lay two vocals and basses over each other).
+    t.style = Style::Cut;
+    Some(Pick { uri, score: 0.0, transition: t, reasons: vec!["closest tempo and key".into()] })
+}
+
 /// Spotify's vocal activity of these songs, fetched in the background for the planner.
 fn prefetch_vocals(uris: Vec<String>) {
     crate::runtime::handle().spawn(async move {
@@ -438,6 +486,11 @@ fn from_recipe(r: &Recipe) -> Transition {
         gain_db: 0.0,
         beat_ms,
         pitch_semitones: 0.0,
+        a_pitch_semitones: 0.0,
+        a_key_lock: false,
+        fx: OutFx::None,
+        fx_ms: 0.0,
+        swap_at: 0.5,
     }
 }
 
@@ -470,6 +523,11 @@ fn simple_crossfade(a_duration: u32, seconds: f32) -> Transition {
         gain_db: 0.0,
         beat_ms: 500.0,
         pitch_semitones: 0.0,
+        a_pitch_semitones: 0.0,
+        a_key_lock: false,
+        fx: OutFx::None,
+        fx_ms: 0.0,
+        swap_at: 0.5,
     }
 }
 
@@ -530,7 +588,10 @@ fn decide(st: &mut State, snap: &PlaybackSnapshot, a_uri: &str, pos: f64) -> Opt
             }
             let remaining = f64::from(a_duration) - pos;
             (remaining < 30_000.0 && remaining > 8_000.0).then(|| {
-                mk(Pick { uri: b.uri.clone(), score: 0.0, transition: simple_crossfade(a_duration, 6.0), reasons: vec!["auto mix".into()] }, st)
+                // Not analyzed in time: a cut at the end rather than laying two songs over each other.
+                let mut t = simple_crossfade(a_duration, 0.03);
+                t.style = Style::Cut;
+                mk(Pick { uri: b.uri.clone(), score: 0.0, transition: t, reasons: vec!["auto mix".into()] }, st)
             })
         }
         Mode::Off => None,
@@ -565,7 +626,7 @@ fn decide(st: &mut State, snap: &PlaybackSnapshot, a_uri: &str, pos: f64) -> Opt
             let Some(a) = current.analysis.clone() else {
                 queue_front(st, a_uri);
                 st.status = format!("Listening to {}…", current.name);
-                return None;
+                return end_cut(st, a_uri, None, pos, a_duration, next_up.map(|b| b.uri.as_str())).map(|p| mk(p, st));
             };
             // Keep a few unanalysed songs of the pool in the analysis queue.
             let wanted: Vec<String> = {
@@ -574,8 +635,15 @@ fn decide(st: &mut State, snap: &PlaybackSnapshot, a_uri: &str, pos: f64) -> Opt
                     .iter()
                     .filter(|p| p.uri != a_uri && !st.queue.contains(&p.uri) && store::get(&p.uri).is_none() && !store::failed_recently(&p.uri))
                     .collect();
-                // Downloaded songs first (no key, no data); a stable shuffle of the rest.
-                v.sort_by_key(|p| (!p.local, p.uri.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))));
+                // Downloaded songs first (no key, no data); within each, the closest tempo and key
+                // by Spotify's numbers first (then a stable shuffle), so a fitting song is ready soonest.
+                let tk = tempo_key(a_uri, Some(&a));
+                let quick = |p: &PoolTrack| match (tk, mix::attributes_cached(&p.uri)) {
+                    (Some((bpm, cam)), Some(b)) => planner::quick_score(bpm, cam, b, &st.prefs),
+                    _ => 0.5,
+                };
+                let hash = |p: &PoolTrack| p.uri.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
+                v.sort_by(|x, y| x.local.cmp(&y.local).reverse().then(quick(y).total_cmp(&quick(x))).then(hash(x).cmp(&hash(y))));
                 let online_pending = st.queue.len();
                 let mut out = Vec::new();
                 for p in v {
@@ -602,7 +670,9 @@ fn decide(st: &mut State, snap: &PlaybackSnapshot, a_uri: &str, pos: f64) -> Opt
                     if target.analysis.is_none() {
                         queue_front(st, &tg.uri);
                     } else {
-                        let path = planner::route(&current, &target, &pool, &st.prefs, tg.asap);
+                        // The way there never replays a song.
+                        let fresh: Vec<Candidate> = pool.iter().filter(|c| c.uri == tg.uri || !history.contains(&c.uri)).cloned().collect();
+                        let path = planner::route(&current, &target, &fresh, &st.prefs, tg.asap);
                         if let Some(t) = st.target.as_mut() {
                             t.path = path.clone();
                         }
@@ -637,14 +707,8 @@ fn decide(st: &mut State, snap: &PlaybackSnapshot, a_uri: &str, pos: f64) -> Opt
             let pick = planner::pick_next(&ctx, &pool, &st.prefs);
             if pick.is_none() {
                 st.status = if st.queue.is_empty() { "Nothing in the pool fits yet: add songs".into() } else { "Checking songs…".into() };
-                // Out of room in this song: fall back to the queue's next song with a crossfade.
-                let remaining = f64::from(a_duration) - pos;
-                if remaining < 25_000.0 && remaining > 8_000.0 {
-                    if let Some(b) = next_up {
-                        let t = simple_crossfade(a_duration, 6.0);
-                        return Some(mk(Pick { uri: b.uri.clone(), score: 0.0, transition: t, reasons: vec!["next in the queue".into()] }, st));
-                    }
-                }
+                // Out of room in this song: a cut into the closest song by Spotify's numbers.
+                return end_cut(st, a_uri, Some(&a), pos, a_duration, next_up.map(|b| b.uri.as_str())).map(|p| mk(p, st));
             }
             pick.map(|p| mk(p, st))
         }
@@ -758,6 +822,7 @@ async fn run() {
                 st.current = Some(a_uri.clone());
                 // Where the vocals are, for the next mixes (two never play at once).
                 prefetch_vocals(std::iter::once(a_uri.clone()).chain(snap.next_tracks.iter().take(2).map(|t| t.uri.clone())).collect());
+                prefetch_attributes(vec![a_uri.clone()]);
             }
 
             // Follow pause / play while deck B is the clock.
@@ -852,8 +917,9 @@ async fn run() {
                     let primed = m.ring_b.buffered_frames() >= 44_100;
                     if primed || pos >= t.mix_start_ms - t.pre_glide_ms - 1_500.0 {
                         log::info!("vibe dj: armed (deck B primed: {primed})");
-                        // A pitched song needs the key-locked stretcher (pitch apart from tempo).
-                        let key_lock = key_lock || t.pitch_semitones != 0.0;
+                        // The next song's stretcher: key-locked only when it is moved (its tempo with
+                        // key lock, or its pitch); usually it comes in as it is.
+                        let key_lock = (key_lock && (t.speed - 1.0).abs() > 1e-6) || t.pitch_semitones != 0.0;
                         m.engine.lock().arm(Armed {
                             a_track: Arc::from(p.a_uri.as_str()),
                             b_track: Arc::from(p.pick.uri.as_str()),

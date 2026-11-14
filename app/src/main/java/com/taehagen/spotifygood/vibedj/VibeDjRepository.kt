@@ -9,12 +9,17 @@ import com.taehagen.spotifygood.AppGraph
 import com.taehagen.spotifygood.data.callOffMain
 import com.taehagen.spotifygood.data.rpcArgs
 import com.taehagen.spotifygood.model.ContextType
+import com.taehagen.spotifygood.model.DownloadState
 import com.taehagen.spotifygood.model.Track
+import com.taehagen.spotifygood.ui.screens.library.explicitFilterFlow
+import com.taehagen.spotifygood.download.CollectionType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -59,6 +64,15 @@ class VibeDjRepository(private val graph: AppGraph) {
                 // Automix alone blends on the beat over up to 6 s; with a crossfade it uses that length.
                 val length = if (seconds > 0) seconds else if (automix) 6 else 0
                 graph.rpc.fire("dj.crossfade", rpcArgs { put("seconds", length); put("smart", automix) })
+            }
+        }
+        // Hide explicit content (or the account's filter) changed mid-session, or the phone went
+        // offline / came back: a new pool (without explicit songs; offline, downloaded ones only).
+        graph.appScope.launch {
+            kotlinx.coroutines.flow.combine(graph.explicitFilterFlow(), graph.engine.isOnline) { e, o -> e to o }.distinctUntilChanged().drop(1).collect {
+                if (state.value.active) runCatching {
+                    graph.rpc.callRaw("dj.setPool", rpcArgs { put("pool", json.encodeToJsonElement(buildPool(_source.value))); put("append", false) })
+                }
             }
         }
         scheduleBackgroundAnalysis()
@@ -117,7 +131,7 @@ class VibeDjRepository(private val graph: AppGraph) {
     /** More songs for the pool (Spotify radio from the playing song). */
     suspend fun refillFromRadio() {
         val seed = graph.events.playback.value.track?.uri ?: return
-        val pool = radioPool(seed, downloaded())
+        val pool = radioPool(seed, downloaded().keys)
         if (pool.isNotEmpty()) {
             graph.rpc.callRaw("dj.setPool", rpcArgs { put("pool", json.encodeToJsonElement(pool)); put("append", true) })
         }
@@ -135,7 +149,7 @@ class VibeDjRepository(private val graph: AppGraph) {
 
     /** Analyses up to [limit] downloaded songs (for the background worker). */
     suspend fun analyzeDownloads(limit: Int = 200): Int {
-        val uris = downloaded().filter { it.startsWith("spotify:track:") }.take(limit)
+        val uris = downloaded(hidden = false).keys.take(limit)
         var done = 0
         for (batch in uris.chunked(20)) {
             val result = graph.rpc.callOffMain<AnalyzeResult>("dj.analyze", rpcArgs {
@@ -153,8 +167,20 @@ class VibeDjRepository(private val graph: AppGraph) {
     @Serializable
     private data class Radio(val contextUri: String? = null, val trackUris: List<String> = emptyList())
 
-    private suspend fun downloaded(): Set<String> =
-        runCatching { graph.database.downloads().observeCompletedUris().first().toSet() }.getOrDefault(emptySet())
+    private suspend fun hideExplicit() = graph.explicitFilterFlow().first()
+
+    /** Downloaded songs (newest first) with their stored metadata; explicit ones left out while filtered. */
+    private suspend fun downloaded(hidden: Boolean? = null): Map<String, Track?> {
+        val hide = hidden ?: hideExplicit()
+        return runCatching { graph.database.downloads().observeListRows().first() }.getOrDefault(emptyList())
+            .filter { it.state == DownloadState.COMPLETED && it.uri.startsWith("spotify:track:") }
+            .asReversed()
+            .associate { r -> r.uri to r.metadataJson?.let { runCatching { json.decodeFromString<Track>(it) }.getOrNull() } }
+            .filterValues { !(hide && it?.explicit == true) }
+    }
+
+    /** Whether a song may be mixed in: playable here and not hidden as explicit. */
+    private fun Track.mixable(hidden: Boolean) = playable && !(hidden && explicit)
 
     private suspend fun named(uris: List<String>, local: Set<String>): List<DjPoolTrack> {
         val tracks = uris.distinct().filter { it.startsWith("spotify:track:") }
@@ -162,7 +188,8 @@ class VibeDjRepository(private val graph: AppGraph) {
         for (chunk in tracks.chunked(50)) {
             runCatching { graph.catalog.tracks(chunk) }.getOrNull()?.forEach { meta[it.uri] = it }
         }
-        return tracks.filter { meta[it]?.playable != false }.map { uri ->
+        val hidden = hideExplicit()
+        return tracks.filter { meta[it]?.mixable(hidden) != false }.map { uri ->
             val t = meta[uri]
             DjPoolTrack(uri, t?.name.orEmpty(), t?.artists?.firstOrNull()?.name.orEmpty(), uri in local)
         }
@@ -177,10 +204,12 @@ class VibeDjRepository(private val graph: AppGraph) {
 
     /** The songs Vibe DJ may pick from. Offline it keeps only downloaded songs. */
     private suspend fun buildPool(source: DjSource): List<DjPoolTrack> {
-        val local = downloaded()
+        val hidden = hideExplicit()
+        val stored = downloaded(hidden)
+        val local = stored.keys
         val snap = graph.events.playback.value
         val offline = snap.offline || !graph.engine.isOnline.value
-        val queue = (listOfNotNull(snap.track) + snap.nextTracks).filter { !it.isEpisode }
+        val queue = (listOfNotNull(snap.track) + snap.nextTracks).filter { !it.isEpisode && (it == snap.track || !(hidden && it.explicit)) }
         val uris: List<String> = when (source) {
             DjSource.DOWNLOADS -> local.toList()
             DjSource.QUEUE -> queue.map { it.uri }
@@ -188,7 +217,12 @@ class VibeDjRepository(private val graph: AppGraph) {
             DjSource.CONTEXT -> {
                 val ctx = snap.context
                 val all = when {
-                    offline -> null
+                    // Offline: a downloaded playlist or album's own songs, in its order (Liked Songs too).
+                    offline -> ctx?.uri?.let { uri ->
+                        val dao = graph.database.collections()
+                        (dao.get(uri) ?: dao.getAll().firstOrNull { uri.endsWith(":collection") && it.type == CollectionType.LIKED_SONGS.wire })
+                            ?.let { c -> runCatching { json.decodeFromString<List<String>>(c.itemUrisJson) }.getOrNull() }
+                    }
                     ctx?.type == ContextType.PLAYLIST -> runCatching { graph.catalog.playlistItemUris(ctx.uri) }.getOrNull()
                     // "This album": its songs, topped up with similar ones (an album is short).
                     ctx?.type == ContextType.ALBUM -> runCatching {
@@ -207,7 +241,7 @@ class VibeDjRepository(private val graph: AppGraph) {
             }
         }
         val chosen = (if (offline) uris.filter { it in local } else uris).take(MAX_POOL)
-        if (offline) return chosen.map { DjPoolTrack(it, local = true) }
+        if (offline) return chosen.map { DjPoolTrack(it, stored[it]?.name.orEmpty(), stored[it]?.artists?.firstOrNull()?.name.orEmpty(), true) }
         // Names for the queue's songs are already known.
         val known = queue.associateBy { it.uri }
         val missing = chosen.filter { it !in known }

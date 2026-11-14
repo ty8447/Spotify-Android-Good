@@ -732,7 +732,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
 
     /**
      * The items a voice request plays; empty when nothing matches. The user's own collections
-     * come first, by name ([VoiceMatch]), honouring the focus and the names the assistant split
+     * come first, by name ([VoiceMatch]), honoring the focus and the names the assistant split
      * out ([VoiceRequest.names]): the downloaded ones and Liked Songs, then (online) Library's
      * playlists, albums, artists and podcasts. The same or loosely the same name wins over the
      * catalog's search (the user's own, maybe private, "Road Trip" over a stranger's), a name
@@ -892,7 +892,7 @@ internal class LibraryTree(context: Context, private val graph: AppGraph) {
         return (collections + items).distinctBy { it.mediaId }
     }
 
-    /** The catalog's search for a voice request, honouring the [focus] hint; null when it has nothing. */
+    /** The catalog's search for a voice request, honoring the [focus] hint; null when it has nothing. */
     private suspend fun catalogVoiceQuery(query: String, focus: String?): MediaItem? {
         val r = graph.search.search(query, limit = VOICE_LIMIT)
         return when (focus) {

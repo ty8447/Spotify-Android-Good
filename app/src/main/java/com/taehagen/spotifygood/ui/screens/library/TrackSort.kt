@@ -320,7 +320,7 @@ internal fun AppGraph.listPlaybackFlow(): Flow<ListPlayback> =
     playback.snapshot.map { it.toListPlayback() }.distinctUntilChanged()
 
 /**
- * How far from the expected neighbour a context track may be and still be this load: up-next rows
+ * How far from the expected neighbor a context track may be and still be this load: up-next rows
  * the user removed in the Queue screen are skipped. Bounded, so another list holding a few of the
  * same songs in the same order is still not taken for it.
  */
@@ -353,7 +353,7 @@ internal object SortedPlays {
          * [playback] is this load: unless shuffled, the context's next track comes after the
          * current one in the order sent and the previous one before it, within [MAX_SKIPPED_ROWS]
          * (removed up-next rows; the wrap of repeat-all too). Another list holding the same song has
-         * other neighbours. During an interlude ([ListPlayback.queued]) the context's neighbours
+         * other neighbors. During an interlude ([ListPlayback.queued]) the context's neighbors
          * are judged instead of the queued song.
          */
         fun matches(playback: ListPlayback): Boolean {
@@ -366,7 +366,7 @@ internal object SortedPlays {
             return (next == null || ahead(i, next, playback.repeatAll)) && (previous == null || ahead(previous, i, playback.repeatAll))
         }
 
-        /** The load underneath an interlude is this one: its context neighbours are ours, in order. */
+        /** The load underneath an interlude is this one: its context neighbors are ours, in order. */
         private fun underneath(playback: ListPlayback): Boolean {
             if (playback.shuffle) return playback.next == null || playback.next in this
             val next = playback.next?.let { positions[it] ?: return false }
@@ -379,7 +379,7 @@ internal object SortedPlays {
          * start again only with repeat-all ([wrap]).
          */
         private fun ahead(from: Int, to: Int, wrap: Boolean): Boolean {
-            // One song (repeated): it is its own neighbour.
+            // One song (repeated): it is its own neighbor.
             if (order.size == 1) return true
             val distance = when {
                 to > from -> to - from

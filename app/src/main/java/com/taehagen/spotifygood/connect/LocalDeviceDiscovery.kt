@@ -523,7 +523,7 @@ class LocalDeviceDiscovery(
         }
     }
 
-    // --- API 34+: service-info callback (unchanged behaviour) --------------------------------------
+    // --- API 34+: service-info callback (unchanged behavior) --------------------------------------
 
     private fun registerInfoCallback(s: Session, kind: Kind, serviceInfo: NsdServiceInfo) {
         if (Build.VERSION.SDK_INT < 34) return

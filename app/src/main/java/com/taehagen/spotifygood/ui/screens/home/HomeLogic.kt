@@ -24,7 +24,7 @@ fun MediaType.matches(filter: HomeFilter): Boolean = when (filter) {
     HomeFilter.PODCASTS -> this == MediaType.SHOW || this == MediaType.EPISODE
 }
 
-/** Synthetic section ids (titles are localised by the UI). */
+/** Synthetic section ids (titles are localized by the UI). */
 const val RECENTLY_PLAYED_SECTION_ID = "browse:recently-played"
 const val DOWNLOADED_SECTION_ID = "browse:downloaded"
 

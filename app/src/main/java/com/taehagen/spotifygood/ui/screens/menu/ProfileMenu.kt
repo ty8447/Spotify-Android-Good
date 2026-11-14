@@ -294,7 +294,7 @@ fun ProfileMenu(onClosed: () -> Unit) {
                 }
                 MenuItem(Icons.Rounded.Notifications, R.string.browse_menu_whats_new) { go { navigator.navigate(Route.WhatsNew) } }
                 MenuItem(Icons.Rounded.Settings, R.string.browse_menu_settings) { go { navigator.navigate(Route.Settings) } }
-                ActivityDrawerPreview(onOurActivity = { showOurActivity = true },
+                if (rememberAppGraph().settings.settings.collectAsStateWithLifecycle().value.showFriendActivity) ActivityDrawerPreview(onOurActivity = { showOurActivity = true },
                     selfImage = user?.images?.best(96),
                     onViewMore = { go { navigator.navigate(Route.Activity) } },
                     onUser = { friend -> selectedFriend = friend },

@@ -85,6 +85,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -658,7 +659,9 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
             // Content and display settings page.
             if (activePage == "h_content") {
             item(key = "sub_videos_and_canvas") { SettingsSubsection("Videos and Canvas") }
-            FutureSettingsGroup("h_content_video", navigator::showMessage)
+            item(key = "music_videos") { VideoSwitch("Music videos", "When off, music videos and live performances play as audio-only.", Icons.Rounded.GraphicEq, NV.musicVideos, "musicVideos") }
+            item(key = "canvas") { VideoSwitch("Canvas", "Short, looping visuals when a song is playing.", Icons.Rounded.GraphicEq, NV.canvas, "canvas") }
+            item(key = "other_videos") { VideoSwitch("Other videos", "When off, video podcasts play as audio-only.", Icons.Rounded.GraphicEq, NV.otherVideos, "otherVideos") }
             item(key = "sub_content_preferences") { SettingsSubsection("Content preferences") }
             item(key = "explicit") {
                 SwitchPref(
@@ -672,7 +675,7 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
             item(key = "show_unplayable") {
                 SwitchPref(
                     title = "Show unplayable songs",
-                    summary = "List songs that aren't available, greyed out",
+                    summary = "List songs that aren't available, grayed out",
                     icon = Icons.Rounded.VisibilityOff,
                     checked = settings.showUnplayable,
                     onCheckedChange = { v -> vm.update { it.copy(showUnplayable = v) } },
@@ -748,7 +751,16 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     onSelect = { v -> vm.update { it.copy(librarySort = v) } },
                 )
                         }
-            FutureSettingsGroup("h_content_display", navigator::showMessage)
+            item(key = "reduce_animations") {
+                SwitchPref(title = "Reduce animations", summary = "Disables various autoplaying animations that can be distracting.",
+                    icon = Icons.Rounded.ColorLens, checked = settings.reduceAnimations,
+                    onCheckedChange = { v -> vm.update { it.copy(reduceAnimations = v) } })
+            }
+            item(key = "play_button_actions") {
+                SwitchPref(title = "Actions next to play button", summary = "Actions for episodes appear right next to the play button instead of on the opposite side.",
+                    icon = Icons.Rounded.GridView, checked = settings.trailingActions,
+                    onCheckedChange = { v -> vm.update { it.copy(trailingActions = v) } })
+            }
             }
 
             // Privacy and social settings page; playlist management keeps its existing editor.
@@ -792,10 +804,23 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     )
                 }
             }
-            FutureSettingsGroup("h_privacy_profile", navigator::showMessage)
+            item(key = "blocked_users") {
+                var open by rememberSaveable { mutableStateOf(false) }
+                PrefItem("Blocked users", Icons.Rounded.Group, summary = "People you've blocked can't follow you, see your profile or message you", onClick = { open = true })
+                if (open) BlockedUsersSheet(onDismiss = { open = false })
+            }
             item(key = "sub_social_features") { SettingsSubsection("Social features") }
             item(key = "messages") { PrefItem("Messages", Icons.Rounded.Group,
                                 "Open conversations", onClick = { navigator.navigate(Route.Messages) }) }
+            item(key = "others_playing") {
+                SwitchPref(title = "See what others are playing", summary = "Your friends' and groups' listening in the side menu",
+                    icon = Icons.Rounded.Group, checked = settings.showFriendActivity,
+                    onCheckedChange = { v -> vm.update { it.copy(showFriendActivity = v) } })
+            }
+            item(key = "played_receipts") {
+                PrefItem("Played and saved receipts", Icons.Rounded.Group, summary = "Set for each chat in its Chat settings (Messages › a chat › Settings)",
+                    onClick = { navigator.navigate(Route.Messages) })
+            }
             FutureSettingsGroup("h_privacy_social", navigator::showMessage)
             item(key = "sub_devices_and_spotify_connect") { SettingsSubsection("Devices and Spotify Connect") }
             item(key = "device_name") {
@@ -834,7 +859,7 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
             item(key = "automix") {
                 SwitchPref(
                     title = "Automix",
-                    summary = "Blend songs on the beat, matching tempo and key (songs are analysed on this phone)",
+                    summary = "Blend songs on the beat, matching tempo and key (songs are analyzed on this phone)",
                     icon = Icons.Rounded.GraphicEq,
                     checked = settings.automix,
                     onCheckedChange = { enabled -> vm.update { it.copy(automix = enabled) } },
@@ -866,7 +891,7 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
             item(key = "mono_audio") {
                 SwitchPref(
                     title = "Mono audio",
-                    summary = "Saved preference; stereo-to-mono mixing is not yet implemented in the audio engine",
+                    summary = "Left and right play the same audio (one earbud, one speaker)",
                     icon = Icons.Rounded.GraphicEq,
                     checked = settings.monoAudio,
                     onCheckedChange = { enabled -> vm.update { it.copy(monoAudio = enabled) } },
@@ -880,9 +905,24 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     onClick = { navigator.openSleepTimer() },
                 )
                         }
-            FutureSettingsGroup("h_playback_listening", navigator::showMessage)
+            item(key = "smart_shuffle_option") {
+                SwitchPref(title = "Include Smart Shuffle in play modes", summary = "Turning this off removes Smart Shuffle from the shuffle button. Play in order and Shuffle stay.",
+                    icon = Icons.Rounded.GraphicEq, checked = settings.smartShuffleMode,
+                    onCheckedChange = { v -> vm.update { it.copy(smartShuffleMode = v) } })
+            }
+            item(key = "shuffle_repeats") {
+                ChoicePref(title = "Shuffle", icon = Icons.Rounded.GraphicEq,
+                    options = listOf(false to "Standard: every track has an equal shot", true to "Fewer repeats: songs you just heard come later"),
+                    selected = settings.shuffleFewerRepeats, onSelect = { v -> vm.update { it.copy(shuffleFewerRepeats = v) } })
+            }
+            item(key = "device_broadcast") {
+                SwitchPref(title = "Device broadcast status", summary = "Allows other apps on your device to show what you're listening to.",
+                    icon = Icons.Rounded.GraphicEq, checked = settings.deviceBroadcast,
+                    onCheckedChange = { v -> vm.update { it.copy(deviceBroadcast = v) } })
+            }
             item(key = "sub_video_controls") { SettingsSubsection("Video controls") }
-            FutureSettingsGroup("h_playback_video", navigator::showMessage)
+            item(key = "large_now_playing_video") { VideoSwitch("Larger video in Now Playing Bar", "Show a bigger video when browsing within the app.", Icons.Rounded.GraphicEq, NV.largerInBar, "largerInBar") }
+            item(key = "picture_in_picture") { VideoSwitch("Picture in picture", "Keep a video playing in a small window when you leave the app.", Icons.Rounded.GraphicEq, NV.pipEnabled, "pip") }
             item(key = "sub_volume_controls") { SettingsSubsection("Volume controls") }
             item(key = "normalize") {
                 SwitchPref(
@@ -951,7 +991,13 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     onSelect = { q -> vm.update { it.copy(downloadQuality = q) } },
                 )
                         }
-            FutureSettingsGroup("h_quality", navigator::showMessage)
+            item(key = "sub_video_quality") { SettingsSubsection("Video streaming quality") }
+            item(key = "wifi_video_quality") { VideoQualityPref("Wi-Fi video streaming quality", Icons.Rounded.Wifi, cellular = false) }
+            item(key = "cell_video_quality") { VideoQualityPref("Cellular video streaming quality", Icons.Rounded.SignalCellularAlt, cellular = true) }
+            item(key = "lossless_quality") {
+                PrefItem("Lossless", Icons.Rounded.HighQuality, enabled = false,
+                    summary = "Spotify's lossless (FLAC) files use protection the open playback engine can't decode, so the highest quality here is Very high (320 kbps)")
+            }
             }
 
             // Data saver, Offline, downloads, and podcast preferences share one page.
@@ -990,7 +1036,11 @@ fun SettingsScreen(contentPadding: PaddingValues, modifier: Modifier = Modifier)
                     onCheckedChange = { v -> vm.update { it.copy(downloadOverCellular = v) } },
                 )
                         }
-            FutureSettingsGroup("h_data_podcasts", navigator::showMessage)
+            item(key = "podcast_audio_download") {
+                SwitchPref(title = "Audio-only downloads for video podcasts", summary = "Only the audio saves when you download video podcasts (videos always stream).",
+                    icon = Icons.Rounded.Download, checked = true, enabled = false, onCheckedChange = {})
+            }
+            item(key = "podcast_audio_stream") { VideoSwitch("Audio-only streaming for video podcasts", "Video podcasts play as audio-only when you're not connected to Wi-Fi.", Icons.Rounded.CloudOff, NV.audioOnlyStream, "audioOnlyStream") }
             item(key = "sub_downloads") { SettingsSubsection("Downloads") }
             item(key = "storage_used") {
                 PrefItem(
@@ -1302,9 +1352,27 @@ private val SEARCH_INDEX = listOf(
     SettingEntry("automix", "Automix", "h_playback", "crossmix dj transitions"),
     SettingEntry("crossfade", "Crossfade", "h_playback", "transition seconds"),
     SettingEntry("nav_button", "Navigation bar button", "h_content", "create downloads tab bottom bar"),
-    SettingEntry("show_unplayable", "Show unplayable songs", "h_content", "unavailable greyed out hidden"),
+    SettingEntry("show_unplayable", "Show unplayable songs", "h_content", "unavailable grayed out hidden"),
     SettingEntry("autoplay", R.string.shell_settings_autoplay, "h_playback", "continue similar"),
     SettingEntry("mono_audio", "Mono audio", "h_playback", "stereo accessibility"),
+    SettingEntry("music_videos", "Music videos", "h_content", "video audio only"),
+    SettingEntry("canvas", "Canvas", "h_content", "looping video artwork"),
+    SettingEntry("other_videos", "Other videos", "h_content", "video podcasts audio only"),
+    SettingEntry("reduce_animations", "Reduce animations", "h_content", "accessibility motion"),
+    SettingEntry("play_button_actions", "Actions next to play button", "h_content", "episodes buttons"),
+    SettingEntry("blocked_users", "Blocked users", "h_privacy", "block unblock profiles"),
+    SettingEntry("others_playing", "See what others are playing", "h_privacy", "friend activity"),
+    SettingEntry("played_receipts", "Played and saved receipts", "h_privacy", "messages chat"),
+    SettingEntry("smart_shuffle_option", "Include Smart Shuffle in play modes", "h_playback", "shuffle suggested songs"),
+    SettingEntry("shuffle_repeats", "Shuffle", "h_playback", "fewer repeats standard random"),
+    SettingEntry("device_broadcast", "Device broadcast status", "h_playback", "other apps status"),
+    SettingEntry("large_now_playing_video", "Larger video in Now Playing Bar", "h_playback", "mini player"),
+    SettingEntry("picture_in_picture", "Picture in picture", "h_playback", "pip floating video"),
+    SettingEntry("wifi_video_quality", "Wi-Fi video streaming quality", "h_quality", "video resolution"),
+    SettingEntry("cell_video_quality", "Cellular video streaming quality", "h_quality", "video resolution mobile data"),
+    SettingEntry("lossless_quality", "Lossless", "h_quality", "flac hi res"),
+    SettingEntry("podcast_audio_download", "Audio-only downloads for video podcasts", "h_data", "video podcasts"),
+    SettingEntry("podcast_audio_stream", "Audio-only streaming for video podcasts", "h_data", "video podcasts wifi"),
     SettingEntry("sleep", R.string.shell_settings_sleep_timer, "h_playback", "bedtime"),
     SettingEntry("normalize", R.string.shell_settings_normalize, "h_playback", "volume loudness"),
     SettingEntry("normalize_level", R.string.shell_settings_volume_level, "h_playback", "quiet loudness"),
@@ -1467,6 +1535,24 @@ private fun PrefItem(
         colors = transparentListItem(),
         modifier = if (onClick != null) Modifier.clickableRow(enabled = enabled, onClick = onClick) else Modifier,
     )
+}
+
+private val NV = com.taehagen.spotifygood.ui.screens.video.NowPlayingVideo
+
+/** A switch for one of [NV]'s video settings (kept with the video player's own). */
+@Composable
+private fun VideoSwitch(title: String, summary: String, icon: ImageVector, flow: kotlinx.coroutines.flow.MutableStateFlow<Boolean>, key: String) {
+    NV.load(androidx.compose.ui.platform.LocalContext.current)
+    val on by flow.collectAsState()
+    SwitchPref(title = title, summary = summary, icon = icon, checked = on, onCheckedChange = { NV.set(flow, key, it) })
+}
+
+@Composable
+private fun VideoQualityPref(title: String, icon: ImageVector, cellular: Boolean) {
+    NV.load(androidx.compose.ui.platform.LocalContext.current)
+    val q by (if (cellular) NV.cellQuality else NV.quality).collectAsState()
+    ChoicePref(title = title, icon = icon, options = listOf(0 to "Automatic", 1080 to "1080p", 720 to "720p", 480 to "480p", 360 to "360p"),
+        selected = q, onSelect = { NV.setQuality(it, cellular) })
 }
 
 @Composable

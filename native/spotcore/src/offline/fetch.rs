@@ -381,7 +381,7 @@ pub(crate) mod tests {
 
     pub const KEY: AudioKey = AudioKey(*b"0123456789abcdef");
 
-    /// A Spotify-style encrypted Ogg file of `len` bytes (header page, normalisation, payload).
+    /// A Spotify-style encrypted Ogg file of `len` bytes (header page, normalization, payload).
     pub fn encrypted_ogg(len: usize) -> Vec<u8> {
         let mut plain = vec![0u8; len.max(SPOTIFY_OGG_HEADER_END + 4)];
         plain[..4].copy_from_slice(b"OggS");

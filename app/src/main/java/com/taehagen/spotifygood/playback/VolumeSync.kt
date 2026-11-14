@@ -53,7 +53,7 @@ internal object VolumeMath {
  *   `VOLUME_CHANGED_ACTION` broadcast) while [start]ed — i.e. while the engine runs — and reported
  *   with `player.setVolume {fromSystem:true}`, debounced, only while this phone is the active device.
  *
- * Changes we caused ourselves are recognised through a short-lived "expected index" so they are not
+ * Changes we caused ourselves are recognized through a short-lived "expected index" so they are not
  * echoed back to Connect. All state lives on the main thread.
  */
 class VolumeSync internal constructor(

@@ -65,7 +65,7 @@ internal fun <T> searchWhenOnline(
  * Each time [reach] becomes ONLINE (a change, not the value at start): once the list on screen
  * ([state], null without one) has settled, [retry]s it if it ended with an error, e.g. a page that
  * failed NOT_CONNECTED while the session was connecting. Waiting for the settle covers a request
- * that fails just after the session came online. Runs until cancelled.
+ * that fails just after the session came online. Runs until canceled.
  */
 internal suspend fun <T> retryFailedListWhenOnline(
     reach: Flow<EngineReach>,
@@ -82,7 +82,7 @@ internal suspend fun <T> retryFailedListWhenOnline(
  * Keeps a result list loaded across connectivity changes: whenever [reach] is reachable (ONLINE, or
  * CONNECTING: the fetch waits for the session itself) and the settled list has nothing loaded or
  * ended with an error, [load]s. The change to ONLINE checks again, so a page that failed while the
- * session was connecting loads once it is online. Runs until cancelled.
+ * session was connecting loads once it is online. Runs until canceled.
  */
 internal suspend fun <T> keepLoadedWhileReachable(
     reach: Flow<EngineReach>,

@@ -372,7 +372,7 @@ class EpisodeProgressStore internal constructor(
     }
 
     /**
-     * Follows local playback from [snapshots] until cancelled ([EpisodeProgressTracker]): records
+     * Follows local playback from [snapshots] until canceled ([EpisodeProgressTracker]): records
      * episodes (on pause, on a change of item, when playback leaves the phone, every
      * [SAVE_INTERVAL_MS] while one plays), marks Connect handoffs, and [seek]s an episode that
      * playback moved to by itself (auto-advance, next) to its resume point.

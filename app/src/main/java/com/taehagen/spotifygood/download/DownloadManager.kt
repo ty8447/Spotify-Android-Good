@@ -105,6 +105,8 @@ sealed interface CollectionDownloadStatus {
     data object None : CollectionDownloadStatus
     /** [done] of [total] items downloaded; [active] while work is pending. */
     data class InProgress(val done: Int, val total: Int, val active: Boolean) : CollectionDownloadStatus
+    /** Nothing left to do now: [done] downloaded; [missing] can't download yet (they're retried daily). */
+    data class Available(val done: Int, val missing: Int) : CollectionDownloadStatus
     data object Complete : CollectionDownloadStatus
 }
 
@@ -670,7 +672,7 @@ class DownloadManager(
     }
 
     /**
-     * Puts failed and cancelled downloads back into the queue and (re)starts the queue, also when only
+     * Puts failed and canceled downloads back into the queue and (re)starts the queue, also when only
      * pending items wait (a run stopped because storage was full). Downloads that are not playable
      * here ([DownloadRules.retryable]) stay failed: they would only fail again.
      */
@@ -1211,7 +1213,7 @@ class DownloadManager(
 
     /**
      * Keeps [covers] in step with the completed downloads, their cover files (a move to another
-     * location) and the downloaded collections. Each download's metadata is read once (memoised by
+     * location) and the downloaded collections. Each download's metadata is read once (memoized by
      * URI; a moved cover only changes its file); a download run that completes items one after
      * another updates the maps once it settles.
      */
@@ -1652,7 +1654,7 @@ class DownloadManager(
      * [resolved] with catalog metadata (display metadata and whether it is playable here) for the
      * members that lack it (Liked Songs list URIs only; placeholders) and matter: those that will get
      * a new row (not in [known], the stored membership, since sync only queues new members; no row
-     * yet) and those whose row FAILED (a greyed-out member is then recorded as unavailable instead of
+     * yet) and those whose row FAILED (a grayed-out member is then recorded as unavailable instead of
      * failing again). Completed and pending rows are not looked up again. Best effort, batched and
      * bounded ([COLLECTION_METADATA_TIMEOUT_MS]): members not looked up keep their previous
      * availability, rows without metadata get it from the downloaded record.
@@ -1735,7 +1737,7 @@ class DownloadManager(
      * re-validated at a later sync. Returns how many were queued.
      */
     private suspend fun revalidate(): Int {
-        val requeued = requeuePlayableAgain() + queueUnavailableAgain()
+        val requeued = requeuePlayableAgain() + queueUnavailableAgain() + retryFailedMembers()
         val now = System.currentTimeMillis()
         val stale = dao.completedUrisNotValidatedSince(now - DownloadRules.REVALIDATE_AFTER_MS)
         if (stale.isEmpty()) return requeued
@@ -1814,6 +1816,20 @@ class DownloadManager(
             Log.i(TAG, "${queue.size} members recorded as unavailable are playable again: queued")
             queue.size
         }
+    }
+
+    /**
+     * Downloaded collections' members whose download failed (and that aren't recorded unavailable,
+     * which [queueUnavailableAgain] handles): tried again at each daily sync, behind new downloads,
+     * so a song that couldn't download yet does once it can.
+     */
+    private suspend fun retryFailedMembers(): Int = mutex.withLock {
+        val collections = collectionDao.getAll()
+        val unavailable = collections.flatMapTo(HashSet()) { decodeItems(it.unavailableUrisJson) }
+        val members = collections.flatMapTo(LinkedHashSet()) { decodeItems(it.itemUrisJson) }.filter { it !in unavailable }
+        val failed = members.chunked(SQL_CHUNK).flatMap { dao.statesOf(it) }.filter { it.state == DownloadState.FAILED }.map { it.uri }
+        failed.chunked(SQL_CHUNK).sumOf { dao.requeueFailedKeepingAttempts(it) }
+            .also { if (it > 0) Log.i(TAG, "$it failed collection members queued again") }
     }
 
     /** See [revalidate]. Independent of collection syncs (an unchanged playlist revision skips those). */

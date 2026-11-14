@@ -36,7 +36,7 @@ internal class CoilBitmapLoader(context: Context, private val scope: CoroutineSc
         val request = ImageRequest.Builder(context)
             .data(data)
             .size(SIZE_PX)
-            // Notifications are parcelled: no hardware bitmaps.
+            // Notifications are parceled: no hardware bitmaps.
             .allowHardware(false)
             .build()
         val result = SingletonImageLoader.get(context).execute(request)

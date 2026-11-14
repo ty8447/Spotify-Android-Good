@@ -635,6 +635,7 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
         }
     }
     var showSettings by remember(hierarchyId) { mutableStateOf(false) }
+    var blockTarget by remember(hierarchyId) { mutableStateOf<HistoryParticipant?>(null) }
     // 0 = history, 1 = Chat details, 2 = People
     var subpage by rememberSaveable(hierarchyId) { mutableIntStateOf(0) }
     BackHandler(enabled = subpage != 0) {
@@ -763,7 +764,7 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
     }
 
     // Selected playlists often have no custom cover; use the same album mosaic
-    // as an incoming playlist share. Work is cancelled if selection changes.
+    // as an incoming playlist share. Work is canceled if selection changes.
     LaunchedEffect(attachedMusic?.uri) {
         val music = attachedMusic
         attachmentArtwork = music?.let {
@@ -2262,6 +2263,10 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
                         navigator.navigate(Route.Profile(it))
                     }
                 },
+                onBlock = {
+                    showManagement = false
+                    blockTarget = other
+                },
                 onDelete = {
                     showManagement = false
                     showDeleteChatConfirmation = true
@@ -2365,8 +2370,27 @@ fun MessageConversationScreen(hierarchyId: String, title: String, contentPadding
     }
     if (showSettings) {
         ModalBottomSheet(onDismissRequest = { showSettings = false }) {
-            ReadOnlyChatSettings()
+            ChatSettings(hierarchyId)
         }
+    }
+    blockTarget?.let { person ->
+        AlertDialog(
+            onDismissRequest = { blockTarget = null },
+            title = { Text("Block ${person.displayName.removeSuffix(" (you)")}?") },
+            text = { Text("They won't be able to follow you, see your profile or message you. You can unblock them in Settings › Privacy and social.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    blockTarget = null
+                    scope.launch {
+                        runCatching {
+                            graph.rpc.call<Boolean>("catalog.setBlocked", buildJsonObject { put("username", person.username); put("blocked", true) })
+                        }.onSuccess { navigator.showMessage("Blocked ${person.displayName}") }
+                            .onFailure { navigator.showMessage(it.message?.take(140) ?: "Unable to block") }
+                    }
+                }) { Text("Block", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { blockTarget = null }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -3834,7 +3858,7 @@ private fun ChatPeopleContent(
 @Composable
 private fun ReadOnlyChatOptions(
     isDirectChat: Boolean, muted: Boolean, canOpenProfile: Boolean,
-    onMute: () -> Unit, onProfile: () -> Unit, onDelete: () -> Unit,
+    onMute: () -> Unit, onProfile: () -> Unit, onBlock: () -> Unit, onDelete: () -> Unit,
     onLeave: () -> Unit, onLeaveAndDelete: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
@@ -3844,8 +3868,8 @@ private fun ReadOnlyChatOptions(
         TextButton(onClick = onMute) { Text(if (muted) "Unmute Chat" else "Mute Chat") }
         if (isDirectChat) {
             TextButton(onClick = onProfile, enabled = canOpenProfile) { Text("Go to Profile") }
-            // The trusted-circle hide endpoint is not an account-level Block User operation.
-            TextButton(enabled = false, onClick = {}) { Text("Block User") }
+            // socialgraph is-blocking: an account-level block, as the APK's Block User.
+            TextButton(onClick = onBlock, enabled = canOpenProfile) { Text("Block User", color = MaterialTheme.colorScheme.error) }
         } else {
             TextButton(onClick = onLeave) { Text("Leave Chat") }
         }
@@ -3859,25 +3883,41 @@ private fun ReadOnlyChatOptions(
     }
 }
 
+/** The chat's settings: played and saved receipts (speechless hierarchy settings), read back after each change. */
 @Composable
-private fun ReadOnlyChatSettings() {
-    Column(Modifier.fillMaxWidth().padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)) {
+private fun ChatSettings(hierarchyId: String) {
+    val graph = com.taehagen.spotifygood.ui.components.rememberAppGraph()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var disabled by remember(hierarchyId) { mutableStateOf<List<Int>?>(null) }
+    var error by remember(hierarchyId) { mutableStateOf<String?>(null) }
+    suspend fun load() {
+        runCatching { graph.rpc.call<ChatMuteStatus>("catalog.chatMuteStatus", buildJsonObject { put("hierarchyId", hierarchyId) }) }
+            .onSuccess { disabled = it.disabledReceipts; error = null }
+            .onFailure { error = it.message?.take(140) }
+    }
+    LaunchedEffect(hierarchyId) { load() }
+    Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("Chat settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Text("Listening activity", fontWeight = FontWeight.SemiBold)
-        Text("Choose who can see what music you're playing.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall)
-        Text("Played receipts", fontWeight = FontWeight.SemiBold)
-        Text("Controls visibility when you play a shared item.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall)
-        Text("Saved receipts", fontWeight = FontWeight.SemiBold)
-        Text("Controls visibility when you save a shared item.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodySmall)
-        Text("Current setting values are not available through the history API. Controls will be enabled after their settings API is verified.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelSmall)
+        listOf(Triple(1, "Played receipts", "Let others in this chat see when you play something they shared."),
+            Triple(2, "Saved receipts", "Let others in this chat see when you save something they shared.")).forEach { (type, title, about) ->
+            val on = disabled?.contains(type) == false
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, fontWeight = FontWeight.SemiBold)
+                    Text(about, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                }
+                androidx.compose.material3.Switch(checked = on, enabled = disabled != null, onCheckedChange = { want ->
+                    scope.launch {
+                        runCatching {
+                            graph.rpc.call<Boolean>("catalog.setChatReceipt", buildJsonObject {
+                                put("hierarchyId", hierarchyId); put("type", type); put("disabled", !want)
+                            })
+                        }.onFailure { error = it.message?.take(140) }
+                        load()
+                    }
+                })
+            }
+        }
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall) }
     }
 }

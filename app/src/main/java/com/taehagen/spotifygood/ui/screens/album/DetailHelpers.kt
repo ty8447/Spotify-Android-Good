@@ -108,7 +108,7 @@ internal fun canonicalUri(uri: String): String {
     return uri
 }
 
-/** True if two context URIs denote the same context (playlist URI forms are normalised). */
+/** True if two context URIs denote the same context (playlist URI forms are normalized). */
 internal fun isSameContext(a: String?, b: String?): Boolean =
     a != null && b != null && canonicalUri(a) == canonicalUri(b)
 
@@ -202,7 +202,7 @@ private val WHITESPACE = Regex("\\s+")
 internal fun normalizeForSearch(text: String): String =
     COMBINING_MARKS.replace(Normalizer.normalize(text, Normalizer.Form.NFD), "").lowercase(Locale.ROOT)
 
-/** Query tokens (normalised); empty for a blank query. */
+/** Query tokens (normalized); empty for a blank query. */
 internal fun searchTokens(query: String): List<String> =
     normalizeForSearch(query).split(WHITESPACE).filter { it.isNotEmpty() }
 
@@ -222,7 +222,7 @@ internal fun PlaylistItem.searchText(): String {
     return normalizeForSearch(raw)
 }
 
-/** True if every token occurs in [haystack] (already normalised). */
+/** True if every token occurs in [haystack] (already normalized). */
 internal fun matchesTokens(haystack: String, tokens: List<String>): Boolean =
     tokens.all { haystack.contains(it) }
 

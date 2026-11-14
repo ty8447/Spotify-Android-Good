@@ -69,7 +69,7 @@ import java.util.concurrent.TimeUnit
  * Construction must stay cheap: no I/O on the main thread here.
  */
 class AppGraph(val app: Application) {
-    /** Process-lifetime scope for repositories (never cancelled). */
+    /** Process-lifetime scope for repositories (never canceled). */
     val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val json: Json = Json {

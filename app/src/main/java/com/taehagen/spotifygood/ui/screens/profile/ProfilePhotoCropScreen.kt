@@ -77,7 +77,7 @@ internal fun ProfilePhotoCropScreen(uri: Uri, onCancel: () -> Unit, onUsePhoto: 
     }
     /**
      * The accepted crop is a disk of radius sidePx / 2, not the whole square.
-     * A disk stays a disk when rotated: in image-local axes the image centre
+     * A disk stays a disk when rotated: in image-local axes the image center
      * must remain within (half scaled image dimension - disk radius).
      * Clamp in those rotated axes, then transform back into screen coordinates.
      * This keeps the crop covered at every zoom and straighten angle while
@@ -115,7 +115,7 @@ internal fun ProfilePhotoCropScreen(uri: Uri, onCancel: () -> Unit, onUsePhoto: 
         } else {
             val b = bitmap!!
             // Keep the entire square visible. Only the area *outside* the circular crop
-            // is darkened; a transparent centre makes the final selection obvious.
+            // is darkened; a transparent center makes the final selection obvious.
             Box(Modifier.size(sideDp).clipToBounds().background(Color.DarkGray)
                 .pointerInput(b, sidePx) {
                     detectTransformGestures { _, pan, gestureZoom, _ ->

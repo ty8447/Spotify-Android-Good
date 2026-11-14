@@ -27,11 +27,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Colours of the player surfaces (dark-first, docs §9.9). */
+/** Colors of the player surfaces (dark-first, docs §9.9). */
 internal object PlayerDefaults {
     /** Bottom of the now playing gradient and the lyrics/mini player fallback. */
     val Background = Color(0xFF121212)
-    /** Used until the artwork colour is known. */
+    /** Used until the artwork color is known. */
     val FallbackArtwork = Color(0xFF404040)
     val Brand = Color(0xFF1ED760)
     val PrimaryText = Color.White
@@ -39,12 +39,12 @@ internal object PlayerDefaults {
     val TrackInactive = Color.White.copy(alpha = 0.24f)
 }
 
-/** Darkened variant of an artwork colour suitable behind white text. */
+/** Darkened variant of an artwork color suitable behind white text. */
 internal fun Color.toned(maxLightness: Float, minLightness: Float = 0.10f): Color =
     Color(toneForBackground(toArgb(), maxLightness = maxLightness, minLightness = minLightness))
 
 /**
- * Dominant artwork colours extracted with Palette on a background dispatcher from a small Coil
+ * Dominant artwork colors extracted with Palette on a background dispatcher from a small Coil
  * decode (disk-cached image, software bitmap), cached per image URL for the process lifetime.
  */
 internal object ArtworkColorCache {
@@ -84,7 +84,7 @@ internal object ArtworkColorCache {
         val vibrant = palette.vibrantSwatch ?: palette.darkVibrantSwatch
         val muted = palette.mutedSwatch ?: palette.darkMutedSwatch
         val swatch = when {
-            // Prefer the dominant colour unless it is (nearly) grey and a real colour is present.
+            // Prefer the dominant color unless it is (nearly) gray and a real color is present.
             dominant != null && dominant.hsl[1] >= 0.18f -> dominant
             vibrant != null && vibrant.population * 10 >= (dominant?.population ?: 0) -> vibrant
             dominant != null -> dominant
@@ -94,7 +94,7 @@ internal object ArtworkColorCache {
     }
 }
 
-/** Animated dominant colour of [url]'s artwork (keeps the previous colour while extracting). */
+/** Animated dominant color of [url]'s artwork (keeps the previous color while extracting). */
 @Composable
 internal fun rememberArtworkColor(url: String?, fallback: Color = PlayerDefaults.FallbackArtwork): State<Color> {
     val context = LocalContext.current

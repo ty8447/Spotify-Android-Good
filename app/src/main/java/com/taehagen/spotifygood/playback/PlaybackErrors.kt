@@ -49,7 +49,7 @@ fun interface PlaybackErrorMessages {
         /** Used until resources are available: the engine's own message (never empty). */
         val Fallback = PlaybackErrorMessages { kind, detail -> detail?.takeIf { it.isNotBlank() } ?: kind.name }
 
-        /** Localised messages from `strings_playback.xml`. */
+        /** Localized messages from `strings_playback.xml`. */
         fun fromResources(context: Context): PlaybackErrorMessages {
             val res = context.applicationContext.resources
             return PlaybackErrorMessages { kind, _ ->

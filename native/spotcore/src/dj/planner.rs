@@ -19,6 +19,7 @@ pub(crate) enum Style {
 }
 
 impl Style {
+    #[cfg(test)]
     pub(crate) const ALL: [Style; 5] = [Style::BassSwap, Style::Crossfade, Style::FilterSweep, Style::EchoOut, Style::Cut];
 }
 
@@ -58,6 +59,8 @@ pub(crate) struct Prefs {
     pub no_repeat: usize,
     /// Smallest beat-matched tempo change allowed (a ratio, 0.08 = ±8 %).
     pub max_tempo_shift: f32,
+    /// Effects the mixes may lead in with.
+    pub fx: Vec<OutFx>,
 }
 
 impl Default for Prefs {
@@ -65,7 +68,7 @@ impl Default for Prefs {
         Self {
             length: Length::Club { min: 0.25, max: 0.5 },
             harmonic: true,
-            // Pitch follows tempo (like a turntable): both songs glide to meet, no WSOLA artefacts.
+            // Pitch follows tempo (like a turntable): both songs glide to meet, no WSOLA artifacts.
             key_lock: false,
             // Like a DJ: blends where the tempos meet, cuts on the phrase where they don't (or where
             // both songs are at full energy).
@@ -74,6 +77,7 @@ impl Default for Prefs {
             session_minutes: 60,
             no_repeat: 50,
             max_tempo_shift: 0.08,
+            fx: OutFx::ALL.to_vec(),
         }
     }
 }
@@ -112,6 +116,44 @@ pub(crate) struct Transition {
     /// Semitones the next song is pitched by during the mix (keys meet), easing back after it.
     #[serde(default)]
     pub pitch_semitones: f32,
+    /// The current song's pitch (semitones from its own) by the mix, reached over the pre-glide.
+    #[serde(default)]
+    pub a_pitch_semitones: f32,
+    /// Whether the current song's pitch is set apart from its tempo (time-stretched).
+    #[serde(default)]
+    pub a_key_lock: bool,
+    /// The effect leading the current song into the mix, and over how long before it.
+    #[serde(default)]
+    pub fx: OutFx,
+    #[serde(default)]
+    pub fx_ms: f64,
+    /// Blends: where in it the bass changes hands (0–1, on a phrase downbeat).
+    #[serde(default)]
+    pub swap_at: f32,
+}
+
+/// What the outgoing song does in its last bars before a cut (the cheat sheet's FX).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum OutFx {
+    /// A clean cut.
+    #[default]
+    None,
+    /// Echo out: the last beat repeats and fades over the next song's instrumental start.
+    Echo,
+    /// Reverb swelling over the last two bars (a build-up's tension).
+    Reverb,
+    /// High-pass sweep over the last two bars (the bass and vocals thin out).
+    Filter,
+    /// Loop roll: the last bar's first beat repeats, then halves, then quarters.
+    Loop,
+    /// Riser: a bar of the playing song loops, then rolls in halves to sixteenths while it pitches
+    /// up and thins out, landing on the next song's downbeat (for a lift, or notes that clash).
+    Riser,
+}
+
+impl OutFx {
+    pub(crate) const ALL: [OutFx; 5] = [OutFx::Filter, OutFx::Reverb, OutFx::Echo, OutFx::Loop, OutFx::Riser];
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,29 +269,32 @@ fn window(a: &Analysis, prefs: &Prefs, position_ms: f64, asap: bool) -> (f64, f6
     (from.max(soonest), to.max(soonest + 1.0).min(end))
 }
 
-/// Bars of overlap for a style.
-fn bars_for(style: Style, prefs: &Prefs, asap: bool) -> u32 {
-    let base = match (style, prefs.length) {
-        (Style::Cut, _) => 0,
-        (Style::EchoOut, _) => 2,
-        (Style::FilterSweep, Length::Quick) => 8,
-        (Style::FilterSweep, _) => 16,
-        (Style::BassSwap, Length::Full) => 32,
-        (_, Length::Full) => 16,
-        (_, Length::Club { .. }) => 16,
-        (_, Length::Quick) => 8,
-    };
-    if asap { base / 2 } else { base }
-}
-
 /// Chooses the style, mix-out point and entry point for `a` → `b`. `None` when the current song
 /// has no room left for a mix.
 pub(crate) fn plan(a: &Analysis, b: &Analysis, prefs: &Prefs, position_ms: f64, asap: bool) -> Option<(Transition, f32)> {
     plan_with(a, b, prefs, position_ms, asap, (None, None))
 }
 
-/// [`plan`] knowing where each song has vocals (Spotify's vocal activity): two vocals never
-/// overlap in a blend.
+/// [`plan`] knowing where each song has vocals (Spotify's vocal activity; the analysis' own lead
+/// estimate where Spotify has none).
+///
+/// How club DJs do it (docs §6.9):
+/// * Everything on the phrase: the mix starts on a phrase boundary of the playing song, the next
+///   song comes in at one of its phrase starts, and the big moves (the bass swap, the cut) land on
+///   a phrase downbeat.
+/// * The default is the EQ blend: the next song's intro under the playing song's outro (or a
+///   breakdown), its lows killed, highs then mids crossing over, the bass changing hands in one
+///   beat on a phrase downbeat (when the next song's bassline arrives), then the playing song
+///   leaving. 16 bars (8 when in a hurry, 32 when the grooves and keys are alike).
+/// * One bass at a time and never two vocals / leads together: a blend whose overlap would put
+///   leads on top of each other is dropped. Keys that clash only mildly get a filter blend (the
+///   filter takes the melodic parts away).
+/// * Otherwise a drop swap: a cut on the one where the playing song's section closes (after its
+///   drop, into a break, or right after a momentary bass break), into the next song's drop or the
+///   phrase that carries the energy on; most seamless when the drum patterns match. Tempos that
+///   can't meet are echoed out. Effects only where they help (seasoning, not every mix).
+/// * The playing song eases to the next one's tempo (and key, where they clash) before the mix;
+///   the next song always plays as it is.
 pub(crate) fn plan_with(
     a: &Analysis,
     b: &Analysis,
@@ -259,152 +304,272 @@ pub(crate) fn plan_with(
     vocals: (Option<&Vocals>, Option<&Vocals>),
 ) -> Option<(Transition, f32)> {
     let (speed, dev) = tempo_match(a.bpm, b.bpm);
-    let beatmatch = dev <= f64::from(prefs.max_tempo_shift);
-    let shift = if beatmatch && !prefs.key_lock { (12.0 * speed.log2()).round() as i32 } else { 0 };
-    let mut keys = key_score(a, b, shift);
-    // Keys that clash: pitch the next song a semitone or two so they meet (only in blends, where
-    // both play; a cut needs none). The pitch is then applied apart from the tempo.
-    let mut extra: i32 = 0;
-    if beatmatch && prefs.harmonic && keys < 0.8 {
-        if let Some((e, k)) = [-1, 1, -2, 2].into_iter().map(|e| (e, key_score(a, b, shift + e))).max_by(|x, y| x.1.total_cmp(&y.1)) {
-            if k >= keys + 0.15 {
-                extra = e;
+    let matchable = dev <= f64::from(prefs.max_tempo_shift);
+    let a_speed = if matchable { 1.0 / speed } else { 1.0 };
+    // Pitch of the current song: with key lock its own, else following its tempo (a turntable);
+    // a semitone or two more where that makes the keys meet (shifting A by s ~ B by -s).
+    let base = if prefs.key_lock || !matchable { 0.0 } else { 12.0 * a_speed.log2() };
+    let score_at = |s: f64| key_score(a, b, -(s.round() as i32));
+    let mut a_pitch = base;
+    let mut keys = score_at(base);
+    let mut extra = 0;
+    if prefs.harmonic && keys < 0.8 && matchable {
+        for e in [-1i32, 1, -2, 2] {
+            let k = score_at(base + f64::from(e));
+            if k >= keys + 0.15 && (base + f64::from(e)).abs() <= 2.5 {
                 keys = k;
+                a_pitch = base + f64::from(e);
+                extra = e;
             }
         }
     }
-    // B's pitch from its own key: A already moves by half the tempo change (turntable style), so
-    // B takes the other half plus the extra semitones; key-locked, only the extra.
-    let pitch = match extra {
-        0 => 0,
-        e if prefs.key_lock => e,
-        e => (6.0 * speed.log2()).round() as i32 + e,
-    };
+    let a_key_lock = prefs.key_lock || extra != 0;
     let a_bars = a.bar_times_ms();
     let b_bars = b.bar_times_ms();
-    if a_bars.len() < 4 || b_bars.len() < 4 {
+    if a_bars.len() < 8 || b_bars.len() < 8 {
         return None;
     }
     let a_bar_ms = (a_bars[a_bars.len() - 1] - a_bars[0]) / (a_bars.len() - 1) as f64;
-    let beat_ms = a_bar_ms / f64::from(a.meter.max(1));
+    let meter = u32::from(a.meter.max(1));
+    let beat_ms = a_bar_ms / f64::from(meter);
     let (from, to) = window(a, prefs, position_ms, asap);
-
-    // The entry: bar 0 of the next song for full songs; otherwise so that its first drop (or
-    // first body phrase) lands when the mix ends.
-    let first_hit = b
+    let adjusting = (a_speed - 1.0).abs() > 0.0005 || a_pitch.abs() > 0.05;
+    let pre_glide = if adjusting { (8.0 * a_bar_ms).clamp(4_000.0, 16_000.0) } else { 0.0 };
+    let end = f64::from(a.audio_end_ms).min(f64::from(a.duration_ms));
+    // The riser came after the other effects: preferences saved before it follow the loop roll.
+    let fx_ok = |f: OutFx| prefs.fx.contains(&f) || (f == OutFx::Riser && prefs.fx.contains(&OutFx::Loop));
+    // How well the notes meet (0–1; 0.6 unknown): bars of the playing song (as pitched) against
+    // bars of the next. Pitch-class profiles correlated: the same notes agree, foreign ones clash.
+    let (ca, cb) = (a.chroma_bars(), b.chroma_bars());
+    let shift = a_pitch.round() as i32;
+    let harmony = |ar: std::ops::Range<usize>, br: std::ops::Range<usize>| -> f32 {
+        let mean = |c: &[[f32; 12]], r: std::ops::Range<usize>, rot: i32| -> Option<[f32; 12]> {
+            let bars = c.get(r.start.min(c.len())..r.end.min(c.len()))?;
+            (!bars.is_empty()).then(|| std::array::from_fn(|i| bars.iter().map(|b| b[(i as i32 - rot).rem_euclid(12) as usize]).sum::<f32>()))
+        };
+        let (Some(x), Some(y)) = (mean(&ca, ar, shift), mean(&cb, br, 0)) else { return 0.6 };
+        let (mx, my) = (x.iter().sum::<f32>() / 12.0, y.iter().sum::<f32>() / 12.0);
+        let (mut num, mut dx, mut dy) = (0.0, 0.0, 0.0);
+        for i in 0..12 {
+            num += (x[i] - mx) * (y[i] - my);
+            dx += (x[i] - mx).powi(2);
+            dy += (y[i] - my).powi(2);
+        }
+        if dx < 1e-9 || dy < 1e-9 { 0.6 } else { (num / (dx * dy).sqrt() + 1.0) / 2.0 }
+    };
+    // How alike the instruments are where the songs meet (0.75 unknown).
+    let texture = |ar: std::ops::Range<usize>, br: std::ops::Range<usize>| {
+        let v = |x: &Analysis, r| x.texture_over(r).map_or_else(Vec::new, |t| t.to_vec());
+        super::analysis::texture_similarity(&v(a, ar), &v(b, br))
+    };
+    let blend_ok = |s: Style| prefs.styles.contains(&s);
+    // Leads per bar: Spotify's vocal activity where known, else the analysis' estimate.
+    let lead = |x: &Analysis, bars: &[f64], v: Option<&Vocals>, bar: usize| -> f32 {
+        match (v, bars.get(bar), bars.get(bar + 1)) {
+            (Some(v), Some(s), Some(e)) => v.between(*s, *e).max(x.lead_at(bar) * 0.5),
+            _ => x.lead_at(bar),
+        }
+    };
+    let a_lead = |bar: usize| lead(a, &a_bars, vocals.0, bar);
+    let b_lead = |bar: usize| lead(b, &b_bars, vocals.1, bar);
+    let mean_bass = |x: &Analysis, p: &super::analysis::Phrase| {
+        (0..p.bars as usize).map(|k| x.bass_at(p.start_bar as usize + k)).sum::<f32>() / p.bars.max(1) as f32
+    };
+    // Where the next song's bassline is in for good, and its first drop.
+    let b_main = b
         .phrases
         .iter()
-        .find(|p| p.kind == PhraseKind::Drop)
-        .or_else(|| b.phrases.iter().find(|p| p.kind == PhraseKind::Body))
+        .find(|p| matches!(p.kind, PhraseKind::Body | PhraseKind::Drop) && mean_bass(b, p) > 0.45)
+        .or_else(|| b.phrases.iter().find(|p| p.kind != PhraseKind::Intro))
         .map_or(0, |p| p.start_bar as usize);
-
-    let allowed = |s: Style| prefs.styles.is_empty() || prefs.styles.contains(&s);
+    let b_drop = b.phrases.iter().find(|p| p.kind == PhraseKind::Drop).map_or(b_main, |p| p.start_bar as usize);
+    let b_starts: Vec<usize> = b.phrases.iter().map(|p| p.start_bar as usize).filter(|s| *s < b_bars.len()).collect();
+    let groove_sim = |a_bar: usize, b_bar: usize| cosine(&groove(a, phrase_at_bar(a, a_bar)), &groove(b, phrase_at_bar(b, b_bar))).clamp(0.0, 1.0);
+    let lens: &[usize] = if asap {
+        &[8]
+    } else if matches!(prefs.length, Length::Quick) {
+        &[8, 16]
+    } else {
+        &[16, 8, 32]
+    };
+    let mk = |style: Style, t: f64, length_ms: f64, bars: usize, entry_ms: f64, fx: OutFx, fx_ms: f64, swap_at: f32| Transition {
+        style,
+        mix_start_ms: t,
+        length_ms,
+        beats: bars as u32 * meter,
+        entry_ms,
+        speed: 1.0,
+        a_speed,
+        pre_glide_ms: pre_glide,
+        settle_ms: 0.0,
+        gain_db: (a.loudness_db - b.loudness_db).clamp(-6.0, 6.0),
+        beat_ms,
+        pitch_semitones: 0.0,
+        a_pitch_semitones: a_pitch as f32,
+        a_key_lock,
+        fx,
+        fx_ms,
+        swap_at,
+    };
     let mut best: Option<(Transition, f32)> = None;
-    for (i, &t) in a_bars.iter().enumerate() {
-        if t < from || t > to {
+    let keep = |t: Transition, q: f32, best: &mut Option<(Transition, f32)>| {
+        if best.as_ref().is_none_or(|b| q > b.1) {
+            *best = Some((t, q));
+        }
+    };
+    for p in &a.phrases {
+        let t_bar = p.start_bar as usize;
+        let Some(&t) = a_bars.get(t_bar) else { continue };
+        if t_bar == 0 || t < from || t > to || t > end - 2_000.0 {
             continue;
         }
-        // Phrase boundaries (every 8 bars from the first downbeat) score higher than other bars.
-        let phrase_bonus = if i % 8 == 0 { 0.3 } else if i % 4 == 0 { 0.12 } else { 0.0 };
-        let ending_phrase = a.phrases.get(phrase_at_bar(a, i)).map(|p| p.kind);
-        let a_energy = a.intensity_between(t, t + 8.0 * a_bar_ms);
-        // Tempos that can't meet leave a cut on the phrase as the clean way across.
-        for style in Style::ALL.into_iter().filter(|s| allowed(*s) || (*s == Style::Cut && !beatmatch)) {
-            let beat_styles = matches!(style, Style::BassSwap | Style::Crossfade | Style::FilterSweep);
-            if beat_styles && !beatmatch && style != Style::Crossfade {
-                continue;
-            }
-            let bars = bars_for(style, prefs, asap);
-            let mut length = f64::from(bars) * a_bar_ms;
-            if !beatmatch && style == Style::Crossfade {
-                length = length.min(4_000.0);
-            }
-            if t + length > f64::from(a.audio_end_ms).min(f64::from(a.duration_ms)) - 500.0 {
-                continue;
-            }
-            // Tempos meet halfway: the current song eases to it over 8 bars before the mix, the
-            // next one comes in there and eases back to its own tempo over 16 bars after it.
-            let matched = beatmatch && !matches!(style, Style::EchoOut | Style::Cut);
-            let (a_speed, b_speed, pre_glide) = if !matched {
-                (1.0, 1.0, 0.0)
-            } else if prefs.key_lock {
-                (1.0, speed, 0.0)
-            } else {
-                (1.0 / speed.sqrt(), speed.sqrt(), (8.0 * a_bar_ms).min(16_000.0))
-            };
-            if t - pre_glide < position_ms + if asap { 1_000.0 } else { 3_000.0 } {
-                continue;
-            }
-            let entry_bar = match prefs.length {
-                Length::Full if !asap => 0,
-                _ => first_hit.saturating_sub(bars.max(1) as usize),
-            };
-            let Some(&entry_ms) = b_bars.get(entry_bar.min(b_bars.len() - 1)) else { continue };
-            let b_energy = b.intensity_between(entry_ms, entry_ms + 8.0 * a_bar_ms / speed);
-            let jump = b_energy - a_energy;
-            // Both songs going full out: a fade would muddy it, a cut on the phrase hits harder.
-            let intense = a_energy > 0.65 && b_energy > 0.6;
-            // Two vocals must never play over each other (where Spotify knows the vocals).
-            let overlap_b = length * speed / a_speed.max(0.01);
-            let clash = match vocals {
-                (Some(va), Some(vb)) => va.between(t, t + length) > 0.45 && vb.between(entry_ms, entry_ms + overlap_b) > 0.45,
-                _ => false,
-            };
-            // How well the style suits this moment.
-            let mut fit = match style {
-                Style::BassSwap => 0.8 + if keys > 0.8 { 0.1 } else { -0.2 } - if intense { 0.3 } else { 0.0 },
-                Style::Crossfade if beatmatch => 0.6 + (keys - 0.7) * 0.5 - if intense { 0.35 } else { 0.0 },
-                Style::Crossfade => 0.25,
-                Style::FilterSweep => 0.6 + if keys < 0.6 { 0.25 } else { 0.0 } + if jump > 0.15 { 0.1 } else { 0.0 } - if intense { 0.2 } else { 0.0 },
-                Style::EchoOut => (if beatmatch { 0.45 } else { 0.7 }) - if intense { 0.1 } else { 0.0 },
-                Style::Cut => {
-                    0.6 + if beatmatch { 0.0 } else { 0.35 } + if intense { 0.25 } else { 0.0 } + if jump > 0.25 { 0.1 } else { 0.0 }
+        if t - pre_glide < position_ms + if asap { 1_000.0 } else { 3_000.0 } {
+            continue;
+        }
+        let next_kind = p.kind;
+        let prev_kind = a.phrase_of(t_bar - 1).map_or(PhraseKind::Body, |q| q.kind);
+        let e_before = a.intensity_between(t - 4.0 * a_bar_ms, t);
+        let e_after = a.intensity_between(t, t + 8.0 * a_bar_ms);
+        // The playing song winds down from here (its outro or a breakdown).
+        let winding = matches!(next_kind, PhraseKind::Outro | PhraseKind::Breakdown) || e_after < e_before - 0.1;
+        // Later in the window is better for full songs; earlier for ASAP.
+        let place = if asap { -((t - from) / 60_000.0) as f32 } else { ((t - from) / (to - from).max(1.0)) as f32 * 0.1 };
+
+        // 1. The EQ blend.
+        if matchable && (blend_ok(Style::BassSwap) || blend_ok(Style::FilterSweep)) {
+            for &len in lens {
+                let filter = keys < 0.6 || !blend_ok(Style::BassSwap);
+                let len = if filter { len.min(8) } else { len };
+                if t + len as f64 * a_bar_ms > end - 500.0 {
+                    continue;
                 }
-            };
-            if clash {
-                fit -= match style {
-                    Style::BassSwap | Style::Crossfade => 0.6,
-                    // The filter takes the outgoing vocal down.
-                    Style::FilterSweep => 0.25,
-                    _ => 0.0,
-                };
-            }
-            let outro_bonus = match (prefs.length, ending_phrase) {
-                (Length::Full, Some(PhraseKind::Outro)) => 0.25,
-                (_, Some(PhraseKind::Breakdown)) => 0.1,
-                _ => 0.0,
-            };
-            // Later in the window is better for full songs; earlier for ASAP.
-            let place = if asap { -((t - from) / 60_000.0) as f32 } else { ((t - from) / (to - from).max(1.0)) as f32 * 0.1 };
-            let quality = fit + phrase_bonus + outro_bonus + place;
-            if best.as_ref().is_none_or(|b| quality > b.1) {
-                let pitched = if matched { pitch } else { 0 };
-                let settle = if (b_speed - 1.0).abs() > 0.0005 || pitched != 0 {
-                    if prefs.key_lock || pitched != 0 { (8.0 * a_bar_ms).min(20_000.0) } else { (16.0 * a_bar_ms).min(30_000.0) }
-                } else {
-                    0.0
-                };
-                best = Some((
-                    Transition {
-                        style,
-                        mix_start_ms: t,
-                        length_ms: length.max(if style == Style::Cut { 30.0 } else { 0.0 }),
-                        beats: bars * u32::from(a.meter),
-                        entry_ms,
-                        speed: b_speed,
-                        a_speed,
-                        pre_glide_ms: pre_glide,
-                        settle_ms: settle,
-                        gain_db: (a.loudness_db - b.loudness_db).clamp(-6.0, 6.0),
-                        beat_ms,
-                        pitch_semitones: pitched as f32,
-                    },
-                    quality,
-                ));
+                let half = len / 2;
+                // The next song comes in at a phrase start so its bassline lands on a phrase
+                // downbeat inside the blend (at the latest as the blend ends: its intro under the
+                // current song's last phrase), as near halfway as it can.
+                let e = b_starts
+                    .iter()
+                    .copied()
+                    .filter(|s| *s <= b_main && b_main - s <= len)
+                    .min_by_key(|s| (b_main - s).abs_diff(half))
+                    .unwrap_or(0);
+                let swap_rel = if b_main > e { ((b_main - e) / 4 * 4).clamp(4, len) } else { half.max(4) };
+                // One bass at all times: the next song has its bass at the swap.
+                if b.bass_at(e + swap_rel) < 0.3 {
+                    continue;
+                }
+                // Two leads never at once while both are up in the mix.
+                let both = (swap_rel * 3 / 10..(swap_rel + (len - swap_rel) * 7 / 10).min(len))
+                    .filter(|k| a_lead(t_bar + k) > 0.5 && b_lead(e + k) > 0.5)
+                    .count();
+                if both >= 2 {
+                    continue;
+                }
+                let overlap = (0..len).map(|k| a_lead(t_bar + k) * b_lead(e + k)).sum::<f32>() / len as f32;
+                // Notes that clash under a long EQ blend: only a short filter blend hides them.
+                let h = harmony(t_bar..t_bar + len, e..e + len);
+                let tx = texture(t_bar..t_bar + len, e..e + len);
+                let filter = filter || h < 0.4;
+                if filter && len > 8 {
+                    continue;
+                }
+                let gs = groove_sim(t_bar, e);
+                let fit = 1.0
+                    + if winding { 0.25 } else { 0.0 }
+                    + if next_kind == PhraseKind::Drop { -0.45 } else { 0.0 }
+                    + 0.25 * gs
+                    + 0.2 * (keys - 0.7)
+                    + 0.4 * (h - 0.6)
+                    + 0.3 * (tx - 0.75)
+                    - 0.5 * overlap
+                    + match len {
+                        16 => 0.05,
+                        32 if gs > 0.8 && keys > 0.8 => 0.1,
+                        32 => -0.1,
+                        _ => 0.0,
+                    };
+                let style = if filter { Style::FilterSweep } else { Style::BassSwap };
+                let t_out = mk(style, t, len as f64 * a_bar_ms, len, b_bars[e], OutFx::None, 0.0, swap_rel as f32 / len as f32);
+                keep(t_out, fit + place, &mut best);
             }
         }
+
+        // 2. The drop swap: a cut on the one.
+        // Into the next song's drop after a high-energy section, else the phrase that carries the
+        // energy on; either way where its first notes agree with the last ones playing.
+        let entry_fit = |q: &super::analysis::Phrase| {
+            let at = q.start_bar as usize;
+            let energy = if e_before > 0.6 { if at == b_drop { 0.0 } else { 0.25 } } else { (f32::from(q.intensity) / 255.0 - (e_before + 0.05)).abs() };
+            0.5 * harmony(t_bar.saturating_sub(2)..t_bar, at..at + 2) + 0.4 * texture(t_bar.saturating_sub(4)..t_bar, at..at + 4) - 2.0 * energy
+        };
+        let entry_bar = b
+            .phrases
+            .iter()
+            .filter(|q| q.kind != PhraseKind::Outro)
+            .max_by(|x, y| entry_fit(x).total_cmp(&entry_fit(y)))
+            .map_or(0, |q| q.start_bar as usize);
+        let Some(&entry_ms) = b_bars.get(entry_bar) else { continue };
+        let h = harmony(t_bar.saturating_sub(2)..t_bar, entry_bar..entry_bar + 2);
+        let tx = texture(t_bar.saturating_sub(4)..t_bar, entry_bar..entry_bar + 4);
+        // Notes that clash, or a jump in instruments (a synth wall into a piano): masked.
+        let clash = h < 0.42 || tx < 0.45;
+        let b_e = b.intensity_between(entry_ms, entry_ms + 8.0 * a_bar_ms);
+        // A momentary break (the bass out for the bar before) or a section closing: natural cuts.
+        let break_before = a.bass_at(t_bar - 1) < 0.3 && a.bass_at(t_bar.saturating_sub(3)) > 0.5;
+        let closing = winding || prev_kind == PhraseKind::Drop;
+        let gs = groove_sim(t_bar - 1, entry_bar);
+        let lead_cut = a_lead(t_bar - 1) > 0.6 && b_lead(entry_bar) > 0.5;
+        let intense = e_before > 0.65 && b_e > 0.6;
+        let lift = b_e > e_before + 0.15;
+        let fx = if !matchable {
+            if b_lead(entry_bar) < 0.4 && !clash && fx_ok(OutFx::Echo) { OutFx::Echo } else if fx_ok(OutFx::Filter) { OutFx::Filter } else { OutFx::None }
+        } else if (clash || (lift && entry_bar == b_drop)) && b_e + 0.05 >= e_before && fx_ok(OutFx::Riser) {
+            // A riser makes the change of notes the build-up; it lands on the next song's one.
+            OutFx::Riser
+        } else if (lead_cut || clash) && fx_ok(OutFx::Filter) {
+            OutFx::Filter
+        } else if b_e > e_before + 0.2 && fx_ok(OutFx::Reverb) {
+            OutFx::Reverb
+        } else if intense && gs < 0.5 && fx_ok(OutFx::Loop) {
+            OutFx::Loop
+        } else {
+            OutFx::None
+        };
+        let fx_ms = match fx {
+            OutFx::None => 0.0,
+            OutFx::Echo => beat_ms,
+            OutFx::Loop => a_bar_ms,
+            OutFx::Filter | OutFx::Reverb => 2.0 * a_bar_ms,
+            OutFx::Riser => 4.0 * a_bar_ms,
+        };
+        let fit = 0.8
+            + if closing { 0.15 } else { -0.1 }
+            + if break_before { 0.2 } else { 0.0 }
+            + 0.2 * gs
+            + 0.1 * (keys - 0.7)
+            + 0.35 * (h - 0.6) * if fx == OutFx::None { 1.0 } else { 0.5 }
+            + 0.4 * (tx - 0.75)
+            - if e_before < 0.4 && b_e < 0.4 { 0.25 } else { 0.0 }
+            + if !matchable { 0.2 } else { 0.0 };
+        keep(mk(Style::Cut, t, 30.0, 0, entry_ms, fx, fx_ms, 0.5), fit + place, &mut best);
     }
-    best
+    best.or_else(|| {
+        // No phrase start left (played in late, or past the window): a cut on the next 4-bar line
+        // of the phrase grid, the playing song at its own tempo and key, echoing out where allowed.
+        let soonest = position_ms + if asap { 1_500.0 } else { 3_000.0 };
+        let on_line = |i: usize| a.phrase_of(i).is_none_or(|p| (i - p.start_bar as usize) % 4 == 0);
+        let ahead = || (1..a_bars.len()).filter(|&i| a_bars[i] >= soonest && a_bars[i] <= end - 1_000.0);
+        let bar = ahead().find(|&i| on_line(i)).or_else(|| ahead().next())?;
+        let t = a_bars[bar];
+        let entry = if a.intensity_between(t - 4.0 * a_bar_ms, t) > 0.6 { b_drop } else { 0 };
+        let echo = fx_ok(OutFx::Echo) && t - beat_ms > position_ms;
+        let mut tr = mk(Style::Cut, t, 30.0, 0, *b_bars.get(entry)?, if echo { OutFx::Echo } else { OutFx::None }, if echo { beat_ms } else { 0.0 }, 0.5);
+        tr.a_speed = 1.0;
+        tr.pre_glide_ms = 0.0;
+        tr.a_pitch_semitones = 0.0;
+        tr.a_key_lock = prefs.key_lock;
+        Some((tr, 0.2))
+    })
 }
 
 /// How well `b` follows `a` (0–1), with the reasons a listener would care about.
@@ -418,9 +583,15 @@ pub(crate) fn score(a: &Analysis, b: &Analysis, prefs: &Prefs, target_energy: f3
     let last = a.phrases.len().saturating_sub(1);
     let first = b.phrases.iter().position(|p| p.kind != PhraseKind::Intro).unwrap_or(0);
     let groove = cosine(&groove(a, last), &groove(b, first)).clamp(0.0, 1.0);
+    // An intro without leads to blend over; and on a drastic change (tempo or energy), a matching
+    // drum pattern carries it so the cut isn't heard.
+    let intro = 1.0 - (0..16).map(|k| b.lead_at(k)).sum::<f32>() / 16.0;
+    let groove_w = if tempo < 0.5 || energy < 0.7 { 0.3 } else { 0.17 };
     let key_w = if prefs.harmonic { 0.22 } else { 0.05 };
-    let total = 0.28 * tempo + key_w * keys + 0.15 * energy + 0.18 * timbre + 0.17 * groove;
-    let score = total / (0.78 + key_w);
+    // The kind of instruments (synth pads against piano or mallets): a change of mood if it jumps.
+    let texture = super::analysis::texture_similarity(&a.texture_mean, &b.texture_mean);
+    let total = 0.28 * tempo + key_w * keys + 0.15 * energy + 0.06 * timbre + 0.14 * texture + groove_w * groove + 0.08 * intro;
+    let score = total / (0.71 + groove_w + key_w);
     let mut reasons = Vec::new();
     if tempo > 0.8 {
         reasons.push(format!("{:.0} → {:.0} BPM", a.bpm, b.bpm));
@@ -431,7 +602,12 @@ pub(crate) fn score(a: &Analysis, b: &Analysis, prefs: &Prefs, target_energy: f3
     if groove > 0.8 {
         reasons.push("similar beat pattern".into());
     }
-    if timbre > 0.95 {
+    if intro > 0.85 {
+        reasons.push("clean intro to mix over".into());
+    }
+    if texture > 0.88 {
+        reasons.push("same kind of instruments".into());
+    } else if timbre > 0.95 {
         reasons.push("same sound".into());
     }
     if energy > 0.85 {
@@ -440,22 +616,66 @@ pub(crate) fn score(a: &Analysis, b: &Analysis, prefs: &Prefs, target_energy: f3
     (score, reasons)
 }
 
-/// The best next song from `pool` (only analysed candidates can be mixed).
+/// A first guess from Spotify's own tempo and key (0–1), before a song is analyzed: which songs
+/// to analyze first, and what to cut to when the playing song runs out before any is.
+pub(crate) fn quick_score(a_bpm: f32, a_camelot: Option<(u8, bool)>, b: crate::catalog::mix::Attrs, prefs: &Prefs) -> f32 {
+    let (_, dev) = tempo_match(a_bpm, b.bpm);
+    let max = f64::from(prefs.max_tempo_shift).max(0.01);
+    let tempo = if dev <= max { 1.0 - 0.4 * dev / max } else { (0.5 - 4.0 * (dev - max)).max(0.0) } as f32;
+    let keys = match (a_camelot, b.camelot) {
+        (Some((na, ma)), Some((nb, mb))) => {
+            let d = (i32::from(na) - i32::from(nb)).rem_euclid(12).min((i32::from(nb) - i32::from(na)).rem_euclid(12));
+            match (d, ma == mb) {
+                (0, true) => 1.0,
+                (0, false) | (1, true) => 0.85,
+                (1, false) | (2, true) => 0.55,
+                _ => 0.25,
+            }
+        }
+        _ => 0.6,
+    };
+    0.6 * tempo + 0.4 * keys
+}
+
+/// How many of the best-sounding songs get a full mix plan (the slow part) per pick.
+const PLAN_TOP: usize = 12;
+
+/// The best next song from `pool` (only analyzed candidates can be mixed).
 pub(crate) fn pick_next(ctx: &Context, pool: &[Candidate], prefs: &Prefs) -> Option<Pick> {
     let a = ctx.current.analysis.as_ref()?;
-    let recent: HashSet<&str> = ctx.history.iter().rev().take(prefs.no_repeat).map(String::as_str).collect();
+    // Never a song already played this session; only when the pool has nothing else left, the
+    // ones not heard in the last `no_repeat` songs.
+    let played: HashSet<&str> = ctx.history.iter().map(String::as_str).collect();
+    let recent: HashSet<&str> = ctx.history.iter().rev().take(prefs.no_repeat.max(1)).map(String::as_str).collect();
+    pick_from(ctx, pool, prefs, a, &played).or_else(|| pick_from(ctx, pool, prefs, a, &recent))
+}
+
+fn pick_from(ctx: &Context, pool: &[Candidate], prefs: &Prefs, a: &Arc<Analysis>, exclude: &HashSet<&str>) -> Option<Pick> {
     let target = target_energy(prefs.energy_arc, ctx.session_progress, body_energy(a));
-    pool.iter()
-        .filter(|c| c.uri != ctx.current.uri && !recent.contains(c.uri.as_str()))
+    // Two passes: the song-to-song score for everyone (cheap), then a full mix plan for the best
+    // few (phrase by phrase, the slow part).
+    let mut ranked: Vec<(&Candidate, &Arc<Analysis>, f32, Vec<String>)> = pool
+        .iter()
+        .filter(|c| c.uri != ctx.current.uri && !exclude.contains(c.uri.as_str()))
         .filter_map(|c| {
             let b = c.analysis.as_ref()?;
             let (mut s, reasons) = score(a, b, prefs, target);
             if c.artist == ctx.current.artist || ctx.recent_artists.iter().rev().take(2).any(|x| *x == c.artist) {
                 s -= 0.12;
             }
-            let (va, vb) = (crate::catalog::mix::vocals_cached(&ctx.current.uri), crate::catalog::mix::vocals_cached(&c.uri));
+            Some((c, b, s, reasons))
+        })
+        .collect();
+    ranked.sort_by(|x, y| y.2.total_cmp(&x.2));
+    let va = crate::catalog::mix::vocals_cached(&ctx.current.uri);
+    ranked
+        .into_iter()
+        .take(PLAN_TOP)
+        .filter_map(|(c, b, s, reasons)| {
+            let vb = crate::catalog::mix::vocals_cached(&c.uri);
             let (transition, quality) = plan_with(a, b, prefs, ctx.position_ms, ctx.asap, (va.as_ref(), vb.as_ref()))?;
-            Some(Pick { uri: c.uri.clone(), score: s + 0.05 * quality.min(1.0), transition, reasons })
+            // How well the mix itself works (phrases, notes meeting, no clashes) counts toward the pick.
+            Some(Pick { uri: c.uri.clone(), score: s + 0.12 * quality.min(1.5), transition, reasons })
         })
         .max_by(|x, y| x.score.total_cmp(&y.score))
 }
@@ -558,9 +778,92 @@ mod tests {
         let bars = a.analysis.as_ref().unwrap().bar_times_ms();
         assert!(bars.iter().any(|b| (b - t.mix_start_ms).abs() < 1.0), "mix starts on a bar");
         assert!(t.mix_start_ms >= 0.25 * 120_000.0 - 1.0 && t.mix_start_ms <= 0.5 * 120_000.0 + 1.0);
-        // The tempos meet halfway: A slows a little, B speeds up a little, beats still in line.
+        // The current song eases to the next one's tempo; the next comes in as it is, with a cut
+        // (no vocal data: a blend could put two vocals together).
         assert!((t.speed / t.a_speed - 126.0 / 124.0).abs() < 0.01, "speed {} / {}", t.speed, t.a_speed);
-        assert!(t.a_speed < 1.0 && t.speed > 1.0 && t.pre_glide_ms > 0.0);
+        assert!(t.a_speed < 1.0 && t.speed == 1.0 && t.pre_glide_ms > 0.0);
+        assert_eq!(t.style, Style::Cut);
+    }
+
+    #[test]
+    fn blends_on_the_phrase_by_default() {
+        let a = cand("a", 125.0, 220.0);
+        let b = cand("b", 125.0, 220.0);
+        let (aa, bb) = (a.analysis.as_ref().unwrap(), b.analysis.as_ref().unwrap());
+        let prefs = Prefs { length: Length::Full, ..Prefs::default() };
+        let (t, _) = plan(aa, bb, &prefs, 0.0, false).unwrap();
+        assert_eq!(t.style, Style::BassSwap, "{t:?}");
+        // On A's phrase boundary, into one of B's phrase starts, the bass swapping on a 4-bar line.
+        let at = |bars: &[f64], ms: f64| bars.iter().position(|x| (x - ms).abs() < 1.0).unwrap();
+        let i = at(&aa.bar_times_ms(), t.mix_start_ms);
+        assert!(aa.phrases.iter().any(|p| p.start_bar as usize == i));
+        let j = at(&bb.bar_times_ms(), t.entry_ms);
+        assert!(bb.phrases.iter().any(|p| p.start_bar as usize == j));
+        let swap_bar = t.swap_at * (t.beats / u32::from(aa.meter)) as f32;
+        assert!((swap_bar - swap_bar.round()).abs() < 1e-3 && swap_bar.round() as u32 % 4 == 0, "swap at bar {swap_bar}");
+        // B's bass is in by the swap (one bass at all times).
+        assert!(bb.bass_at(j + swap_bar.round() as usize) >= 0.3);
+        assert_eq!(t.speed, 1.0);
+    }
+
+    #[test]
+    fn a_late_start_still_finds_a_mix() {
+        let a = cand("a", 125.0, 220.0);
+        let b = cand("b", 125.0, 220.0);
+        let (aa, bb) = (a.analysis.as_ref().unwrap(), b.analysis.as_ref().unwrap());
+        // Past the last phrase start: a cut on the next 4-bar line, as the song is.
+        let late = f64::from(aa.audio_end_ms) - 12_000.0;
+        let (t, q) = plan(aa, bb, &Prefs::default(), late, false).unwrap();
+        assert_eq!(t.style, Style::Cut);
+        assert!(t.mix_start_ms > late && t.mix_start_ms < f64::from(aa.audio_end_ms), "{t:?}");
+        assert!(q < 0.5 && t.a_speed == 1.0);
+        // Nothing at all once the song is out.
+        assert!(plan(aa, bb, &Prefs::default(), f64::from(aa.audio_end_ms), false).is_none());
+    }
+
+    #[test]
+    fn quick_score_prefers_close_tempo_and_key() {
+        use crate::catalog::mix::Attrs;
+        let p = Prefs::default();
+        let near = quick_score(124.0, Some((8, true)), Attrs { bpm: 126.0, camelot: Some((9, true)) }, &p);
+        let far = quick_score(124.0, Some((8, true)), Attrs { bpm: 90.0, camelot: Some((2, false)) }, &p);
+        assert!(near > 0.8 && far < 0.4, "{near} {far}");
+        // Double time counts as a match.
+        assert!(quick_score(70.0, None, Attrs { bpm: 140.0, camelot: None }, &p) > 0.75);
+    }
+
+    #[test]
+    fn clashing_notes_never_blend_long() {
+        let a = cand("a", 125.0, 220.0);
+        // A semitone away: every note rubs.
+        let b = cand("b", 125.0, 233.08);
+        let (aa, bb) = (a.analysis.as_ref().unwrap(), b.analysis.as_ref().unwrap());
+        let prefs = Prefs { length: Length::Full, harmonic: false, ..Prefs::default() };
+        let (t, _) = plan(aa, bb, &prefs, 0.0, false).unwrap();
+        match t.style {
+            Style::Cut => assert!(matches!(t.fx, OutFx::Riser | OutFx::Filter), "{t:?}"),
+            Style::FilterSweep => assert!(t.beats <= 8 * u32::from(aa.meter)),
+            s => panic!("{s:?}: {t:?}"),
+        }
+        // With harmonic mixing the playing song pitches a semitone to meet it, and they blend.
+        let (t, _) = plan(aa, bb, &Prefs { length: Length::Full, ..Prefs::default() }, 0.0, false).unwrap();
+        assert!(t.a_pitch_semitones.abs() > 0.5, "{t:?}");
+    }
+
+    #[test]
+    fn blends_only_where_one_song_is_instrumental() {
+        let a = cand("a", 125.0, 220.0);
+        let b = cand("b", 125.0, 220.0);
+        let (aa, bb) = (a.analysis.as_ref().unwrap(), b.analysis.as_ref().unwrap());
+        let prefs = Prefs { length: Length::Full, ..Prefs::default() };
+        let sung = Vocals { start_ms: 0.0, step_ms: 500.0, prob: vec![90; 400] };
+        let quiet = Vocals { start_ms: 0.0, step_ms: 500.0, prob: vec![0; 400] };
+        let (t, _) = plan_with(aa, bb, &prefs, 0.0, false, (Some(&sung), Some(&sung))).unwrap();
+        assert_eq!(t.style, Style::Cut, "two vocals never overlap");
+        let blend = plan_with(aa, bb, &prefs, 0.0, false, (Some(&quiet), Some(&sung))).unwrap().0;
+        // A blend is allowed now (an outro into the next song), and if so it swaps the bass.
+        assert!(matches!(blend.style, Style::Cut | Style::BassSwap | Style::FilterSweep));
+        assert_eq!(blend.speed, 1.0);
     }
 
     #[test]

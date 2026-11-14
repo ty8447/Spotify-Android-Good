@@ -168,7 +168,7 @@
     <string name="shell_error_unavailable">That isn\'t available on the current device.</string>
     <string name="shell_error_not_active_device">Start playback on a device first.</string>
     <string name="shell_error_playback_refused">Spotify refused playback for this account.</string>
-    <string name="shell_error_cancelled">Cancelled</string>
+    <string name="shell_error_cancelled">Canceled</string>
     <string name="shell_error_generic">Something went wrong. Try again.</string>
 
     <!-- Notification permission -->
@@ -238,7 +238,7 @@
     <string name="shell_settings_autoplay">Autoplay</string>
     <string name="shell_settings_autoplay_summary">Keep listening to similar content when your music ends</string>
     <string name="shell_settings_hide_explicit">Hide explicit content</string>
-    <string name="shell_settings_hide_explicit_summary">Explicit tracks are skipped and greyed out</string>
+    <string name="shell_settings_hide_explicit_summary">Explicit tracks are skipped and grayed out</string>
     <string name="shell_settings_links">Links</string>
     <string name="shell_settings_open_links">Open Spotify links in SpotifyGood</string>
     <string name="shell_settings_open_links_summary">Android opens open.spotify.com links in the browser until you allow them. Tap, then Add links and choose open.spotify.com. If the Spotify app opens them, turn off its Open supported links first. Sharing a link to SpotifyGood always works.</string>

@@ -18,6 +18,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import kotlinx.coroutines.launch
 import com.taehagen.spotifygood.playback.PlaybackService
 import com.taehagen.spotifygood.ui.AppRoot
 import com.taehagen.spotifygood.ui.MediaSearchRequest
@@ -66,7 +67,7 @@ class MainActivity : ComponentActivity() {
         val fromHistory = intent?.flags?.and(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
         if (savedInstanceState == null && !fromHistory) handleIntent(intent)
 
-        setContent {
+        setContent(parent = reducibleMotionRecomposer()) {
             val settings by graph.settings.settings.collectAsStateWithLifecycle()
             SpotifyGoodTheme(settings) {
                 AppRoot()
@@ -74,6 +75,34 @@ class MainActivity : ComponentActivity() {
                 com.taehagen.spotifygood.ui.screens.video.PipVideo()
             }
         }
+    }
+
+    /**
+     * The window's recomposer with [com.taehagen.spotifygood.playback.ReducedMotion] in its effect
+     * context (Settings › Reduce animations: animations finish at once), its frames paused while
+     * the activity is stopped (as Compose's own window recomposer).
+     */
+    private fun reducibleMotionRecomposer(): androidx.compose.runtime.Recomposer {
+        val ui = androidx.compose.ui.platform.AndroidUiDispatcher.CurrentThread
+        val clock = androidx.compose.runtime.PausableMonotonicFrameClock(ui[androidx.compose.runtime.MonotonicFrameClock]!!)
+        val context = ui + clock + com.taehagen.spotifygood.playback.ReducedMotion
+        val recomposer = androidx.compose.runtime.Recomposer(context)
+        lifecycle.addObserver(androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_START -> clock.resume()
+                androidx.lifecycle.Lifecycle.Event.ON_STOP -> clock.pause()
+                androidx.lifecycle.Lifecycle.Event.ON_DESTROY -> recomposer.cancel()
+                else -> {}
+            }
+        })
+        kotlinx.coroutines.CoroutineScope(context).launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            try {
+                recomposer.runRecomposeAndApplyChanges()
+            } finally {
+                clock.resume()
+            }
+        }
+        return recomposer
     }
 
     override fun onUserLeaveHint() {

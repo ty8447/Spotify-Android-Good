@@ -36,7 +36,7 @@ impl Sink for AndroidSink {
                     log::error!("AudioSinkBridge.start failed; the next write will retry");
                 }
             }
-            None => log::error!("audio bridge not initialised"),
+            None => log::error!("audio bridge not initialized"),
         }
         self.running = true;
         Ok(())

@@ -81,7 +81,7 @@ object LoginErrorCode {
  *   device-code polling pauses until [onLoginScreenShown] (the code stays persisted, so it
  *   resumes where it was, e.g. after approving it in the browser). The PKCE flow keeps waiting:
  *   the browser is in front of the app on purpose.
- * * [onLoginScreenLeft] (activity finished): every flow that has no token yet is cancelled.
+ * * [onLoginScreenLeft] (activity finished): every flow that has no token yet is canceled.
  *
  * [LoginState.Success] is reset to [LoginState.Idle] whenever the engine reports logged out
  * (logout, rejected credentials), so the login screen always shows its options again.
@@ -146,7 +146,7 @@ class AuthRepository(
         }
     }
 
-    /** Starts the device authorization grant and polls until approved/expired/cancelled. */
+    /** Starts the device authorization grant and polls until approved/expired/canceled. */
     fun startDeviceLogin() {
         synchronized(lock) {
             // Idempotent while running (recomposition, configuration change, screen re-entry).
@@ -275,7 +275,7 @@ class AuthRepository(
     /**
      * For a device flow [id] without a token, about to request or poll a code: applies what the
      * screen did meanwhile (e.g. while a refresh-token login was in progress). Gone: the flow is
-     * cancelled and its code forgotten. Hidden: paused, resumed by [onLoginScreenShown]. Returns
+     * canceled and its code forgotten. Hidden: paused, resumed by [onLoginScreenShown]. Returns
      * whether the flow may go on.
      */
     private fun deviceFlowMayPoll(id: Long): Boolean {

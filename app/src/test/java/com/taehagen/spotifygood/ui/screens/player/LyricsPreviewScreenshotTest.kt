@@ -66,7 +66,7 @@ import org.robolectric.shadows.ShadowChoreographer
 /**
  * Now Playing's lyrics card under Robolectric (run with `-Pscreenshots`; images in
  * app/build/outputs/roborazzi, not in git). Filmstrips of the card as the current line advances
- * (light and dark, Spotify's colours and the artwork fallback, past a line that wraps), after a
+ * (light and dark, Spotify's colors and the artwork fallback, past a line that wraps), after a
  * seek, on another song and at the end; checks of what TalkBack reads, that a card out of view or
  * in a collapsed player doesn't follow the position, and that a tap opens the lyrics while a drag
  * scrolls the page. Fake state only.
@@ -165,7 +165,7 @@ class LyricsPreviewScreenshotTest {
         }
     }
 
-    // ---- Behaviour ------------------------------------------------------------------------------
+    // ---- Behavior ------------------------------------------------------------------------------
 
     /** TalkBack reads the window's lines through the card, as before the lines scrolled. */
     @Test
@@ -323,7 +323,7 @@ class LyricsPreviewScreenshotTest {
 
     /**
      * The card at [from] (+100 ms), then the position at [to]'s start and frames through the
-     * scroll (650 ms) and the colour fades (300 ms), as one filmstrip.
+     * scroll (650 ms) and the color fades (300 ms), as one filmstrip.
      */
     private fun scrollStrip(name: String, dark: Boolean, lyrics: Lyrics, from: Int, to: Int) {
         val card = CardState(lyrics, lineStart(from) + 100)
@@ -357,7 +357,7 @@ class LyricsPreviewScreenshotTest {
         return Bitmap.createBitmap(full, left, top, right - left, bottom - top)
     }
 
-    /** [frames] in a grid of three columns at half size, each labelled. */
+    /** [frames] in a grid of three columns at half size, each labeled. */
     private fun strip(frames: List<Pair<String, Bitmap>>): Bitmap {
         val columns = 3.coerceAtMost(frames.size)
         val cellWidth = frames.maxOf { it.second.width } / 2
@@ -502,7 +502,7 @@ class LyricsPreviewScreenshotTest {
             ),
         )
 
-        /** Spotify's colours for a red song (background, upcoming text, highlight). */
+        /** Spotify's colors for a red song (background, upcoming text, highlight). */
         val SPOTIFY_COLORS = LyricsColors(background = 0xFFB02A3A.toInt(), text = 0xFF000000.toInt(), highlightText = 0xFFFFFFFF.toInt())
 
         val COVER_COLOR = Color(0xFF7A3E8E)

@@ -61,7 +61,7 @@ internal object SleepSchedule {
 
     /**
      * Longest time the CPU is held awake (from the last stage or, for remote playback, from arming
-     * a timer that ends soon). Partial wake locks are honoured outside Doze only.
+     * a timer that ends soon). Partial wake locks are honored outside Doze only.
      */
     const val LEAD_MS = 10 * 60_000L
 

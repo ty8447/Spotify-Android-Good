@@ -21,7 +21,10 @@ const CH_N: usize = 4096;
 const CH_HOP: usize = 2048;
 const TAPS: usize = 31;
 /// Bump when the analysis changes: cached results of older versions are redone.
-pub(crate) const VERSION: u32 = 1;
+/// 2: per-bar bass and lead (vocal / melody) activity, phrases aligned to the song's structure.
+/// 3: per-bar chroma (the notes playing), so mixes can meet on notes that agree.
+/// 4: per-bar texture (what kind of instruments: tonal, sustained, struck, bright).
+pub(crate) const VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -76,9 +79,70 @@ pub(crate) struct Analysis {
     pub timbre: Vec<f32>,
     pub audio_start_ms: u32,
     pub audio_end_ms: u32,
+    /// Per bar, 0–255: the low end (kick and bassline, 40–150 Hz) against the song's loudest bars.
+    /// Near 0 is a break: the bass is out.
+    #[serde(default)]
+    pub bass: Vec<u8>,
+    /// Per bar, 0–255: lead activity (vocals and melodies: mid-range onsets between the beats)
+    /// against the song's busiest bars. Near 0 is drums-only / instrumental.
+    #[serde(default)]
+    pub lead: Vec<u8>,
+    /// Per bar, 12 pitch-class strengths (C first, 0–255, the bar's strongest 255), base64.
+    #[serde(default)]
+    pub chroma: String,
+    /// Per bar, the instruments' texture ([`TEXTURE`] values, 0–255 each), base64.
+    #[serde(default)]
+    pub texture: String,
+    /// The texture of the song's body (its bars with bass in), for choosing songs.
+    #[serde(default)]
+    pub texture_mean: Vec<f32>,
+}
+
+/// What a bar's instruments sound like, comparable between songs (each 0–1):
+/// * tone: how pitched the mid range is (synths, keys, voices) rather than noisy (distortion, drums);
+/// * sustain: notes that hold (pads, strings, synth leads) rather than die away (piano, mallets, plucks);
+/// * attacks: new mid-range notes struck per beat (a xylophone or piano line rather than a pad);
+/// * brightness: where the spectrum's weight sits.
+pub(crate) const TEXTURE: usize = 4;
+
+/// How alike two textures are (0–1); sustain and attacks tell instruments apart most.
+pub(crate) fn texture_similarity(a: &[f32], b: &[f32]) -> f32 {
+    const W: [f32; TEXTURE] = [1.0, 1.4, 1.2, 0.8];
+    if a.len() < TEXTURE || b.len() < TEXTURE {
+        return 0.75;
+    }
+    let d: f32 = (0..TEXTURE).map(|i| W[i] * (a[i] - b[i]).abs()).sum::<f32>() / W.iter().sum::<f32>();
+    (1.0 - 2.0 * d).clamp(0.0, 1.0)
 }
 
 impl Analysis {
+    /// The bass level of `bar` (0–1; 0.5 when unknown).
+    pub(crate) fn bass_at(&self, bar: usize) -> f32 {
+        self.bass.get(bar).map_or(0.5, |v| f32::from(*v) / 255.0)
+    }
+
+    /// The lead (vocal / melody) activity of `bar` (0–1; 0.5 when unknown).
+    pub(crate) fn lead_at(&self, bar: usize) -> f32 {
+        self.lead.get(bar).map_or(0.5, |v| f32::from(*v) / 255.0)
+    }
+
+    /// The mean texture of `bars` (`None` when unknown).
+    pub(crate) fn texture_over(&self, bars: std::ops::Range<usize>) -> Option<[f32; TEXTURE]> {
+        let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(&self.texture).ok()?;
+        let rows: Vec<&[u8]> = bytes.chunks_exact(TEXTURE).skip(bars.start).take(bars.len()).collect();
+        (!rows.is_empty()).then(|| std::array::from_fn(|i| rows.iter().map(|r| f32::from(r[i]) / 255.0).sum::<f32>() / rows.len() as f32))
+    }
+
+    /// Each bar's pitch-class profile (0–1), empty when unknown.
+    pub(crate) fn chroma_bars(&self) -> Vec<[f32; 12]> {
+        let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(&self.chroma).unwrap_or_default();
+        bytes.chunks_exact(12).map(|c| std::array::from_fn(|i| f32::from(c[i]) / 255.0)).collect()
+    }
+
+    /// The phrase containing `bar`.
+    pub(crate) fn phrase_of(&self, bar: usize) -> Option<&Phrase> {
+        self.phrases.iter().rev().find(|p| p.start_bar as usize <= bar)
+    }
     pub(crate) fn beat_times_ms(&self) -> Vec<f64> {
         match &self.beats {
             Beats::Grid { offset_ms, period_ms, count } => {
@@ -128,9 +192,13 @@ impl Analysis {
 
 /// Camelot wheel notation (C major = 8B, A minor = 8A).
 pub(crate) fn camelot(key: u8, minor: bool) -> String {
+    format!("{}{}", camelot_number(key, minor), if minor { 'A' } else { 'B' })
+}
+
+/// The Camelot wheel number (1–12) of a key.
+pub(crate) fn camelot_number(key: u8, minor: bool) -> u8 {
     let major_pc = if minor { (key + 3) % 12 } else { key % 12 };
-    let n = (usize::from(major_pc) * 7 % 12 + 7) % 12 + 1;
-    format!("{n}{}", if minor { 'A' } else { 'B' })
+    (major_pc * 7 % 12 + 7) % 12 + 1
 }
 
 const NAMES: [&str; 12] = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
@@ -144,6 +212,17 @@ struct OnsetFrame {
     low: f32,
     high: f32,
     rms: f32,
+    /// Low-end energy (43–150 Hz).
+    low_e: f32,
+    /// Tonal mid-range energy (300–2 500 Hz, times one minus its spectral flatness): voices and
+    /// leads count, noisy hats and claps hardly.
+    mid: f32,
+    /// One minus the mid range's spectral flatness.
+    tone: f32,
+    /// Rise of the mid range's (log) spectrum: struck notes.
+    mid_flux: f32,
+    /// Spectral centroid over Nyquist.
+    bright: f32,
 }
 
 pub(crate) struct Analyzer {
@@ -161,6 +240,8 @@ pub(crate) struct Analyzer {
     ch_mag: Vec<f32>,
     frames: Vec<OnsetFrame>,
     chroma: [f64; 12],
+    /// Per chroma frame (one every `CH_HOP` samples), its normalized pitch-class profile.
+    ch_frames: Vec<[f32; 12]>,
     bands: [f64; 8],
     centroid: f64,
     weight: f64,
@@ -222,6 +303,7 @@ impl Analyzer {
             ch_mag: vec![0.0; CH_N / 2 + 1],
             frames: Vec::new(),
             chroma: [0.0; 12],
+            ch_frames: Vec::new(),
             bands: [0.0; 8],
             centroid: 0.0,
             weight: 0.0,
@@ -262,7 +344,8 @@ impl Analyzer {
             let rms = (self.mono[start..start + ON_N].iter().map(|v| v * v).sum::<f32>() / ON_N as f32).sqrt();
             // Flux per octave band, averaged within the band so the many high bins (hats) don't
             // outweigh the few low ones (kick) in the beat envelope.
-            let (mut flux, mut low, mut high) = (0.0, 0.0, 0.0);
+            let (mut flux, mut low, mut high, mut low_e, mut mid_flux) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            let (mut c_num, mut c_den) = (0.0f32, 0.0f32);
             let mut band_sum = 0.0;
             let mut band_end = 4;
             let mut band_len = 0;
@@ -278,20 +361,41 @@ impl Analyzer {
                     band_len = 0;
                     band_end *= 2;
                 }
+                c_num += k as f32 * self.on_mag[k];
+                c_den += self.on_mag[k];
+                if (14..=116).contains(&k) {
+                    mid_flux += d;
+                }
                 // 21.5 Hz bins: kick below 150 Hz, hats above 3.5 kHz (Nyquist is 5.5 kHz).
                 if k <= 7 {
                     low += d;
+                    if k >= 2 {
+                        low_e += self.on_mag[k] * self.on_mag[k];
+                    }
                 } else if k >= 163 {
                     high += d;
                 }
             }
-            self.frames.push(OnsetFrame { flux, low, high, rms });
+            // Tonality of the mid range: 1 − flatness (geometric over arithmetic mean power).
+            let band = &self.on_mag[14..=116];
+            let (mut ln_sum, mut pow_sum) = (0.0f32, 0.0f32);
+            for m in band {
+                let p = m * m + 1e-12;
+                ln_sum += p.ln();
+                pow_sum += p;
+            }
+            let count = band.len() as f32;
+            let flatness = ((ln_sum / count).exp() / (pow_sum / count)).clamp(0.0, 1.0);
+            let mid = pow_sum * (1.0 - flatness);
+            let bright = c_num / c_den.max(1e-9) / self.on_mag.len() as f32;
+            self.frames.push(OnsetFrame { flux, low, high, rms, low_e, mid, tone: 1.0 - flatness, mid_flux: mid_flux / 103.0, bright });
             self.on_pos += ON_HOP;
         }
         while self.ch_pos + CH_N <= self.mono.len() {
             let start = self.ch_pos;
             self.ch_fft.magnitudes(&self.mono[start..start + CH_N], &mut self.ch_mag);
             let energy: f32 = self.ch_mag.iter().map(|m| m * m).sum();
+            let mut frame = [0.0f32; 12];
             if energy > 1e-6 {
                 let w = f64::from(energy.sqrt());
                 let mut chroma = [0.0f64; 12];
@@ -312,6 +416,7 @@ impl Analyzer {
                 let bs: f64 = bands.iter().sum::<f64>().max(1e-12);
                 for i in 0..12 {
                     self.chroma[i] += w * chroma[i] / cs;
+                    frame[i] = (chroma[i] / cs) as f32;
                 }
                 for i in 0..8 {
                     self.bands[i] += w * bands[i] / bs;
@@ -319,6 +424,7 @@ impl Analyzer {
                 self.centroid += w * (num / den.max(1e-9)) / (CH_N / 2) as f64;
                 self.weight += w;
             }
+            self.ch_frames.push(frame);
             self.ch_pos += CH_HOP;
         }
         // Keep what the next frames of both transforms still need.
@@ -330,7 +436,7 @@ impl Analyzer {
         }
     }
 
-    /// The analysis of everything pushed, `None` for audio too short or silent to analyse.
+    /// The analysis of everything pushed, `None` for audio too short or silent to analyze.
     pub(crate) fn finish(self, duration_ms: u32) -> Option<Analysis> {
         let n = self.frames.len();
         if n < (FPS * 20.0) as usize {
@@ -415,7 +521,67 @@ impl Analyzer {
             }
             grooves.push(g);
         }
-        let phrases = phrases(&intensity);
+        // Per bar: bass energy, and lead activity = tonal mid-range energy above the song's own
+        // floor (its pads and chords play all through; voices and leads come and go).
+        let mut bass_raw = Vec::with_capacity(intensity.len());
+        let mut lead_raw = Vec::with_capacity(intensity.len());
+        for t in bars.iter().take(intensity.len()) {
+            let (a, b) = (at(*t), at(t + bar_len).max(at(*t) + 1).min(n));
+            let span = &self.frames[a..b];
+            bass_raw.push(span.iter().map(|f| f.low_e).sum::<f32>() / span.len().max(1) as f32);
+            lead_raw.push(span.iter().map(|f| f.mid).sum::<f32>() / span.len().max(1) as f32);
+        }
+        let mut floor: Vec<f32> = lead_raw.clone();
+        floor.sort_by(f32::total_cmp);
+        let floor = floor.get(floor.len() / 5).copied().unwrap_or(0.0);
+        lead_raw.iter_mut().for_each(|v| *v = (*v - floor).max(0.0));
+        let scale = |v: &[f32]| -> Vec<u8> {
+            let mut s: Vec<f32> = v.to_vec();
+            s.sort_by(f32::total_cmp);
+            let top = s.get(s.len() * 9 / 10).copied().unwrap_or(1.0).max(1e-9);
+            v.iter().map(|x| ((x / top).clamp(0.0, 1.0) * 255.0).round() as u8).collect()
+        };
+        let bass = scale(&bass_raw);
+        let lead = scale(&lead_raw);
+        // Per bar: the texture (see TEXTURE), on absolute scales so songs compare.
+        let beats_per_bar = meter.max(1) as f64;
+        let mut texture = Vec::with_capacity(intensity.len() * TEXTURE);
+        let mut body: Vec<[f32; TEXTURE]> = Vec::new();
+        for (i, t) in bars.iter().take(intensity.len()).enumerate() {
+            let (a, b) = (at(*t), at(t + bar_len).max(at(*t) + 1).min(n));
+            let span = &self.frames[a.min(n.saturating_sub(1))..b];
+            let len = span.len().max(1) as f32;
+            let tone = span.iter().map(|f| f.tone).sum::<f32>() / len;
+            let mut mids: Vec<f32> = span.iter().map(|f| f.mid).collect();
+            mids.sort_by(f32::total_cmp);
+            let mean_mid = mids.iter().sum::<f32>() / len;
+            let sustain = (mids.get(mids.len() / 5).copied().unwrap_or(0.0) / mean_mid.max(1e-9)).clamp(0.0, 1.0);
+            // Struck notes: mid-range flux peaks over 1.6 × the bar's mean, per beat (4 = 1).
+            let mf = span.iter().map(|f| f.mid_flux).sum::<f32>() / len;
+            let peaks = span.windows(3).filter(|w| w[1].mid_flux > w[0].mid_flux && w[1].mid_flux >= w[2].mid_flux && w[1].mid_flux > 1.6 * mf).count();
+            let attacks = (peaks as f64 / beats_per_bar / 4.0).clamp(0.0, 1.0) as f32;
+            let bright = (span.iter().map(|f| f.bright).sum::<f32>() / len * 2.5).clamp(0.0, 1.0);
+            let row = [tone, sustain, attacks, bright];
+            if bass.get(i).is_some_and(|b| *b > 100) {
+                body.push(row);
+            }
+            texture.extend(row.iter().map(|v| (v * 255.0).round() as u8));
+        }
+        let texture_mean: Vec<f32> = if body.is_empty() { Vec::new() } else { (0..TEXTURE).map(|k| body.iter().map(|r| r[k]).sum::<f32>() / body.len() as f32).collect() };
+        // Per bar: the notes playing (chroma frames averaged, the strongest pitch class 255).
+        let cn = self.ch_frames.len();
+        let ch_at = |t: f64| ((t * f64::from(SR) / 1000.0 - CH_N as f64 / 2.0) / CH_HOP as f64).round().clamp(0.0, cn as f64) as usize;
+        let mut chroma = Vec::with_capacity(intensity.len() * 12);
+        for t in bars.iter().take(intensity.len()) {
+            let (a, b) = (ch_at(*t), ch_at(t + bar_len).max(ch_at(*t) + 1).min(cn));
+            let mut acc = [0.0f32; 12];
+            for f in self.ch_frames.get(a..b).unwrap_or_default() {
+                acc.iter_mut().zip(f).for_each(|(x, v)| *x += v);
+            }
+            let max = acc.iter().copied().fold(1e-9, f32::max);
+            chroma.extend(acc.iter().map(|v| (v / max * 255.0).round() as u8));
+        }
+        let phrases = phrases(&intensity, &bass);
         let mut groove = Vec::with_capacity(phrases.len() * 32);
         for p in &phrases {
             let mut acc = [0.0f32; 32];
@@ -450,6 +616,11 @@ impl Analyzer {
             timbre,
             audio_start_ms: frame_ms(first as f64) as u32,
             audio_end_ms: (frame_ms(last as f64) as u32).min(duration_ms.max(1)),
+            bass,
+            lead,
+            chroma: base64::engine::general_purpose::STANDARD_NO_PAD.encode(chroma),
+            texture: base64::engine::general_purpose::STANDARD_NO_PAD.encode(texture),
+            texture_mean,
         })
     }
 }
@@ -568,15 +739,41 @@ fn contrast(low: &[f32], meter: usize) -> (f32, usize) {
         .unwrap_or((0.0, 0))
 }
 
-fn phrases(intensity: &[u8]) -> Vec<Phrase> {
-    let mut out: Vec<Phrase> = intensity
-        .chunks(8)
+/// 8-bar phrases where the song changes: the offset (0–7 bars, a pickup or a short intro) whose
+/// phrase boundaries fall on the biggest jumps in energy and bass, like a DJ counting from where
+/// new elements come in.
+fn phrase_offset(intensity: &[u8], bass: &[u8]) -> usize {
+    let change = |i: usize| -> f32 {
+        if i == 0 || i >= intensity.len() {
+            return 0.0;
+        }
+        let d = |v: &[u8]| (f32::from(v[i]) - f32::from(v[i - 1])).abs();
+        d(intensity) + if bass.len() == intensity.len() { 1.5 * d(bass) } else { 0.0 }
+    };
+    (0..8)
+        .max_by(|x, y| {
+            let s = |o: usize| (o..intensity.len()).step_by(8).map(change).sum::<f32>();
+            s(*x).total_cmp(&s(*y)).then(y.cmp(x))
+        })
+        .unwrap_or(0)
+}
+
+fn phrases(intensity: &[u8], bass: &[u8]) -> Vec<Phrase> {
+    let off = phrase_offset(intensity, bass);
+    let mut starts: Vec<usize> = if off > 0 { vec![0] } else { vec![] };
+    starts.extend((off..intensity.len()).step_by(8));
+    let mut out: Vec<Phrase> = starts
+        .iter()
         .enumerate()
-        .map(|(i, c)| Phrase {
-            start_bar: (i * 8) as u32,
-            bars: c.len() as u32,
-            kind: PhraseKind::Body,
-            intensity: (c.iter().map(|v| u32::from(*v)).sum::<u32>() / c.len() as u32) as u8,
+        .map(|(i, &s)| {
+            let e = starts.get(i + 1).copied().unwrap_or(intensity.len());
+            let c = &intensity[s..e];
+            Phrase {
+                start_bar: s as u32,
+                bars: c.len() as u32,
+                kind: PhraseKind::Body,
+                intensity: (c.iter().map(|v| u32::from(*v)).sum::<u32>() / c.len().max(1) as u32) as u8,
+            }
         })
         .collect();
     if out.is_empty() {
@@ -606,6 +803,16 @@ fn phrases(intensity: &[u8]) -> Vec<Phrase> {
             out[k].kind = PhraseKind::Drop;
         } else if cur <= 0.75 && prev >= 0.85 {
             out[k].kind = PhraseKind::Breakdown;
+        }
+    }
+    // A phrase with the bass out is a breakdown however loud the rest is.
+    if bass.len() == intensity.len() {
+        for p in out.iter_mut().filter(|p| p.kind == PhraseKind::Body) {
+            let (s, e) = (p.start_bar as usize, (p.start_bar + p.bars) as usize);
+            let mean = bass[s..e.min(bass.len())].iter().map(|v| f32::from(*v)).sum::<f32>() / ((e - s).max(1) as f32 * 255.0);
+            if mean < 0.3 {
+                p.kind = PhraseKind::Breakdown;
+            }
         }
     }
     out
@@ -691,6 +898,70 @@ pub(crate) mod tests {
         assert!(a.phrases.first().is_some_and(|p| p.kind == PhraseKind::Intro));
         assert!(a.phrases.last().is_some_and(|p| p.kind == PhraseKind::Outro));
         assert!(a.groove_of(0).is_some());
+    }
+
+    /// Kick muted over `brk` (seconds), a melody between the beats over `lead`.
+    fn synth_parts(bpm: f64, seconds: f64, brk: (f64, f64), lead: (f64, f64)) -> Vec<f32> {
+        let mut pcm = synth(bpm, seconds, 220.0);
+        let beat = 60.0 / bpm;
+        for (i, s) in pcm.chunks_exact_mut(2).enumerate() {
+            let t = i as f64 / f64::from(RATE);
+            let ph = (t / beat).fract() * beat;
+            if t >= brk.0 && t < brk.1 {
+                // Take the kick back out (it is the first, decaying 55 Hz part).
+                let b = t / beat;
+                let accent = if (b.floor() as u64) % 4 == 0 { 1.0 } else { 0.55 };
+                let kick = (std::f64::consts::TAU * 55.0 * ph).sin() * (-ph * 18.0).exp() * accent * 0.8 * 0.5;
+                s[0] -= kick as f32;
+                s[1] -= kick as f32;
+            }
+            if t >= lead.0 && t < lead.1 {
+                // Notes starting on the off-beats, a different pitch each.
+                let off = ((t / beat) + 0.5).fract() * beat;
+                let note = ((t / beat + 0.5).floor() as u64 % 5) as f64;
+                let f = 600.0 * 2f64.powf(note * 2.0 / 12.0);
+                let v = (std::f64::consts::TAU * f * t).sin() * (-off * 6.0).exp() * 0.25;
+                s[0] += v as f32;
+                s[1] += v as f32;
+            }
+        }
+        pcm
+    }
+
+    #[test]
+    fn tells_struck_notes_from_a_pad() {
+        // The same beat and pad; one with a mallet line in sixteenths (struck, dying away).
+        let pad = analyze(&synth(124.0, 60.0, 220.0));
+        let mut pcm = synth(124.0, 60.0, 220.0);
+        let step = 60.0 / 124.0 / 4.0;
+        for (i, s) in pcm.chunks_exact_mut(2).enumerate() {
+            let t = i as f64 / f64::from(RATE);
+            let n = (t / step).floor() as u64;
+            let f = 880.0 * 2f64.powf(((n * 7) % 12) as f64 / 12.0);
+            let v = (std::f64::consts::TAU * f * t).sin() * (-(t / step).fract() * step * 40.0).exp() * 0.6;
+            s[0] += v as f32;
+            s[1] += v as f32;
+        }
+        let mallet = analyze(&pcm);
+        let (tp, tm) = (pad.texture_over(8..24).unwrap(), mallet.texture_over(8..24).unwrap());
+        assert!(tm[2] > tp[2] + 0.2 && tm[1] < tp[1], "pad {tp:?} mallet {tm:?}");
+        assert!(texture_similarity(&tp, &tm) < texture_similarity(&tp, &tp) - 0.25, "{}", texture_similarity(&tp, &tm));
+    }
+
+    #[test]
+    fn finds_bass_breaks_and_leads() {
+        let a = analyze(&synth_parts(120.0, 120.0, (60.0, 76.0), (30.0, 46.0)));
+        let bars = a.bar_times_ms();
+        let mean = |v: &dyn Fn(usize) -> f32, from: f64, to: f64| {
+            let idx: Vec<usize> = (0..bars.len()).filter(|i| bars[*i] >= from * 1000.0 && bars[*i] + 2_000.0 <= to * 1000.0).collect();
+            idx.iter().map(|i| v(*i)).sum::<f32>() / idx.len().max(1) as f32
+        };
+        let bass_break = mean(&|i| a.bass_at(i), 60.0, 76.0);
+        let bass_body = mean(&|i| a.bass_at(i), 20.0, 56.0);
+        assert!(bass_break < 0.35 && bass_body > 0.6, "bass break {bass_break} body {bass_body}");
+        let lead_on = mean(&|i| a.lead_at(i), 30.0, 46.0);
+        let lead_off = mean(&|i| a.lead_at(i), 80.0, 100.0);
+        assert!(lead_on > lead_off + 0.3, "lead {lead_on} vs {lead_off}");
     }
 
     #[test]

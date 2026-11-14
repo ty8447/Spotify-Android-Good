@@ -101,6 +101,15 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
         "player.setPrivateSession" => set_private_session(parse_args::<EnabledArgs>(args)?.enabled),
         "player.setSpeed" => set_speed(parse_args::<SpeedArgs>(args)?.validate()?),
         "player.applySettings" => engine::apply_player_settings(args),
+        "player.setShuffleHistory" => {
+            #[derive(serde::Deserialize)]
+            struct H {
+                uris: Option<Vec<String>>,
+            }
+            let h: H = parse_args(args)?;
+            librespot_connect::set_recent_plays(h.uris.map(|u| u.into_iter().collect()));
+            Ok(serde_json::Value::Null)
+        }
         "queue.add" => control(Ctl::QueueAdd(parse_args::<UriArgs>(args)?.uri)).await,
         "queue.remove" => control(Ctl::QueueRemove(parse_args::<UidArgs>(args)?.uid)).await,
         "queue.move" => {
@@ -1017,7 +1026,7 @@ pub(crate) fn find_cluster_device(device_id: &str) -> Option<String> {
         .cloned()
 }
 
-/// The `(id, name)` of every device in the cluster. Used by the Cast client to recognise a
+/// The `(id, name)` of every device in the cluster. Used by the Cast client to recognize a
 /// receiver that joined under an id other than the one it was given.
 pub(crate) fn cluster_device_names() -> Vec<(String, String)> {
     hub::cluster().map(|c| c.device.iter().map(|(id, d)| (id.clone(), d.name.clone())).collect()).unwrap_or_default()

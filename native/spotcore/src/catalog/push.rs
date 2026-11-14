@@ -209,7 +209,7 @@ fn collection_items(payload: &PayloadValue) -> Vec<CollectionItem> {
     out
 }
 
-/// `spotify:<type>:<identifier>` (or a full URI in `identifier` / `uri`), normalised.
+/// `spotify:<type>:<identifier>` (or a full URI in `identifier` / `uri`), normalized.
 fn collection_item_uri(item: &Value) -> Option<String> {
     let text = |key: &str| item.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
     let raw = match (text("uri"), text("identifier"), text("type")) {

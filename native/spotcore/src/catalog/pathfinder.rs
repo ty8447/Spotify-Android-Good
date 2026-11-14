@@ -17,7 +17,7 @@
 //!
 //! Hashes are persisted in `files_dir/pathfinder.json` `{fetchedAt, hashes, appVersion,
 //! bundleUrl, nextAttemptAt}`, refreshed weekly in the background or immediately on
-//! `PersistedQueryNotFound`. A refresh runs as a detached task (a cancelled query never aborts
+//! `PersistedQueryNotFound`. A refresh runs as a detached task (a canceled query never aborts
 //! it; a query waits for it at most 20 s before using its fallbacks), one at a time, at most one
 //! attempt per hour across restarts (5 min after a network failure). Bundle inflating and
 //! scanning run on the blocking pool. Shipped defaults cover first use.
@@ -412,7 +412,7 @@ pub(crate) fn merge(old: &Persisted, found: &Discovered, now: i64) -> Persisted 
 /// schedule (stale-hash errors); attempts are limited to one per hour and one at a time.
 /// Returns true if hashes changed.
 ///
-/// The refresh runs as a detached task: a cancelled caller (a search superseded by the next
+/// The refresh runs as a detached task: a canceled caller (a search superseded by the next
 /// keystroke aborts its RPC task) neither aborts a discovery midway nor wastes the hourly
 /// budget, and callers that stop waiting find its result in the hashes later.
 async fn refresh(fetch: Fetch, force: bool, wait: Duration) -> AppResult<bool> {

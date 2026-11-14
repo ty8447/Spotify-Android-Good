@@ -22,6 +22,7 @@ const SUBMIT_PATH: &str = "/speechless/v1/submit/request";
 const MUTE_PATH: &str = "/speechless/v1/hierarchy/settings/mute";
 const UNMUTE_PATH: &str = "/speechless/v1/hierarchy/settings/unmute";
 const CHAT_SETTINGS_PATH: &str = "/speechless/v1/hierarchy/settings";
+const RECEIPTS_PATH: &str = "/speechless/v1/hierarchy/settings/receipts";
 const DELETE_CHAT_PATH: &str = "/speechless/v1/hierarchy/delete";
 const CREATE_GROUP_PATH: &str = "/speechless/v1/group/create";
 const LEAVE_GROUP_PATH: &str = "/speechless/v1/group/leave";
@@ -1005,11 +1006,46 @@ pub(super) async fn chat_mute_status(args: Value) -> AppResult<Value> {
         return Err(AppError::unavailable("Chat settings response too large"));
     }
     let mut muted = false;
+    // Field 2: the receipt types turned off in this chat (1 played, 2 saved, 3 seen), packed or not.
+    let mut disabled: Vec<u64> = Vec::new();
     visit_fields(&bytes, |field, value| {
-        if field == 1 { muted = expect_varint(value)? != 0; }
+        match (field, value) {
+            (1, v) => muted = expect_varint(v)? != 0,
+            (2, WireValue::Varint(v)) => disabled.push(v),
+            (2, WireValue::Bytes(b)) => {
+                let mut at = 0;
+                while at < b.len() {
+                    disabled.push(read_varint(b, &mut at)?);
+                }
+            }
+            _ => {}
+        }
         Ok(())
     })?;
-    to_value(&serde_json::json!({ "muted": muted }))
+    to_value(&serde_json::json!({ "muted": muted, "disabledReceipts": disabled }))
+}
+
+/// `catalog.setChatReceipt {hierarchyId, type (1 played, 2 saved), disabled}`:
+/// `SetReceiptPreferenceRequest{1: hierarchy_id, 2: receipt_type, 3: disabled}` (APK model).
+pub(super) async fn set_chat_receipt(args: Value) -> AppResult<Value> {
+    let id = chat_hierarchy_id(&args)?;
+    let kind = args.get("type").and_then(Value::as_u64).filter(|t| matches!(t, 1 | 2))
+        .ok_or_else(|| AppError::invalid("Unsupported receipt type"))?;
+    let disabled = args.get("disabled").and_then(Value::as_bool).unwrap_or(false);
+    let mut body = Vec::with_capacity(id.len() + 8);
+    append_pb_string(&mut body, 1, id);
+    body.push(0x10);
+    append_pb_varint(&mut body, kind);
+    body.push(0x18);
+    body.push(u8::from(disabled));
+    let session = engine::session()?;
+    http::spc_send_once(&session, Method::POST, RECEIPTS_PATH, PROTOBUF, PROTOBUF, body)
+        .await.map_err(|e| {
+            let code = e.status.map(|s| format!("HTTP {s}"))
+                .unwrap_or_else(|| "network or authorization error".to_owned());
+            AppError::unavailable(format!("Unable to change receipts: {code}"))
+        })?;
+    to_value(&true)
 }
 
 /// DeleteChatForMeRequest.hierarchyId=1 (verified APK model).

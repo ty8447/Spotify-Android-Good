@@ -11,6 +11,8 @@ pub(crate) const SR: f32 = 44_100.0;
 enum Kind {
     LowShelf,
     HighShelf,
+    /// A wide bell around the mids (the DJ mixer's MID knob).
+    Peak,
     HighPass,
     LowPass,
 }
@@ -38,7 +40,7 @@ impl Biquad {
         }
         self.param = (freq, gain_db);
         let flat = match self.kind {
-            Kind::LowShelf | Kind::HighShelf => gain_db.abs() < 0.05,
+            Kind::LowShelf | Kind::HighShelf | Kind::Peak => gain_db.abs() < 0.05,
             Kind::HighPass => freq < 15.0,
             Kind::LowPass => freq <= 0.0 || freq >= 19_000.0,
         };
@@ -64,6 +66,16 @@ impl Biquad {
                 a0 = 1.0 + alpha;
                 a1 = -2.0 * cw;
                 a2 = 1.0 - alpha;
+            }
+            Kind::Peak => {
+                let a = 10f32.powf(gain_db / 40.0);
+                let alpha = sw / (2.0 * 0.6);
+                b0 = 1.0 + alpha * a;
+                b1 = -2.0 * cw;
+                b2 = 1.0 - alpha * a;
+                a0 = 1.0 + alpha / a;
+                a1 = -2.0 * cw;
+                a2 = 1.0 - alpha / a;
             }
             Kind::LowShelf | Kind::HighShelf => {
                 let a = 10f32.powf(gain_db / 40.0);
@@ -100,6 +112,8 @@ impl Biquad {
 pub(crate) struct Fx {
     pub gain: f32,
     pub low_db: f32,
+    /// The mids (around 1 kHz: voices, leads, chords).
+    pub mid_db: f32,
     pub high_db: f32,
     /// High-pass cutoff in Hz (0 = off).
     pub hp: f32,
@@ -108,14 +122,16 @@ pub(crate) struct Fx {
 }
 
 impl Fx {
-    pub(crate) const FLAT: Fx = Fx { gain: 1.0, low_db: 0.0, high_db: 0.0, hp: 0.0, lp: 0.0 };
+    pub(crate) const FLAT: Fx = Fx { gain: 1.0, low_db: 0.0, mid_db: 0.0, high_db: 0.0, hp: 0.0, lp: 0.0 };
     pub(crate) const MUTE: Fx = Fx { gain: 0.0, ..Fx::FLAT };
 }
 
-/// A deck's channel strip: low/high shelf EQ and the sweep filters.
+/// A deck's channel strip: a DJ mixer's three-band EQ (low and high shelves, a mid bell) and the
+/// sweep filters.
 #[derive(Clone)]
 pub(crate) struct Strip {
     low: Biquad,
+    mid: Biquad,
     high: Biquad,
     hp: Biquad,
     lp: Biquad,
@@ -127,6 +143,7 @@ impl Default for Strip {
     fn default() -> Self {
         Self {
             low: Biquad::new(Kind::LowShelf),
+            mid: Biquad::new(Kind::Peak),
             high: Biquad::new(Kind::HighShelf),
             hp: Biquad::new(Kind::HighPass),
             lp: Biquad::new(Kind::LowPass),
@@ -139,6 +156,7 @@ impl Default for Strip {
 impl Strip {
     pub(crate) fn set(&mut self, fx: Fx) {
         self.low.set(220.0, fx.low_db);
+        self.mid.set(1_000.0, fx.mid_db);
         self.high.set(3_000.0, fx.high_db);
         self.hp.set(fx.hp, 0.0);
         self.lp.set(if fx.lp <= 0.0 { 20_000.0 } else { fx.lp }, 0.0);
@@ -152,6 +170,7 @@ impl Strip {
         let mut out = [l, r];
         for (ch, x) in out.iter_mut().enumerate() {
             let mut v = self.low.run(ch, *x);
+            v = self.mid.run(ch, v);
             v = self.high.run(ch, v);
             v = self.hp.run(ch, v);
             v = self.lp.run(ch, v);
@@ -163,6 +182,57 @@ impl Strip {
     #[cfg(test)]
     pub(crate) fn snap_gain(&mut self) {
         self.gain = self.target;
+    }
+}
+
+/// A small room reverb (Schroeder/Freeverb style: 4 damped combs and 2 all-passes per side),
+/// wet only: the outgoing song's build-up wash.
+pub(crate) struct Reverb {
+    combs: [Vec<(Vec<f32>, usize, f32)>; 2],
+    alls: [Vec<(Vec<f32>, usize)>; 2],
+}
+
+impl Default for Reverb {
+    fn default() -> Self {
+        let side = |spread: usize| {
+            (
+                [1116, 1188, 1277, 1356].iter().map(|n| (vec![0.0; n + spread], 0, 0.0)).collect::<Vec<_>>(),
+                [556, 441].iter().map(|n| (vec![0.0; n + spread], 0)).collect::<Vec<_>>(),
+            )
+        };
+        let (cl, al) = side(0);
+        let (cr, ar) = side(23);
+        Self { combs: [cl, cr], alls: [al, ar] }
+    }
+}
+
+impl Reverb {
+    /// The reverb of one input frame (wet only).
+    #[inline]
+    pub(crate) fn run(&mut self, (l, r): (f32, f32)) -> (f32, f32) {
+        const FEEDBACK: f32 = 0.84;
+        const DAMP: f32 = 0.25;
+        let mut out = [0.0f32; 2];
+        for (ch, x) in [l, r].into_iter().enumerate() {
+            let x = x * 0.03;
+            let mut acc = 0.0;
+            for (buf, i, store) in self.combs[ch].iter_mut() {
+                let y = buf[*i];
+                *store = y * (1.0 - DAMP) + *store * DAMP;
+                buf[*i] = x + *store * FEEDBACK;
+                *i = (*i + 1) % buf.len();
+                acc += y;
+            }
+            for (buf, i) in self.alls[ch].iter_mut() {
+                let b = buf[*i];
+                let y = b - acc;
+                buf[*i] = acc + b * 0.5;
+                *i = (*i + 1) % buf.len();
+                acc = y;
+            }
+            out[ch] = acc * 2.5;
+        }
+        (out[0], out[1])
     }
 }
 
@@ -300,15 +370,30 @@ impl Stretch {
         self.read = frac.clamp(0.0, 0.999);
     }
 
-    /// Resampler only: whether the feed has the source for `frames` more output frames at `speed`
+    /// Whether the feed has the source for `frames` more output frames at `speed`
     /// (fetching it); false when it can't supply them now (nothing is consumed).
     pub(crate) fn ensure(&mut self, feed: &mut dyn Feed, frames: usize, speed: f64) -> bool {
+        if self.key_lock {
+            // Key-locked: the WSOLA output (before the pitch resampler) for `frames` more.
+            let need = if (self.pitch - 1.0).abs() > 1e-6 || self.read2 > 0.0 {
+                (self.read2 + frames as f64 * self.pitch).floor() as usize + 3
+            } else {
+                frames
+            };
+            self.produce(feed, speed / self.pitch, need * 2);
+            return self.out.len() >= need * 2;
+        }
         let need = (self.read + frames as f64 * speed).floor() as usize + 3;
         self.fill(feed, need)
     }
 
-    /// Resampler only: the source frames not played yet (from the next whole frame), emptying it.
+    /// The audio not played yet, emptying it (resampler: from the next whole source frame).
     pub(crate) fn drain(&mut self) -> Vec<f32> {
+        if self.key_lock {
+            // What was stretched already (the rest of the fetched source is dropped).
+            self.buf.clear();
+            return self.out.drain(..).collect();
+        }
         let from = (self.read.ceil() as usize).min(self.frames());
         let rest = self.buf[from * 2..].to_vec();
         self.buf.clear();
@@ -401,8 +486,10 @@ impl Stretch {
             if !self.fill(feed, start + N) {
                 break;
             }
+            // The first segment starts at full level (no fade-in where nothing overlaps it).
+            let first = self.prev_start.is_none();
             for i in 0..N {
-                let w = self.window[i];
+                let w = if first && i < HS { 1.0 } else { self.window[i] };
                 self.acc[i * 2] += w * self.buf[(start + i) * 2];
                 self.acc[i * 2 + 1] += w * self.buf[(start + i) * 2 + 1];
             }

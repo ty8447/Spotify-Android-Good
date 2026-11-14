@@ -154,7 +154,7 @@ fun Artwork(
     shape: Shape = RoundedCornerShape(4.dp),
     placeholderIcon: ImageVector = Icons.Rounded.MusicNote,
     transparentBackground: Boolean = false,
-    /** When set and there is no image, draw this name's initial on a per-name colour (Spotify's
+    /** When set and there is no image, draw this name's initial on a per-name color (Spotify's
      *  default avatar) instead of [placeholderIcon]. */
     avatarName: String? = null,
 ) {
@@ -560,14 +560,14 @@ fun EpisodeRow(
 private fun avatarInitial(name: String?): String? =
     name?.trim()?.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString()
 
-/** Spotify's default-avatar palette; the colour is a stable hash of the name, so it matches elsewhere. */
+/** Spotify's default-avatar palette; the color is a stable hash of the name, so it matches elsewhere. */
 private val AVATAR_COLORS = listOf(
     Color(0xFF509BF5), Color(0xFF1DB954), Color(0xFFAF2896), Color(0xFFE8115B),
     Color(0xFFF59B23), Color(0xFF8D67AB), Color(0xFFC39358), Color(0xFF777777),
     Color(0xFF27856A), Color(0xFF503750), Color(0xFFBA5D07), Color(0xFF4B917D),
 )
 
-/** Deterministic colour for [name] (same name -> same colour on every device). */
+/** Deterministic color for [name] (same name -> same color on every device). */
 private fun avatarColor(name: String): Color {
     var hash = 0
     for (c in name.trim()) hash = hash * 31 + c.code

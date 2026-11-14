@@ -3583,3 +3583,22 @@ fn a_transferred_track_named_by_its_uid_alone_is_its_pages_track() {
     assert_eq!(track.uri, track_uri(4, 0));
     assert_eq!(track.uid, "uid4");
 }
+
+// SPOTIFYGOOD: Shuffle › Fewer repeats
+#[test]
+fn fewer_repeats_shuffles_recent_plays_last() {
+    let (_rt, mut state) = state(30);
+    // uid1..uid10 were heard lately
+    let heard: HashSet<String> = (1..11).map(|i| track_uri(i, 0)).collect();
+    crate::set_recent_plays(Some(heard));
+    state.handle_shuffle(true).unwrap();
+    crate::set_recent_plays(None);
+    let next = next_uids(&state);
+    let is_heard = |u: &String| (1..11).any(|i| *u == format!("uid{i}"));
+    let first_heard = next.iter().position(is_heard).unwrap();
+    assert!(next[first_heard..].iter().all(is_heard), "{next:?}");
+    assert_eq!(next.len() - first_heard, 10);
+    // unshuffled, the context is in its order again
+    state.handle_shuffle(false).unwrap();
+    assert_eq!(next_uids(&state), uids(1..30));
+}

@@ -216,7 +216,7 @@ internal class SpotifyAccountsClient(
     }
 }
 
-/** Suspends until the call completes; cancelling the coroutine cancels the call. */
+/** Suspends until the call completes; canceling the coroutine cancels the call. */
 internal suspend fun Call.await(): HttpResult = suspendCancellableCoroutine { cont ->
     cont.invokeOnCancellation { runCatching { cancel() } }
     enqueue(

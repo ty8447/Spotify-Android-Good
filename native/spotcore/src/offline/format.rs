@@ -1,5 +1,5 @@
 //! Pure helpers shared by the index and the downloader: the persisted format string, hex ids
-//! and keys, format preference lists, header verification, normalisation parsing and HTTP
+//! and keys, format preference lists, header verification, normalization parsing and HTTP
 //! `Content-Range` parsing. No I/O here.
 
 use crate::models::Normalisation;
@@ -11,13 +11,13 @@ use std::io::Read;
 
 /// End of Spotify's custom header in Ogg Vorbis files (the decoder starts here).
 pub const SPOTIFY_OGG_HEADER_END: usize = 0xA7;
-/// Normalisation data: decrypted bytes `[144, 160)` = 4 × f32 LE
+/// Normalization data: decrypted bytes `[144, 160)` = 4 × f32 LE
 /// (track gain dB, track peak, album gain dB, album peak).
 const NORMALISATION_OFFSET: usize = 144;
 const NORMALISATION_LEN: usize = 16;
 
 /// Bytes needed at the start of a file to verify its header (and, for Ogg, to read the
-/// normalisation data).
+/// normalization data).
 pub fn header_len(format: AudioFileFormat) -> usize {
     if AudioFiles::is_ogg_vorbis(format) {
         SPOTIFY_OGG_HEADER_END + 4
@@ -74,7 +74,7 @@ pub fn is_supported(format: AudioFileFormat) -> bool {
     )
 }
 
-/// Normalises a requested bitrate to 96, 160 or 320.
+/// Normalizes a requested bitrate to 96, 160 or 320.
 pub fn normalise_bitrate(bitrate: u32) -> u32 {
     match bitrate {
         0..=96 => 96,
@@ -156,7 +156,7 @@ pub fn parse_key(s: &str) -> Result<Option<AudioKey>, &'static str> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Header verification / normalisation
+// Header verification / normalization
 // ---------------------------------------------------------------------------------------------
 
 /// Decrypts the first bytes of an encrypted file (AES-128-CTR from offset 0).
@@ -184,7 +184,7 @@ pub fn verify_header(format: AudioFileFormat, decrypted: &[u8]) -> bool {
     }
 }
 
-/// Spotify's normalisation data from the decrypted Ogg header (`None` if absent or not finite).
+/// Spotify's normalization data from the decrypted Ogg header (`None` if absent or not finite).
 pub fn parse_normalisation(decrypted: &[u8]) -> Option<Normalisation> {
     let b = decrypted.get(NORMALISATION_OFFSET..NORMALISATION_OFFSET + NORMALISATION_LEN)?;
     let f = |i: usize| f32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);

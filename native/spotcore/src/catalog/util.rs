@@ -54,7 +54,7 @@ pub(crate) struct ParsedUri {
 }
 
 impl ParsedUri {
-    /// Canonical URI (`spotify:<kind>:<id>`; user-scoped playlist URIs are normalised).
+    /// Canonical URI (`spotify:<kind>:<id>`; user-scoped playlist URIs are normalized).
     pub(crate) fn uri(&self) -> String {
         format!("spotify:{}:{}", self.kind.as_str(), self.id)
     }

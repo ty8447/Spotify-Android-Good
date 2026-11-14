@@ -309,7 +309,7 @@ internal fun lyricsPreviewScrollDistance(
     return if (contentBottom == null) wanted else wanted.coerceAtMost((contentBottom - viewportHeight).coerceAtLeast(0))
 }
 
-/** Spotify sends lyrics colours as signed ARGB ints; some omit the alpha byte. */
+/** Spotify sends lyrics colors as signed ARGB ints; some omit the alpha byte. */
 internal fun opaqueArgb(argb: Int): Int = if (argb ushr 24 == 0) argb or 0xFF000000.toInt() else argb
 
 // ---------------------------------------------------------------------------------------------
@@ -533,11 +533,11 @@ internal fun spotifyShareUrl(uri: String): String? {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Colours
+// Colors
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Tones an artwork colour for use behind white text: keeps the hue, caps the saturation and sets the
+ * Tones an artwork color for use behind white text: keeps the hue, caps the saturation and sets the
  * HSL lightness to at most [maxLightness] (and at least [minLightness]). Alpha is forced opaque.
  */
 internal fun toneForBackground(

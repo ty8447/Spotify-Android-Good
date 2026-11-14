@@ -1,5 +1,5 @@
 //! `catalog.lyrics` via spclient `color-lyrics/v2` with lenient JSON decoding (times are
-//! strings, colours signed ARGB ints, unknown sync types become `UNSYNCED`).
+//! strings, colors signed ARGB ints, unknown sync types become `UNSYNCED`).
 
 use super::http::{self, JSON};
 use super::metadata;
@@ -124,7 +124,7 @@ pub(crate) fn parse_lyrics(body: &[u8]) -> AppResult<Option<Lyrics>> {
     }))
 }
 
-/// Cover image hex id of a cached track (color-lyrics returns colours matching the cover).
+/// Cover image hex id of a cached track (color-lyrics returns colors matching the cover).
 fn cover_hex(track_uri: &str) -> Option<String> {
     let track = metadata::cached_track(track_uri)?;
     let img = track.album?.images.into_iter().last()?;

@@ -233,7 +233,7 @@ class TrackSortTest {
 
     @Test
     fun anotherContextLessPlayOfOneOfItsSongsIsNotIt() {
-        // Downloads > Songs played t2 within its own section: other neighbours.
+        // Downloads > Songs played t2 within its own section: other neighbors.
         assertFalse(isListPlaying(playlistKey, "spotify:playlist:p", playing("t2", next = "d9", previous = "d1"), entry))
         // A fresh page, nothing recorded: no fallback to "any shown song".
         assertFalse(isListPlaying(playlistKey, "spotify:playlist:p", playing("t2", next = "t3"), last = null))
@@ -349,7 +349,7 @@ class TrackSortTest {
         assertTrue(isListPlaying(playlistKey, "spotify:playlist:p", now, landed))
         // Backwards is not this load.
         assertFalse(isListPlaying(playlistKey, "spotify:playlist:p", playing("t3", next = "t1", previous = "t4"), landed))
-        // Another list holding the same song still has other neighbours.
+        // Another list holding the same song still has other neighbors.
         assertNull(landed.after(playing("t2", next = "zz", previous = "yy")))
     }
 }

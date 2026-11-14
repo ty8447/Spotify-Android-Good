@@ -51,7 +51,7 @@ class Round3RulesTest {
     fun scheduledWorkIsCancelledOnlyForAnIdleEmptyQueue() {
         assertTrue(DownloadRules.cancelIdleWork(pending = 0, running = false, jobExecuting = false))
         assertEquals(false, DownloadRules.cancelIdleWork(pending = 3, running = false, jobExecuting = false))
-        // A run finds the empty queue itself; an executing job is never cancelled from here.
+        // A run finds the empty queue itself; an executing job is never canceled from here.
         assertEquals(false, DownloadRules.cancelIdleWork(pending = 0, running = true, jobExecuting = false))
         assertEquals(false, DownloadRules.cancelIdleWork(pending = 0, running = false, jobExecuting = true))
     }

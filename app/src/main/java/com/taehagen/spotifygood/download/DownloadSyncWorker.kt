@@ -9,7 +9,7 @@ import kotlinx.coroutines.CancellationException
 
 /**
  * Daily periodic sync of downloaded collections (unique periodic work `download-sync`, network +
- * battery not low). Enqueued while downloaded collections exist and cancelled when the last one is
+ * battery not low). Enqueued while downloaded collections exist and canceled when the last one is
  * removed (see [DownloadManager]). Plain background work, no foreground service: syncing is a few
  * metadata requests; any newly queued items are downloaded by the regular download work.
  */

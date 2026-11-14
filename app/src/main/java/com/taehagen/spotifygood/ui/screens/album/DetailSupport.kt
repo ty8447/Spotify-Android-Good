@@ -118,7 +118,7 @@ internal fun DownloadManager.collectionUi(uri: String): Flow<CollectionDownloadU
 
 /**
  * Per-row download states for the [uris] shown on a page (one flow for the whole list instead of
- * one per row). Cancelled downloads count as not downloaded.
+ * one per row). Canceled downloads count as not downloaded.
  */
 internal fun DownloadManager.statesFor(uris: Flow<Set<String>>): Flow<Map<String, DownloadState>> =
     combine(downloadedUris, items, uris) { done, items, wanted ->
@@ -212,7 +212,7 @@ internal fun AppGraph.savedFlow(uri: String): Flow<Boolean?> =
  * Base ViewModel of a detail page whose playback context is [contextUri].
  *
  * Writes (library, downloads, playlist edits) run in the app scope, not in [viewModelScope]: this
- * ViewModel is cleared right after its page is popped, and cancelling a write half-way would e.g.
+ * ViewModel is cleared right after its page is popped, and canceling a write half-way would e.g.
  * queue nothing of a collection download or leave the files of a removed one behind. Their results
  * go through [BackgroundMessages], so they are shown even after the page was left.
  */

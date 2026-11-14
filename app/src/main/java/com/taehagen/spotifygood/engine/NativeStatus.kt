@@ -2,7 +2,7 @@ package com.taehagen.spotifygood.engine
 
 /**
  * Outcome of `NativeBridge.nativeInit` (set once by `AppInitializer`). When the native library
- * failed to load or initialise, the engine never calls into it and reports an error state so the
+ * failed to load or initialize, the engine never calls into it and reports an error state so the
  * UI can explain instead of crashing.
  */
 object NativeStatus {

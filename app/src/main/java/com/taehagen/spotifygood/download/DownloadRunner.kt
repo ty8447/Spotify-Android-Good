@@ -358,7 +358,7 @@ internal class DownloadRunner(
         null
     }
 
-    /** Cancel action: stops the run and marks everything pending as cancelled. */
+    /** Cancel action: stops the run and marks everything pending as canceled. */
     fun requestCancel() {
         cancelRequested = true
         session?.cancel()
@@ -530,7 +530,7 @@ internal class DownloadRunner(
             withContext(NonCancellable) {
                 notifications.unregister(receiver)
                 holder.release()
-                // The user's Cancel marks the queue cancelled after this block (runSession).
+                // The user's Cancel marks the queue canceled after this block (runSession).
                 val pending = dao.pendingCount()
                 val now = System.currentTimeMillis()
                 // Only when the run ended for Spotify's key limit: a run the system stopped, or one
@@ -646,7 +646,7 @@ internal class DownloadRunner(
     }
 
     /**
-     * Runs one item as its own child so it can be cancelled alone (item removed meanwhile): see
+     * Runs one item as its own child so it can be canceled alone (item removed meanwhile): see
      * [awaitItem] for why the run then waits for the removal before it picks the next item.
      */
     private suspend fun processItem(item: DownloadEntity, root: File, host: DownloadHost, stats: RunStats): ItemResult = coroutineScope {
@@ -760,7 +760,7 @@ internal class DownloadRunner(
 
     /**
      * Stores which file the download of [uri] writes (`download.fileId`), so garbage collection keeps
-     * its `.part` while the row exists, also once it failed or was cancelled. Best effort.
+     * its `.part` while the row exists, also once it failed or was canceled. Best effort.
      */
     private suspend fun recordFileId(uri: String) {
         try {
@@ -1079,10 +1079,10 @@ internal class DownloadRunner(
 }
 
 /**
- * Awaits one queue item's [job]. When only the item was cancelled (the run itself is still active),
- * that was a removal: the remover holds [removalLock] (the manager's mutation lock) from cancelling
- * the item until its rows are deleted, while the cancelled item has just put its row back into the
- * queue. Waiting for the lock before returning [cancelled] keeps the run's next pick from finding
+ * Awaits one queue item's [job]. When only the item was canceled (the run itself is still active),
+ * that was a removal: the remover holds [removalLock] (the manager's mutation lock) from canceling
+ * the item until its rows are deleted, while the canceled item has just put its row back into the
+ * queue. Waiting for the lock before returning [canceled] keeps the run's next pick from finding
  * that row again and downloading the removed item in full. No deadlock: the remover only waits for
  * [job], which is complete here. A stop of the whole run is rethrown.
  */

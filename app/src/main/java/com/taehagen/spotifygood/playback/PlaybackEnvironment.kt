@@ -32,7 +32,7 @@ enum class EngineReach {
 
 /**
  * What [PlayerController] needs to know about the engine and the downloads, so every caller (UI,
- * the media session, Android Auto) gets the same cold-start and offline behaviour. Installed by
+ * the media session, Android Auto) gets the same cold-start and offline behavior. Installed by
  * [PlaybackCoordinator] (backed by the app graph); without one, commands go straight to the engine.
  */
 interface PlaybackEnvironment {

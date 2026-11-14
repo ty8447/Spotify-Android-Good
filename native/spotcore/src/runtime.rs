@@ -45,11 +45,11 @@ pub fn is_initialized() -> bool {
 
 /// Handle of the process runtime. Panics if `nativeInit` was not called (caught at the JNI boundary).
 pub fn handle() -> Handle {
-    GLOBALS.get().expect("spotcore not initialised").runtime.handle().clone()
+    GLOBALS.get().expect("spotcore not initialized").runtime.handle().clone()
 }
 
 pub fn config() -> &'static InitConfig {
-    &GLOBALS.get().expect("spotcore not initialised").config
+    &GLOBALS.get().expect("spotcore not initialized").config
 }
 
 /// Directory helpers (all created on demand by their users).

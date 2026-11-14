@@ -494,7 +494,7 @@ private fun QueueBottomBar(
     onRepeat: () -> Unit,
 ) {
     val restrictions = snapshot.restrictions
-    // Podcasts have no shuffle or repeat (as on Now Playing); empty slots keep play/pause centred.
+    // Podcasts have no shuffle or repeat (as on Now Playing); empty slots keep play/pause centered.
     val episode = snapshot.track?.isEpisode == true
     Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
         Row(
@@ -537,7 +537,7 @@ internal data class QueueMove(val key: String, val toIndex: Int, val newOrder: L
 
 /**
  * Drag-and-drop state of the "Next in queue" rows. The dragged row follows the finger
- * (`initialOffset + delta - currentOffset`), swapping places with the queued row under its centre;
+ * (`initialOffset + delta - currentOffset`), swapping places with the queued row under its center;
  * dragging past the viewport edge scrolls the list.
  */
 @Stable

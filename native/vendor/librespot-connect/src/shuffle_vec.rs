@@ -55,6 +55,19 @@ impl<T> From<Vec<T>> for ShuffleVec<T> {
     }
 }
 
+// SPOTIFYGOOD: Shuffle › Fewer repeats, see ConnectState::shuffle
+static RECENT_PLAYS: std::sync::RwLock<Option<std::collections::HashSet<String>>> = std::sync::RwLock::new(None);
+
+/// The songs heard lately, which a new shuffle puts after the others ("Fewer repeats"); `None`
+/// for Spotify's standard shuffle
+pub fn set_recent_plays(uris: Option<std::collections::HashSet<String>>) {
+    *RECENT_PLAYS.write().unwrap_or_else(|e| e.into_inner()) = uris;
+}
+
+pub(crate) fn heard_lately(uri: &str) -> bool {
+    RECENT_PLAYS.read().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|r| r.contains(uri))
+}
+
 impl<T> ShuffleVec<T> {
     pub fn shuffle_with_seed<F: Fn(&T) -> bool>(&mut self, seed: u64, is_first: F) {
         self.shuffle_with_rng(SmallRng::seed_from_u64(seed), is_first)

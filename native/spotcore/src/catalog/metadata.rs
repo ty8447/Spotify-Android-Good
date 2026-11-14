@@ -6,7 +6,7 @@
 //!   of 100 tracks costs one rate-limiter token.
 //! * Results are kept in LRU caches (tracks 4096, episodes 1024, albums 512, artists/shows 256).
 //! * Concurrent requests for the same URIs share one in-flight fetch. Fetches run as detached
-//!   tasks (bounded by the HTTP timeout) so a cancelled RPC never strands other waiters.
+//!   tasks (bounded by the HTTP timeout) so a canceled RPC never strands other waiters.
 //! * Raw protobufs are converted leniently: an entity that fails to convert is skipped, it never
 //!   fails the batch.
 //! * Lookups tell "the server has no data for this URI" (omitted) apart from "the request for it
@@ -722,7 +722,7 @@ static ARTISTS: LazyLock<Store<ArtistMeta>> = LazyLock::new(|| Store::new(256, A
 static SHOWS: LazyLock<Store<ShowMeta>> = LazyLock::new(|| Store::new(256, ARTIST_MAX_AGE));
 static SHOW_EPISODES: LazyLock<Store<Vec<String>>> = LazyLock::new(|| Store::new(64, SHOW_EPISODES_MAX_AGE));
 
-/// Normalises `uris` to canonical URIs of `kind` (invalid ones dropped, order kept) and looks
+/// Normalizes `uris` to canonical URIs of `kind` (invalid ones dropped, order kept) and looks
 /// them up.
 async fn lookup<T: Send + Sync + 'static>(
     store: &'static LazyLock<Store<T>>,

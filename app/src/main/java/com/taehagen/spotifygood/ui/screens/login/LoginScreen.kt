@@ -256,7 +256,7 @@ fun LoginScreen(modifier: Modifier = Modifier) {
 }
 
 private fun loginErrorText(context: Context, failed: LoginState.Failed?, engineError: NativeErrorInfo?): String? {
-    // LoginState.Failed.message is already user-facing (localised by the auth layer).
+    // LoginState.Failed.message is already user-facing (localized by the auth layer).
     if (failed != null) return failed.message.ifBlank { friendlyErrorMessage(context, failed.code) }
     return engineError
         ?.takeIf { it.code == NativeErrorCode.PREMIUM_REQUIRED || it.code == NativeErrorCode.BAD_CREDENTIALS }

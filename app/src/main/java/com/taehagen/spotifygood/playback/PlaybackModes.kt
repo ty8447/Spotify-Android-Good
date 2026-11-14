@@ -28,10 +28,13 @@ val PlaybackSnapshot.isSmartShuffleAvailable: Boolean
 
 /** Pure state machines of the shuffle / repeat buttons (shared by the UI, notification and Auto). */
 internal object PlaybackModes {
-    /** off → shuffle → smart shuffle → off; smart shuffle is skipped when unavailable. */
+    /** Settings › Include Smart Shuffle in play modes. */
+    @Volatile var smartShuffleInModes = true
+
+    /** off → shuffle → smart shuffle → off; smart shuffle is skipped when unavailable or left out. */
     fun nextShuffle(current: ShuffleMode, smartAvailable: Boolean): ShuffleMode = when (current) {
         ShuffleMode.OFF -> ShuffleMode.SHUFFLE
-        ShuffleMode.SHUFFLE -> if (smartAvailable) ShuffleMode.SMART else ShuffleMode.OFF
+        ShuffleMode.SHUFFLE -> if (smartAvailable && smartShuffleInModes) ShuffleMode.SMART else ShuffleMode.OFF
         ShuffleMode.SMART -> ShuffleMode.OFF
     }
 

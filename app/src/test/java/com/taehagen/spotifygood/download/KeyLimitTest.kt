@@ -50,7 +50,7 @@ class KeyLimitTest {
     @Test
     fun aRefusedSongFailsAloneAndAnAccountRefusalKeepsTheRestQueued() {
         assertEquals(FailureAction.Fail(1), DownloadRules.onFailure(NativeErrorCode.UNAVAILABLE, 0, online = true, null, DownloadRules.KEY_REFUSED))
-        // The engine's account judgement stops the run without failing what was not tried.
+        // The engine's account judgment stops the run without failing what was not tried.
         assertEquals(FailureAction.AccountRefused, DownloadRules.onFailure(NativeErrorCode.PLAYBACK_REFUSED, 0, online = true))
         assertEquals(FailureAction.AccountRefused, DownloadRules.onFailure(NativeErrorCode.PLAYBACK_REFUSED, 2, online = false))
     }

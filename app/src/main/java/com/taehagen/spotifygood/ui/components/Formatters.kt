@@ -36,7 +36,7 @@ fun formatLongDuration(context: Context, ms: Long): String {
 }
 
 /**
- * Localised release date: "2024-05-03" → "May 3, 2024", "2024-05" → "May 2024", "2024" → "2024".
+ * Localized release date: "2024-05-03" → "May 3, 2024", "2024-05" → "May 2024", "2024" → "2024".
  * Unparseable input is returned unchanged.
  */
 fun formatReleaseDate(date: String?, locale: Locale = Locale.getDefault()): String? {

@@ -9,8 +9,8 @@
 //! frames are dropped until they line up with B's, and a 30 ms fade hands the output back to
 //! the main player. Spotify Connect keeps showing the song the main player plays throughout.
 
-use super::dsp::{Echo, Feed, Fx, Strip, Stretch};
-use super::planner::{Style, Transition};
+use super::dsp::{Echo, Feed, Fx, Reverb, Strip, Stretch};
+use super::planner::{OutFx, Style, Transition};
 use crate::bridge;
 use parking_lot::{Condvar, Mutex};
 use std::collections::VecDeque;
@@ -228,7 +228,7 @@ pub(crate) struct Engine {
     a_next_ms: f64,
     a_pending: Option<Chunk>,
     a_broken: bool,
-    /// A main player chunk the plain path plays first (left over by a cancelled stretch).
+    /// A main player chunk the plain path plays first (left over by a canceled stretch).
     carry: Option<Chunk>,
     sb: Stretch,
     b_started: bool,
@@ -236,6 +236,11 @@ pub(crate) struct Engine {
     b: Strip,
     echo: Echo,
     echo_send: f32,
+    reverb: Reverb,
+    reverb_send: f32,
+    /// Loop roll: the captured beat of A, how much of it is captured, the play position.
+    loop_buf: Vec<f32>,
+    loop_pos: usize,
     post_frames: u64,
     join_done: usize,
 }
@@ -259,6 +264,10 @@ impl Default for Engine {
             b: Strip::default(),
             echo: Echo::default(),
             echo_send: 0.0,
+            reverb: Reverb::default(),
+            reverb_send: 0.0,
+            loop_buf: Vec::new(),
+            loop_pos: 0,
             post_frames: 0,
             join_done: 0,
         }
@@ -284,9 +293,10 @@ fn fade_out(x: f32) -> f32 {
 }
 
 /// The decks' settings at progress `p` (0–1) of a transition, and the echo send of A. `beat` is
-/// one beat as a share of the transition.
-pub(crate) fn automation(style: Style, p: f32, beat: f32) -> (Fx, Fx, f32) {
+/// one beat as a share of the transition; `swap` where the bass changes hands (a phrase downbeat).
+pub(crate) fn automation(style: Style, p: f32, beat: f32, swap: f32) -> (Fx, Fx, f32) {
     let beat = beat.clamp(0.01, 1.0);
+    let swap_at = if swap > 0.0 && swap <= 1.0 { swap } else { 0.5 };
     match style {
         Style::Crossfade => {
             // One bass at a time: it changes hands over two beats in the middle.
@@ -298,18 +308,27 @@ pub(crate) fn automation(style: Style, p: f32, beat: f32) -> (Fx, Fx, f32) {
             )
         }
         Style::BassSwap => {
-            // The bass changes hands over two beats around the middle, the rest blends smoothly.
-            let swap = smooth((p - 0.5) / (2.0 * beat) + 0.5);
+            // The club EQ blend: the next song comes in on the phrase with its lows killed and its
+            // mids and highs down, the highs then the mids cross over through the first half, the
+            // bass changes hands in one beat landing on the phrase downbeat at `swap_at`, then the
+            // playing song's highs and mids leave and its fader comes down to the phrase end (with
+            // the swap on the last downbeat, its fader goes with its bass).
+            let s = swap_at;
+            let bass = smooth((p - (s - beat)) / beat);
+            let down = 0.8f32.max(s - beat).min(1.0 - beat);
             let a = Fx {
-                gain: if p < 0.55 { 1.0 } else { fade_out((p - 0.55) / 0.45) },
-                low_db: -24.0 * swap,
-                high_db: -6.0 * smooth((p - 0.4) / 0.6),
+                gain: if p < down { 1.0 } else { fade_out((p - down) / (1.0 - down)) },
+                low_db: -40.0 * bass,
+                mid_db: -14.0 * smooth((p - s) / (0.7 - s * 0.5).max(0.1)),
+                high_db: -14.0 * smooth((p - s) / (0.55 - s * 0.5).max(0.1)),
                 ..Fx::FLAT
             };
             let b = Fx {
-                gain: fade_in(p / 0.45),
-                low_db: -24.0 * (1.0 - swap),
-                high_db: -6.0 * (1.0 - smooth(p / 0.45)),
+                // A beat to come up from silence on the downbeat; the EQ does the blending.
+                gain: fade_in(p / beat),
+                low_db: -40.0 * (1.0 - bass),
+                mid_db: -14.0 * (1.0 - smooth((p - s * 0.3) / (s * 0.65).max(0.05))),
+                high_db: -14.0 * (1.0 - smooth(p / (s * 0.5).max(0.05))),
                 ..Fx::FLAT
             };
             (a, b, 0.0)
@@ -343,6 +362,10 @@ impl Engine {
             self.sb = Stretch::new(armed.key_lock);
             self.b_started = false;
             self.echo.set_delay_ms(armed.t.beat_ms * 0.5);
+            self.loop_buf.clear();
+            self.loop_pos = 0;
+            self.reverb_send = 0.0;
+            self.echo_send = 0.0;
             self.armed = Some(armed);
             self.report = Report::default();
         }
@@ -461,9 +484,29 @@ impl Engine {
         self.sa.next(&mut f, speed, out);
     }
 
-    /// Starts stretching the main player at `chunk` (its first frame is `frac` frames late).
+    /// The main player's pitch ratio before and during the mix (reached over the pre-glide).
+    fn a_pitch(&self) -> f64 {
+        let Some(t) = self.armed.as_ref().map(|a| &a.t) else { return 1.0 };
+        let target = 2f64.powf(f64::from(t.a_pitch_semitones) / 12.0);
+        if self.phase == Phase::Mix || t.pre_glide_ms <= 0.0 {
+            return target;
+        }
+        let glide_start = t.mix_start_ms - t.pre_glide_ms;
+        1.0 + (target - 1.0) * smooth64((self.a_src_ms() - glide_start) / t.pre_glide_ms)
+    }
+
+    /// The echo and reverb still ringing (nothing new fed in).
+    fn tail(&mut self) -> (f32, f32) {
+        let (el, er) = self.echo.run((0.0, 0.0), 0.6);
+        let (rl, rr) = self.reverb.run((0.0, 0.0));
+        (el + rl, er + rr)
+    }
+
+    /// Starts stretching the main player at `chunk` (its first frame is `frac` frames late): a
+    /// resampler (pitch follows tempo), or time-stretched when its pitch is set apart.
     fn stretch_a_from(&mut self, chunk: Chunk, frac: f64) {
-        self.sa = Stretch::new(false);
+        let key_lock = self.armed.as_ref().is_some_and(|x| x.t.a_key_lock);
+        self.sa = Stretch::new(key_lock);
         self.sa.set_phase(frac);
         self.a_track = chunk.track.clone();
         self.a_base_ms = chunk.pos_ms;
@@ -517,8 +560,15 @@ impl Engine {
         const SUB: usize = 32;
         let mut abuf = [0.0f32; SUB * 2];
         let mut bbuf = [0.0f32; SUB * 2];
+        // The effect window before the mix, in the main player's time.
+        let fx_from = t.mix_start_ms - t.fx_ms;
+        let loop_beat = ((t.beat_ms / t.a_speed.max(0.1)) * FRAMES_PER_MS) as usize;
         while out.len() < BLOCK * 2 {
             let speed_a = self.a_speed();
+            if t.a_key_lock {
+                let p = self.a_pitch();
+                self.sa.set_pitch(p);
+            }
             let ready = self.a_ready(a, SUB, speed_a);
             if self.a_broken {
                 // A skip or a seek: drop the mix, the new audio plays as it is.
@@ -540,7 +590,7 @@ impl Engine {
                     self.end_mix();
                     break;
                 }
-                let (fa, fb, send) = automation(t.style, p, beat);
+                let (fa, fb, send) = automation(t.style, p, beat, t.swap_at);
                 self.a.set(fa);
                 self.b.set(fb);
                 self.echo_send = send;
@@ -550,15 +600,56 @@ impl Engine {
                 bbuf.iter_mut().for_each(|v| *v *= g);
             } else {
                 bbuf.fill(0.0);
+                // The lead-in effect over the last bars of the current song.
+                if t.fx != OutFx::None && t.fx_ms > 0.0 && a_src >= fx_from {
+                    let q = ((a_src - fx_from) / t.fx_ms).clamp(0.0, 1.0) as f32;
+                    match t.fx {
+                        OutFx::Filter => self.a.set(Fx { hp: 20.0 * 40f32.powf(smooth(q)), ..Fx::FLAT }),
+                        OutFx::Reverb => self.reverb_send = 0.9 * smooth(q),
+                        OutFx::Echo => self.echo_send = 1.0,
+                        OutFx::Riser => {
+                            // The bass and body thin out under the rolling loop, a little air on top.
+                            self.a.set(Fx { hp: 20.0 * 30f32.powf(smooth((q - 0.25) / 0.75)), ..Fx::FLAT });
+                            self.reverb_send = 0.5 * smooth((q - 0.5) / 0.5);
+                        }
+                        OutFx::Loop | OutFx::None => {}
+                    }
+                }
             }
             self.a_frames(a, speed_a, &mut abuf);
+            // Loop roll: the window's first beat is captured as it plays, then repeats: whole,
+            // then halves, then quarters, up to the cut. The riser captures its first bar, loops
+            // it, then rolls down to sixteenths while each repeat plays faster (pitching up to a
+            // fourth) and still starts on the grid.
+            let riser = t.fx == OutFx::Riser;
+            if (riser || t.fx == OutFx::Loop) && self.phase == Phase::Armed && a_src >= fx_from && loop_beat > 64 {
+                let q = ((a_src - fx_from) / t.fx_ms.max(1.0)).clamp(0.0, 1.0) as f32;
+                let cap = if riser { ((t.fx_ms / 4.0 / t.a_speed.max(0.1)) * FRAMES_PER_MS) as usize } else { loop_beat };
+                let steps: &[(f32, usize)] = if riser { &[(0.5, 1), (0.75, 2), (0.875, 4), (0.9375, 8)] } else { &[(0.5, 1), (0.75, 2)] };
+                let len = cap / steps.iter().find(|(until, _)| q < *until).map_or(if riser { 16 } else { 4 }, |s| s.1);
+                let rate = if riser { 2f32.powf(5.0 * smooth((q - 0.5) / 0.5) / 12.0) } else { 1.0 };
+                for f in abuf.chunks_exact_mut(2) {
+                    if self.loop_buf.len() < cap * 2 {
+                        self.loop_buf.extend_from_slice(f);
+                        continue;
+                    }
+                    let x = (self.loop_pos % len.max(1)) as f32 * rate;
+                    let (i, fr) = (x as usize, x.fract());
+                    let j = (i + 1).min(cap - 1);
+                    for c in 0..2 {
+                        f[c] = self.loop_buf[i * 2 + c] * (1.0 - fr) + self.loop_buf[j * 2 + c] * fr;
+                    }
+                    self.loop_pos += 1;
+                }
+            }
             for i in 0..SUB {
                 let (al, ar) = (abuf[i * 2], abuf[i * 2 + 1]);
                 let (el, er) = self.echo.run((al * self.echo_send, ar * self.echo_send), 0.6);
+                let (rl, rr) = self.reverb.run((al * self.reverb_send, ar * self.reverb_send));
                 let (xl, xr) = self.a.run(al, ar);
                 let (yl, yr) = if self.phase == Phase::Mix { self.b.run(bbuf[i * 2], bbuf[i * 2 + 1]) } else { (0.0, 0.0) };
-                out.push((xl + yl + el).clamp(-1.0, 1.0));
-                out.push((xr + yr + er).clamp(-1.0, 1.0));
+                out.push((xl + yl + el + rl).clamp(-1.0, 1.0));
+                out.push((xr + yr + er + rr).clamp(-1.0, 1.0));
             }
             self.report.a_pos_ms = self.a_src_ms();
         }
@@ -567,6 +658,9 @@ impl Engine {
 
     fn end_mix(&mut self) {
         self.post_frames = 0;
+        // The effects ring out on their own (nothing more fed in).
+        self.reverb_send = 0.0;
+        self.echo_send = 0.0;
         self.a.set(Fx::MUTE);
         self.b.set(Fx::FLAT);
         self.report.progress = 1.0;
@@ -591,7 +685,7 @@ impl Engine {
         self.b_frames(b, speed, &mut buf);
         for f in buf.chunks_exact(2) {
             let (bl, br) = self.b.run(f[0] * g, f[1] * g);
-            let (el, er) = self.echo.run((0.0, 0.0), 0.6);
+            let (el, er) = self.tail();
             out.push((bl + el).clamp(-1.0, 1.0));
             out.push((br + er).clamp(-1.0, 1.0));
         }
@@ -657,7 +751,7 @@ impl Engine {
             for i in 0..BLOCK {
                 let w = (self.join_done as f32 / JOIN_FRAMES as f32).min(1.0);
                 let (bl, br) = self.b.run(bbuf[i * 2], bbuf[i * 2 + 1]);
-                let (el, er) = self.echo.run((0.0, 0.0), 0.6);
+                let (el, er) = self.tail();
                 out.push(((abuf[i * 2] * w + bl * (1.0 - w)) * g + el).clamp(-1.0, 1.0));
                 out.push(((abuf[i * 2 + 1] * w + br * (1.0 - w)) * g + er).clamp(-1.0, 1.0));
                 self.join_done += 1;
@@ -668,7 +762,7 @@ impl Engine {
             }
         } else {
             for f in abuf.chunks_exact(2) {
-                let (el, er) = self.echo.run((0.0, 0.0), 0.6);
+                let (el, er) = self.tail();
                 out.push((f[0] * g + el).clamp(-1.0, 1.0));
                 out.push((f[1] * g + er).clamp(-1.0, 1.0));
             }
@@ -894,6 +988,11 @@ mod tests {
             gain_db: 0.0,
             beat_ms: 500.0,
             pitch_semitones: 0.0,
+            a_pitch_semitones: 0.0,
+            a_key_lock: false,
+            fx: OutFx::None,
+            fx_ms: 0.0,
+            swap_at: 0.5,
         }
     }
 
@@ -903,6 +1002,22 @@ mod tests {
         run_through_as(style, key_lock, "b")
     }
 
+    /// The DJ's usual move: A eases its tempo and pitch (time-stretched) with a loop roll into a cut.
+    #[test]
+    fn pitched_a_with_fx_cuts_and_hands_off() {
+        for fx in OutFx::ALL {
+            let mut t = plan(Style::Cut, 1.03, false);
+            t.a_key_lock = true;
+            t.a_pitch_semitones = 1.0;
+            t.speed = 1.0;
+            t.settle_ms = 0.0;
+            t.length_ms = 30.0;
+            t.fx = fx;
+            t.fx_ms = 1_000.0;
+            assert!(run_with(t, "b").is_finite(), "{fx:?}");
+        }
+    }
+
     /// The main player may play B under a relinked URI: it must still line up, and end the handover.
     #[test]
     fn relinked_b_lines_up_and_clears_handoff() {
@@ -910,8 +1025,19 @@ mod tests {
     }
 
     fn run_through_as(style: Style, key_lock: bool, main_b_track: &str) -> f64 {
+        let mut t = plan(style, 1.03, key_lock);
+        t.style = style;
+        run_with_lock(t, main_b_track, key_lock)
+    }
+
+    fn run_with(t: Transition, main_b_track: &str) -> f64 {
+        run_with_lock(t, main_b_track, false)
+    }
+
+    fn run_with_lock(t: Transition, main_b_track: &str, key_lock: bool) -> f64 {
+        let style = t.style;
         let mut eng = Engine::default();
-        eng.arm(Armed { a_track: "a".into(), b_track: "b".into(), t: plan(style, 1.03, key_lock), key_lock });
+        eng.arm(Armed { a_track: "a".into(), b_track: "b".into(), t, key_lock });
         let mut a = Tone { track: "a".into(), pos_frames: 0, hz: 220.0, limit: u64::MAX };
         let mut b = Tone { track: "b".into(), pos_frames: 0, hz: 330.0, limit: u64::MAX };
         let mut main_b = Tone { track: main_b_track.into(), pos_frames: 0, hz: 330.0, limit: u64::MAX };
@@ -985,9 +1111,18 @@ mod tests {
     #[test]
     fn automation_ends_on_b() {
         for style in Style::ALL {
-            let (a, b, _) = automation(style, 1.0, 0.125);
+            let (a, b, _) = automation(style, 1.0, 0.125, 0.5);
             assert!(a.gain < 0.01, "{style:?}");
             assert!(b.gain > 0.99 && b.low_db.abs() < 0.01, "{style:?}");
+        }
+        // The swap on the last downbeat: the playing song's bass and fader stay up until its last beat.
+        let beat = 1.0 / 32.0;
+        for i in 0..=320 {
+            let p = i as f32 / 320.0;
+            let (a, b, _) = automation(Style::BassSwap, p, beat, 1.0);
+            if p < 1.0 - beat {
+                assert!(a.gain > 0.99 && b.low_db < -39.0, "p {p}");
+            }
         }
     }
 }

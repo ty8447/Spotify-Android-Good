@@ -115,7 +115,7 @@ internal class SpotifyPlayer(
     /**
      * A media-session load is in flight ([RemotePlayback.placeholderSuppression],
      * [RemotePlayback.playMeansPause]). Never for long: its future ([trackLoad]) completes once
-     * the item shows on this phone, the start failed, was dropped or cancelled (a pause while the
+     * the item shows on this phone, the start failed, was dropped or canceled (a pause while the
      * session starts, a release), or [LOAD_SETTLE_MS] after the command went through; every
      * command before it in [PlayerController]'s queue is bounded too.
      */

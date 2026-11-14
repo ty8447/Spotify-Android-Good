@@ -196,6 +196,11 @@
     <string name="browse_profile_logout_title">Log out?</string>
     <string name="browse_profile_logout_message">Downloads, saved searches and cached data on this device will be removed.</string>
 
+    <!-- A downloaded collection with nothing in progress: the downloaded count; the rest can't download yet (retried daily). -->
+    <plurals name="browse_downloaded_available">
+        <item quantity="one">%1$d downloaded · %2$d unavailable for now</item>
+        <item quantity="other">%1$d downloaded · %2$d unavailable for now</item>
+    </plurals>
     <plurals name="browse_song_count">
         <item quantity="one">%d song</item>
         <item quantity="other">%d songs</item>

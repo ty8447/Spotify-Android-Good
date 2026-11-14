@@ -81,9 +81,46 @@ pub(crate) async fn video(args: Value) -> AppResult<Value> {
     }))
 }
 
+/// Extended-metadata `CANVAZ` (1): `Canvaz{1: id, 2: url, 3: file_id, 4: type, 5: entity_uri, ...}`;
+/// type 0 is an image, 1–3 videos (2, 3 looping), 4 a GIF.
+const CANVAZ: i32 = 1;
+
+/// The url and type of a Canvaz message (`None` without a url).
+fn parse_canvas(b: &[u8]) -> Option<(String, u64)> {
+    let f = fields(b);
+    let url = f.iter().find(|x| x.0 == 2).map(|x| String::from_utf8_lossy(x.2).into_owned()).filter(|u| u.starts_with("https://"))?;
+    Some((url, f.iter().find(|x| x.0 == 4).map_or(0, |x| x.1)))
+}
+
+/// `catalog.canvas {uri}` → `{url, video}` (a song's Canvas: its short looping visual) or `{}`.
+pub(crate) async fn canvas(args: Value) -> AppResult<Value> {
+    #[derive(Deserialize)]
+    struct Uri {
+        uri: String,
+    }
+    let a: Uri = parse_args(args)?;
+    if !a.uri.starts_with("spotify:track:") {
+        return Ok(json!({}));
+    }
+    Ok(match raw(CANVAZ, &a.uri).await?.as_deref().and_then(parse_canvas) {
+        Some((url, kind)) => json!({ "url": url, "video": (1..=3).contains(&kind) }),
+        None => json!({}),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_a_canvas() {
+        let url = b"https://canvaz.scdn.co/upload/x.cnvs.mp4";
+        let mut b = vec![0x0a, 0x01, b'i', 0x12, url.len() as u8];
+        b.extend_from_slice(url);
+        b.extend_from_slice(&[0x20, 0x02]);
+        assert_eq!(parse_canvas(&b), Some((String::from_utf8_lossy(url).into_owned(), 2)));
+        assert_eq!(parse_canvas(&[0x0a, 0x01, b'i']), None);
+    }
 
     #[test]
     fn reads_video_ids() {

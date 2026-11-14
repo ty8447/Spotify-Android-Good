@@ -78,7 +78,7 @@ internal class CollectionResolver(private val rpc: NativeRpc, private val json: 
         CollectionType.PLAYLIST -> resolvePlaylist(uri, knownRevision)
         CollectionType.LIKED_SONGS -> resolveLikedSongs()
         CollectionType.SHOW -> {
-            // Newest episodes only: a whole back catalogue would be tens of GB. Syncing keeps this a
+            // Newest episodes only: a whole back catalog would be tens of GB. Syncing keeps this a
             // rolling window (new episodes are added, ones that fall out are removed).
             val mark = filter.begin()
             val show = rpc.callOffMain<Show>("catalog.show", rpcArgs { put("uri", uri); put("offset", 0); put("limit", MAX_SHOW_EPISODES) })
@@ -248,7 +248,7 @@ internal class CollectionResolver(private val rpc: NativeRpc, private val json: 
         /**
          * A member from catalog metadata answered under [filter] ([ExplicitFilterWatch.filterAt]). A
          * placeholder (no name: metadata failed or missing) carries no metadata, so a new row gets
-         * it later; it and an explicit member only "Hide explicit content" may have greyed out get
+         * it later; it and an explicit member only "Hide explicit content" may have grayed out get
          * no verdict ([Item.checked], [DownloadRules.memberVerdict]) and are never
          * [Item.unavailable].
          */

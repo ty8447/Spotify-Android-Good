@@ -98,7 +98,7 @@ import java.util.concurrent.ConcurrentHashMap
 /** A loaded playlist item with a stable list key. */
 @Immutable
 internal class PlaylistRow(val key: String, val item: PlaylistItem) {
-    /** Normalised text for the in-playlist filter (computed on first use, off the main thread). */
+    /** Normalized text for the in-playlist filter (computed on first use, off the main thread). */
     val searchText: String by lazy(LazyThreadSafetyMode.PUBLICATION) { item.searchText() }
 
     val durationMs: Long get() = item.track?.durationMs ?: item.episode?.durationMs ?: 0

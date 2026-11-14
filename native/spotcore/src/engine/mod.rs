@@ -230,7 +230,7 @@ pub async fn handle(method: &str, args: Value) -> AppResult<Value> {
 
 /// Runs lifecycle work (start's configuration step, stop, logout) as its own task, so it always
 /// runs to the end. `nativeCancel` aborts the RPC task, which then only stops waiting (the call
-/// still answers CANCELLED). An aborted logout used to leave the account's credentials in memory
+/// still answers CANCELED). An aborted logout used to leave the account's credentials in memory
 /// and its caches on disk, and an aborted stop left `stopping` set and the Player bound.
 async fn to_completion<T, F>(what: &'static str, work: F) -> AppResult<T>
 where
@@ -417,7 +417,7 @@ async fn configure_start(args: StartArgs) -> AppResult<u64> {
     Ok(epoch)
 }
 
-/// Waits until the session is online (Ok), failed (Err) or stopped (CANCELLED).
+/// Waits until the session is online (Ok), failed (Err) or stopped (CANCELED).
 async fn await_outcome(start_epoch: u64) -> AppResult<Value> {
     let mut rx = shared().status.subscribe();
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
@@ -567,6 +567,7 @@ fn apply_settings(new: EngineSettings) {
         return;
     }
     player_host::apply_settings(&old, &new);
+    crate::bridge::MONO.store(new.mono, std::sync::atomic::Ordering::Relaxed);
     if old.offline != new.offline
         || old.autoplay != new.autoplay
         || old.device_name != new.device_name

@@ -45,7 +45,7 @@ class RowWindows<T>(val pageSize: Int, val pages: Map<Int, List<T>> = emptyMap()
  * holding the rows on screen ([show]) load on their own, by offset, so a fast scroll to row 4,000
  * of 5,000 fetches that page, not the 39 before it. Pages are aligned to [pageSize]; a load starts
  * once the rows on screen stayed put [settleMs] (dragging fast loads nothing on the way), a load
- * for a page scrolled away is cancelled at once, and at most [maxPages] pages are kept (the ones
+ * for a page scrolled away is canceled at once, and at most [maxPages] pages are kept (the ones
  * farthest from the screen go). [fetch] returns a page's rows, or null when they can't be used
  * (failed, or from another revision of the list): the page loads again while it is still on screen,
  * after [retryMs], twice as long after each failure since (at most [maxRetryMs]), and only once
@@ -97,7 +97,7 @@ internal class PageWindows<T>(
         settle = scope.launch {
             delay(settleMs)
             for (page in needed) {
-                // Missing, or partial with loads again left (its last one was cancelled).
+                // Missing, or partial with loads again left (its last one was canceled).
                 val due = page !in _windows.value.pages || (partial[page] ?: partialRetries) < partialRetries
                 if (due && page !in loads) load(page)
             }

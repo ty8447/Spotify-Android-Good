@@ -6,7 +6,7 @@
 //! 1. Metadata (`Track` via TRACK_V4, or the raw `Episode` via EPISODE_V4), relinking through
 //!    `alternatives` when the requested track has no available file; both the requested `uri`
 //!    and the `playedUri` are recorded.
-//! 2. Availability for the session's country/catalogue (embargo, restrictions), and the
+//! 2. Availability for the session's country/catalog (embargo, restrictions), and the
 //!    account's own explicit filter (Spotify's parental setting): explicit items are refused
 //!    while it is on. Not "Hide explicit content": that app setting applies when downloads are
 //!    shown and played, never to downloading them.
@@ -22,7 +22,7 @@
 //!    the account's refusal (`PLAYBACK_REFUSED`) only as the key budget judges it.
 //! 5. Existing `<dir>/<fileId>` that verifies → reused. Otherwise the encrypted file is
 //!    downloaded into `<dir>/<fileId>.part` (resumable, see `super::fetch`), verified, its Ogg
-//!    normalisation read, synced and renamed to `<dir>/<fileId>`.
+//!    normalization read, synced and renamed to `<dir>/<fileId>`.
 //! 6. Cover (best effort): `<imageDir>/<imageId>.jpg`, the largest one ≤ 640 px.
 //!
 //! The record is returned, not registered: Kotlin persists it and calls `offline.add`.
@@ -153,7 +153,7 @@ struct Prepared {
     track: Option<models::Track>,
     episode: Option<models::Episode>,
     covers: Images,
-    /// The album (or show) of the audio, for the key budget's judgement of refusals.
+    /// The album (or show) of the audio, for the key budget's judgment of refusals.
     group: u64,
     /// The requested track's metadata (relinking after a refused key).
     requested: Option<Track>,
@@ -564,7 +564,7 @@ type FileLock = Arc<tokio::sync::Mutex<()>>;
 
 static FILE_LOCKS: LazyLock<Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Serialises work on one `<fileId>(.part)` (two URIs can share a file, e.g. via relinking).
+/// Serializes work on one `<fileId>(.part)` (two URIs can share a file, e.g. via relinking).
 async fn lock_file(file_hex: &str) -> tokio::sync::OwnedMutexGuard<()> {
     let lock: FileLock = {
         let mut locks = FILE_LOCKS.lock();

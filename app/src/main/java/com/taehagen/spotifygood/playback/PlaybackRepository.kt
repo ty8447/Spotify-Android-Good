@@ -75,7 +75,7 @@ class PlaybackRepository(scope: CoroutineScope, events: NativeEvents) {
         return snapshot.transformLatest { s ->
             emit(s.positionAt(wallClock()))
             if (s.isPlaying && s.track != null) {
-                // Cancelled by transformLatest as soon as the next snapshot (pause, seek, ...) arrives.
+                // Canceled by transformLatest as soon as the next snapshot (pause, seek, ...) arrives.
                 while (true) {
                     delay(period)
                     emit(s.positionAt(wallClock()))

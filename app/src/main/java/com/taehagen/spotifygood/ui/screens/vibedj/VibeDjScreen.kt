@@ -190,7 +190,10 @@ private fun StatusLine(state: DjState) {
     Hint("${state.status.ifEmpty { "Listening…" }}$analysing · ${state.poolSize} songs in the pool")
 }
 
-private fun styleLabel(id: String) = DjStyle.of(id).label
+private fun styleLabel(id: String) = if (id == "cut") "Cut" else DjStyle.of(id).label
+
+/** "Loop roll → " before the style, for a cut led in by an effect. */
+private fun fxLabel(id: String) = com.taehagen.spotifygood.vibedj.DjFx.entries.firstOrNull { it.id == id }?.let { "${it.label} → " }.orEmpty()
 
 /** Gains of the current (A) and next (B) song at progress [p] of a mix, as the native mixer. */
 private fun gains(style: String, p: Float): Pair<Float, Float> {
@@ -232,9 +235,9 @@ private fun MixCard(plan: DjPlan?, state: DjState, position: Double) {
             val headline = when {
                 plan == null -> "Picking the next song…"
                 state.phase == "mix" -> "${styleLabel(t!!.style)} · ${(state.progress * 100).toInt()}%"
-                state.phase == "armed" -> "Matching tempo · ${styleLabel(t!!.style)} in ${fmt(t.mixStartMs - position)}"
+                state.phase == "armed" -> "Matching ${if (t!!.aPitchSemitones != 0f) "tempo & key" else "tempo"} · ${fxLabel(t.fx)}${styleLabel(t.style)} in ${fmt(t.mixStartMs - position)}"
                 state.phase in setOf("settle", "handoff", "join", "glide") -> "Landing ${plan.next.name.ifEmpty { "the next song" }}"
-                else -> "${styleLabel(t!!.style)} in ${fmt(t.mixStartMs - position)}"
+                else -> "${fxLabel(t!!.fx)}${styleLabel(t.style)} in ${fmt(t.mixStartMs - position)}"
             }
             Text(headline, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             if (t != null) {
@@ -355,7 +358,7 @@ private fun TrackBadge(track: DjTrack?, caption: String) {
         Text(caption.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         Text(track?.name?.ifEmpty { "—" } ?: "—", maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold)
         val facts = listOfNotNull(track?.bpm?.let { "%.0f BPM".format(it) }, track?.camelot, track?.key).joinToString(" · ")
-        Text(facts.ifEmpty { "analysing…" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(facts.ifEmpty { "analyzing…" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -519,7 +522,7 @@ private fun PrefsSection(prefs: DjPrefs, onChange: (DjPrefs) -> Unit) {
             Text("Session: ${prefs.sessionMinutes} min", style = MaterialTheme.typography.bodySmall)
             Slider(prefs.sessionMinutes.toFloat(), { onChange(prefs.copy(sessionMinutes = it.toInt())) }, valueRange = 15f..180f, steps = 10)
         }
-        Text("Transitions", style = MaterialTheme.typography.titleSmall)
+        Text("Blends (only where one song is instrumental)", style = MaterialTheme.typography.titleSmall)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             DjStyle.entries.forEach { s ->
                 val on = s.id in prefs.styles
@@ -529,7 +532,18 @@ private fun PrefsSection(prefs: DjPrefs, onChange: (DjPrefs) -> Unit) {
                 }, label = { Text(s.label) })
             }
         }
-        Toggle("Harmonic mixing", "Prefer songs in compatible keys (Camelot wheel)", prefs.harmonic) { onChange(prefs.copy(harmonic = it)) }
+        Text("Effects into the cut", style = MaterialTheme.typography.titleSmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            com.taehagen.spotifygood.vibedj.DjFx.entries.forEach { f ->
+                val on = f.id in prefs.fx
+                FilterChip(selected = on, onClick = { onChange(prefs.copy(fx = if (on) prefs.fx - f.id else prefs.fx + f.id)) }, label = { Text(f.label) })
+            }
+        }
+        Text(
+            "Like a club DJ: the playing song eases to the next one's tempo, the next comes in on a phrase under its outro with its bass cut, and the basslines swap on the downbeat, so one bass plays at a time and two vocals never overlap. The mix lands where the two songs' notes agree; where vocals or notes would clash, or a drop calls for it, songs cut on the one instead, with a filter, echo, or a loop riser that pitches up into the next song.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Toggle("Harmonic mixing", "Prefer songs in compatible keys, and shift the playing song's pitch a semitone or two where they clash", prefs.harmonic) { onChange(prefs.copy(harmonic = it)) }
         Toggle(
             "Key lock",
             if (prefs.keyLock) "Keeps each song's pitch while tempos change" else "Pitch follows tempo like a turntable: the songs glide to meet, smoothest",
@@ -557,13 +571,13 @@ private fun BackgroundSection() {
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) {
         val c = repo.cacheInfo()
-        info = "${c.tracks} songs analysed · ${c.bytes / 1024} KB"
+        info = "${c.tracks} songs analyzed · ${c.bytes / 1024} KB"
     }
     Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Toggle("Analyse downloads while charging", "So Vibe DJ can mix them offline", on, repo::setAnalyzeDownloads)
+        Toggle("Analyze downloads while charging", "So Vibe DJ can mix them offline", on, repo::setAnalyzeDownloads)
         Box(Modifier.fillMaxWidth()) {
             Text(info ?: "", Modifier.align(Alignment.CenterStart), style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = { scope.launch { repo.clearCache(); info = "0 songs analysed" } }, Modifier.align(Alignment.CenterEnd)) { Text("Clear") }
+            TextButton(onClick = { scope.launch { repo.clearCache(); info = "0 songs analyzed" } }, Modifier.align(Alignment.CenterEnd)) { Text("Clear") }
         }
     }
 }

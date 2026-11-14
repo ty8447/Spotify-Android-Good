@@ -300,7 +300,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
-     * Keeps Media3's notification behaviour, except while Connect presence is enabled: instead of
+     * Keeps Media3's notification behavior, except while Connect presence is enabled: instead of
      * leaving the foreground (Media3 would call `stopForeground`) the service switches to the
      * presence notification as a `connectedDevice` foreground service (research §4.4).
      */

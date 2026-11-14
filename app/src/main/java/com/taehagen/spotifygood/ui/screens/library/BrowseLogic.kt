@@ -175,7 +175,7 @@ fun StoredCollection.toDownloadedCollection(): DownloadedCollection = Downloaded
 /** Maps a collection status to the per-row indicator state (null = not downloaded). */
 fun CollectionDownloadStatus.toIndicatorState(): DownloadState? = when (this) {
     CollectionDownloadStatus.None -> null
-    CollectionDownloadStatus.Complete -> DownloadState.COMPLETED
+    CollectionDownloadStatus.Complete, is CollectionDownloadStatus.Available -> DownloadState.COMPLETED
     is CollectionDownloadStatus.InProgress -> if (active) DownloadState.DOWNLOADING else DownloadState.QUEUED
 }
 

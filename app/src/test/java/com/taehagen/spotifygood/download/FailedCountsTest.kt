@@ -14,7 +14,7 @@ class FailedCountsTest {
             RetryRow("spotify:track:net", DownloadState.FAILED, "Network error"),
             RetryRow("spotify:track:gone", DownloadState.FAILED, unplayable),
             RetryRow("spotify:track:greyed", DownloadState.FAILED, "Network error"),
-            // Cancelled rows are retried too, but are not "failed" downloads.
+            // Canceled rows are retried too, but are not "failed" downloads.
             RetryRow("spotify:track:cancelled", DownloadState.CANCELLED, null),
         )
         val counts = DownloadRules.failedCounts(rows, unavailable = setOf("spotify:track:greyed"), unplayableReason = unplayable)

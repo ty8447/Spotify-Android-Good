@@ -56,7 +56,7 @@ internal fun artworkBoundsAt(p: Float, mini: Rect, large: Rect): Rect = when {
 
 /**
  * The thumbnail inside the docked card [card]: [size] square, [startInset] from the card's start
- * edge, centred in the card above its [bottomLine] (the progress line). Mirrors MiniPlayerBar's
+ * edge, centered in the card above its [bottomLine] (the progress line). Mirrors MiniPlayerBar's
  * layout, so the art's start rect needs no measuring through the card's moving layers.
  */
 internal fun miniArtworkBounds(card: Rect, size: Float, startInset: Float, bottomLine: Float, rtl: Boolean): Rect {

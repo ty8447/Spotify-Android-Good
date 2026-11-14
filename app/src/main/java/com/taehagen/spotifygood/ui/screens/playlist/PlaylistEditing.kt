@@ -87,7 +87,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Drag-to-reorder for a LazyColumn whose reorderable items are identified by key. The dragged item
- * follows the finger ([translationFor]); crossing another item's centre calls [onMove] (live,
+ * follows the finger ([translationFor]); crossing another item's center calls [onMove] (live,
  * local), and releasing calls [onEnd] with the start and final positions. Auto-scrolls near the
  * edges ([edgeTopPx] / [edgeBottomPx] cover overlay bars).
  */

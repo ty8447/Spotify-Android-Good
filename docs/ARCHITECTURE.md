@@ -101,12 +101,12 @@ object NativeBridge {
 * `nativeCall` — never blocks. Result delivered later via
   `NativeCallbacks.onResult(requestId, ok, json)`. `requestId == 0` means
   fire-and-forget. `argsJson` is a JSON object (`{}` when no args).
-* `nativeCancel` — aborts the tokio task of an in-flight call. A cancelled call delivers
+* `nativeCancel` — aborts the tokio task of an in-flight call. A canceled call delivers
   `onResult(id, false, {"code":"CANCELLED","message":"…"})`. Exception: engine lifecycle work
   always runs to the end (`session.stop`, `session.logout`, and the configuration step of
-  `session.start`, which runs in its own task); cancelling those only stops the wait. Kotlin
-  registers its cancellation handler after `nativeCall` returned, so a call cancelled before
-  it was dispatched is still cancelled natively.
+  `session.start`, which runs in its own task); canceling those only stops the wait. Kotlin
+  registers its cancellation handler after `nativeCall` returned, so a call canceled before
+  it was dispatched is still canceled natively.
 
 ### 3.2 Rust → Kotlin
 
@@ -139,7 +139,7 @@ class AudioSinkBridge {                      // called ONLY on the librespot pla
 Error results and error events use
 `{"code":"…","message":"…","retryAfterMs":<optional>}` with `code` one of
 `NOT_LOGGED_IN, NOT_CONNECTED, BAD_CREDENTIALS, PREMIUM_REQUIRED, NETWORK, NOT_FOUND,
-RATE_LIMITED, INVALID_ARGUMENT, UNAVAILABLE, NOT_ACTIVE_DEVICE, PLAYBACK_REFUSED, CANCELLED,
+RATE_LIMITED, INVALID_ARGUMENT, UNAVAILABLE, NOT_ACTIVE_DEVICE, PLAYBACK_REFUSED, CANCELED,
 INTERNAL`. `BAD_CREDENTIALS` = the access point refused the login credentials (AP
 `LoginFailed` "Bad credentials" / "Could not validate credentials"); Kotlin then deletes the
 stored credentials. An HTTP 401/407/511 (rejected bearer token, proxy authentication) is
@@ -247,7 +247,7 @@ URIs (`spotify:track:<base62>`). Image URLs are absolute (`https://i.scdn.co/ima
   (its Drop joins the player thread, which joins its loaders for at most 1 s) only on
   `session.stop {releasePlayer:true}` (logout / process trim), awaited at most 1.5 s;
   otherwise kept for the offline mode. Whole stop ≤ 10 s (checked at compile time). Start,
-  stop and logout are serialised by the supervisor lock, held for the whole teardown, so a
+  stop and logout are serialized by the supervisor lock, held for the whole teardown, so a
   `session.start` after a stop always finds the old session completely gone. Kotlin waits up
   to 15 s for `session.stop` and 30 s for `session.logout`.
 * `session.logout`: forgets the account first (credentials, access token, OAuth token,
@@ -258,12 +258,12 @@ URIs (`spotify:track:<base62>`). Image URLs are absolute (`https://i.scdn.co/ima
 
 ### 4.3 Playback configuration
 
-`PlayerConfig { bitrate: from settings (96/160/320), gapless: settings.gapless, normalisation:
+`PlayerConfig { bitrate: from settings (96/160/320), gapless: settings.gapless, normalization:
 settings.normalize, normalisation_type: Auto, normalisation_pregain_db: settings
 (quiet −5, normal 0, loud +5), position_update_interval: None, ditherer: None, .. }`.
 Changes (`player.applySettings` or `session.updateSettings`) are applied to the running Player
 through the patched runtime setters, without recreating it: bitrate and gapless from the next
-load (track change), normalisation from the next audio packet.
+load (track change), normalization from the next audio packet.
 
 Explicit filter: `EngineSettings.filterExplicit` is OR-ed into the session's own
 `filter-explicit-content` user attribute, the account's value: the setting is a separate flag
@@ -520,11 +520,11 @@ for the restore and a play restores right away (one already answered restores th
 
 | method | args | result |
 |---|---|---|
-| `session.start` | `{"credentials":{…}?,"accessToken":"…"?,"settings":EngineSettings,"initialVolume":0..65535}` | `{}` once Online (or error). `initialVolume` = current `STREAM_MUSIC` volume mapped to 0..65535 (used for the mixer and Connect so startup never changes the system volume). `accessToken` without `credentials` is a fresh login (§4.2). Cancelling only stops the wait |
-| `session.stop` | `{"releasePlayer":false}` | `{}` (≤ 10 s; runs to the end even if cancelled) |
+| `session.start` | `{"credentials":{…}?,"accessToken":"…"?,"settings":EngineSettings,"initialVolume":0..65535}` | `{}` once Online (or error). `initialVolume` = current `STREAM_MUSIC` volume mapped to 0..65535 (used for the mixer and Connect so startup never changes the system volume). `accessToken` without `credentials` is a fresh login (§4.2). Canceling only stops the wait |
+| `session.stop` | `{"releasePlayer":false}` | `{}` (≤ 10 s; runs to the end even if canceled) |
 | `session.setNetworkAvailable` | `{"available":true,"metered":false,"network":432902426637?}` | `{}` (`network`: the default network's `Network.getNetworkHandle`; another handle while available is a network change, §4.2) |
 | `session.updateSettings` | `EngineSettings` | `{}` |
-| `session.logout` | `{}` | `{}` (forgets the account, stops, deletes the caches; runs to the end even if cancelled) |
+| `session.logout` | `{}` | `{}` (forgets the account, stops, deletes the caches; runs to the end even if canceled) |
 | `session.zeroconfLogin` | `{"timeoutMs":180000,"deviceName":"…"}` | `{"credentials":{…}}` when another Spotify app hands over credentials (libmdns discovery; Kotlin holds a MulticastLock meanwhile). `deviceName` is advertised (the setting, else the phone model); without it the Connect name below is used |
 | `session.token` | `{}` | `{"accessToken","expiresAtMs"}` login5 token (for Kotlin-side HTTP such as artwork never needs it; reserved) |
 | `session.setOAuthToken` | `{"accessToken","expiresAtMs"}` | `{}` (lets pathfinder fall back to the OAuth token) |
@@ -592,7 +592,7 @@ crosses the JNI boundary and is never logged.
 | `catalog.album` | `{"uri"}` | `Album` (with tracks) |
 | `catalog.artist` | `{"uri"}` | `Artist` |
 | `catalog.playlist` | `{"uri","offset":0,"limit":100}` | `Playlist` (items page) |
-| `catalog.playlistUris` | `{"uri","offset":0,"limit":10000}` (limit ≤ 10000) | `{"total","revision","offset","uris":[…],"uids":[…]}`: the window's items as stored, without any metadata lookup (URIs keyed as `catalog.playlist` keys its items: tracks and episodes normalised, local files and others as stored; `uids` hex or null). One request for any playlist the server answers whole; for an add's "Already added" check and a whole playlist added to another |
+| `catalog.playlistUris` | `{"uri","offset":0,"limit":10000}` (limit ≤ 10000) | `{"total","revision","offset","uris":[…],"uids":[…]}`: the window's items as stored, without any metadata lookup (URIs keyed as `catalog.playlist` keys its items: tracks and episodes normalized, local files and others as stored; `uids` hex or null). One request for any playlist the server answers whole; for an add's "Already added" check and a whole playlist added to another |
 | `catalog.show` | `{"uri","offset":0,"limit":50}` | `Show` (episodes page) |
 | `catalog.search` | `{"query","types":["track","artist","album","playlist","show","episode"],"offset":0,"limit":20}` (limit ≤ 50) | `SearchResults`: at most `limit` per type. The engine asks the server for more than `limit` so that entities it cannot parse do not shorten the page; the next page (`offset += returned`) may repeat a few results, which clients deduplicate. `totals` carries the server's per-type counts when known. `"partial": true` marks a degraded answer: a requested pathfinder section failed while others answered, or the tracks-only context-resolve answer to a request for other types too; clients show it but must not keep it as the query's answer. A pathfinder answer whose `searchV2` failed (`null` with a GraphQL field error, or every requested section nulled) counts as a failed source; an error inside one item only drops that item. Then searchview is asked, and context-resolve only when tracks were requested (it finds nothing else); if they fail (or do not apply) the call fails instead of returning "no results". "Hide explicit content" applies as on every page: explicit tracks/episodes come back `playable:false`, and an explicit track/episode top result is dropped |
 | `catalog.home` | `{"timeZone"?}` (IANA id; defaults to UTC) | `{"sections":[HomeSection],"partial"?:true}` (`partial`: the local fallback feed misses sections whose source failed; when pathfinder and every local source fail, the call fails with a retryable `NETWORK`/`RATE_LIMITED`/`UNAVAILABLE` instead of returning an empty feed) |
@@ -639,7 +639,7 @@ returned as an authoritative but shorter list:
 | method | args | result |
 |---|---|---|
 | `download.track` | `{"uri","bitrate":160,"dir":"<location>/audio","imageDir":"<location>/images"}` (the chosen download location, §9.7) | `OfflineTrackRecord` (progress via `download` events; cancellable; resumes `.part`; waits ≤ 10 s for the session country, else `NOT_CONNECTED`; a CDN `429` asking for more than 30 s, or a second `429`, fails at once with `RATE_LIMITED` and the server's `retryAfterMs`). The audio key is requested when the file's download starts, paced by the key budget (§9.7 "Audio-key pacing"): a turn more than 10 s away fails at once, without a key request, with `RATE_LIMITED`, `retryAfterMs` and `context` `keyPacing` (the engine's pace: not a failure) or `keyThrottled` (Spotify throttled keys: the cool-down); the turn is checked before the metadata requests too; a throttled key (AesKeyError other than 0x0001) fails the same way (`keyThrottled`), never retried in the call; a request unanswered twice is `NETWORK`; 0x0001 relinks once to an alternative with a file of its own, else is `UNAVAILABLE` with `context` `keyRefused` (this song; not asked again for a day), or `PLAYBACK_REFUSED` when no key at all arrived for a day and songs of 3 different albums or shows were refused within an hour (the account) |
-| `download.fileId` | `{"uri"}` | `{"fileId"}` (omitted when unknown): the file the last `download.track` of `uri` in this process chose, also after it failed or was cancelled |
+| `download.fileId` | `{"uri"}` | `{"fileId"}` (omitted when unknown): the file the last `download.track` of `uri` in this process chose, also after it failed or was canceled |
 | `offline.setIndex` | `{"tracks":[OfflineTrackRecord],"seq"?}` | `{}` or `{"rejected":["uri",…]}` (replaces the in-memory resolver index, except URIs changed after `seq`; malformed records are skipped) |
 | `offline.add` / `offline.remove` | `{"tracks":[…],"seq"?}` / `{"uris":[…],"seq"?}` | `{}` (`add` may also return `"rejected"`; `remove` matches a record's `uri` only, never its `playedUri`, and never deletes files — Kotlin owns deletion) |
 | `offline.beginIndex` | `{"seq"}` | `{}` (the next `setIndex` without `seq` is a snapshot containing the changes up to `seq`) |
@@ -825,6 +825,60 @@ User         {"username","displayName","images","product","country","explicitFil
   then `player.seek` once it is on that song; never a plain `player.next`); its stream joins deck
   B's in phase through its own resampler and eases back to 1× over 16 bars (`Glide`). With key
   lock (WSOLA) the old order stays: B settles to 1× first, then the handoff.
+* **Club transitions** (patch 10, analysis v2): each bar also gets a bass level (kick and bassline,
+  < 90 Hz) and a lead level (tonal mid energy, a stand-in where Spotify has no vocal activity), and
+  phrases start on the 8-bar grid that best fits the energy and bass changes. The planner's default
+  is an EQ blend (`BassSwap`, 16 / 8 / 32 bars) on a phrase boundary: the next song enters at one
+  of its phrase starts with its lows killed, highs then mids cross over, and the bass swaps in one
+  beat on a 4-bar line where the next song's bass is in (`swap_at`, up to the blend's last
+  downbeat: its intro under the current song's last phrase). Blends are dropped where both songs'
+  leads overlap for 2+ bars; a cut on the one (drop swap) is used there, at a momentary break (bass
+  out for the bar before) or when the next song's drop follows a high-energy section; echo, reverb,
+  filter and loop rolls only for tempo jumps, energy lifts or lead clashes. Song choice weighs drum
+  pattern similarity more on a drastic tempo or energy change, and favours clean intros.
+* **Notes that agree** (patch 11, analysis v3): per-bar chroma; the planner correlates the last
+  two bars playing (rotated by the playing song's pitch shift) with the next song's entry bars:
+  cut entries go where the notes agree, blends whose overlap clashes become an 8-bar filter blend,
+  and mix quality weighs more in the pick. `OutFx::Riser`: the first bar of a 4-bar window loops,
+  rolls to sixteenths and plays faster (up to +5 semitones, each repeat still on the grid) under a
+  rising high-pass and reverb, landing on the cut. The pool drops explicit songs while filtered.
+
+### 6.11 Picking faster, instruments, offline, clips (patch 12)
+
+* Spotify's tempo and key (extended metadata 222, the APK's AudioAttributesV2: `{1: bpm double,
+  2: Key{1: key, 2: mode, 3: Camelot{1: "8A"}}}`), batched for the whole pool when it's set: songs
+  are analyzed in order of `quick_score` (tempo within the allowed shift, Camelot distance), and
+  when the playing song runs out before any mix is planned (or before it is analyzed), it cuts at
+  its end into the closest song by those numbers.
+* `pick_from` scores every analyzed song (cheap) and plans only the best 12 (`PLAN_TOP`).
+  `plan_with` no longer gives up when no phrase start is left: a cut on the next 4-bar line, the
+  playing song as it is, echoing out where allowed.
+* Analysis v4, texture per bar (`TEXTURE`): tone (mid-range tonality), sustain (20th-percentile
+  over mean tonal energy), attacks (struck mid-range notes per beat), brightness; `texture_mean`
+  over the bars with bass. Song choice weighs it (0.14) and mixes meet where it agrees (cut entries,
+  blend overlaps); a jump (synth wall into piano or mallets) is masked like clashing notes.
+* Downloaded collections with nothing in progress show `Available(done, missing)`; failed members
+  are queued again at each daily sync (`retryFailedMembers`). Offline, a downloaded playlist,
+  album or Liked Songs gives Vibe DJ its own songs; going offline or online rebuilds the pool.
+* Clips: `catalog.watchFeed {feedId, entityId, params, offset}` → `POST watch-feed-view/v1/feed`
+  (see `catalog/watchfeed.rs`); a show's Clips button opens `related-clips` for it, then
+  `clip-recs`, swiped vertically. The layouts seen are logged (`ClipsFeed`) to learn the feed.
+
+### 6.10 Settings with behavior of their own (patch 11)
+
+* Mono audio: `EngineSettings::mono` → `bridge::MONO`, a downmix in `AudioSinkBridge.write_f32`
+  (everything the AudioTrack plays, Vibe DJ included).
+* Shuffle › Fewer repeats: `player.setShuffleHistory {uris|null}` (the play log's last 3 days) →
+  `librespot_connect::set_recent_plays`; a new shuffle puts those songs after the rest.
+* Canvas: `catalog.canvas {uri}` (extended metadata `CANVAZ` = 1, `Canvaz{2: url, 4: type}`),
+  played muted and looping behind Now Playing. Music videos / Other videos / audio-only streaming
+  off Wi-Fi gate `catalog.video`; video quality is chosen per network.
+* Blocked users: `GET socialgraph/v4/{me}/is-blocking` (list), `POST`/`DELETE
+  …/is-blocking/{user}` (block as the APK; unblock inferred). Chat receipts: `POST
+  speechless/v1/hierarchy/settings/receipts` `{1: hierarchy_id, 2: type (1 played, 2 saved), 3:
+  disabled}`, read back from hierarchy settings field 2.
+* Device broadcast status: `com.spotify.music.metadatachanged` / `playbackstatechanged`.
+  Reduce animations: MainActivity's recomposer carries a `MotionDurationScale` of 0.
 
 ### 6.7 Reversed from the Android client (patch 2)
 
@@ -1201,7 +1255,7 @@ For a remote active device, smart shuffle is not supported (the command reports
     opens the system switcher (Android 11) or the Bluetooth settings there.
   * **Left open (only a device shows it)**: from Android 15, when another device starts playing
     while the app is in the background, nothing binds the provider, so the router can't ask for the
-    session: the chip reads "Other device", greyed out (as before), until the app comes to the
+    session: the chip reads "Other device", grayed out (as before), until the app comes to the
     foreground or the switcher opens (from the volume panel, or the sheet's "More devices…"). On
     12–14 the session follows at the next screen-on with the notification up. Not verified on
     hardware: the hidden `LOCAL_PLAYBACK` feature on every release, OEM SystemUIs, how fast SystemUI
@@ -1273,7 +1327,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   verification_uri, verification_uri_complete, expires_in, interval}`; open
   `verification_uri_complete` in a Custom Tab (explicit browser package) and also show the
   code (for approving from another device); poll `POST https://accounts.spotify.com/api/token`
-  (`grant_type=urn:ietf:params:oauth:grant-type:device_code`, honour `interval`/`slow_down`,
+  (`grant_type=urn:ietf:params:oauth:grant-type:device_code`, honor `interval`/`slow_down`,
   stop on `expired_token`/`access_denied`) only while the login screen is visible: polling
   pauses when the app goes to the background or the screen leaves composition (e.g. while the
   code is approved in the Custom Tab) and resumes when it is shown again, and stops when the
@@ -1415,7 +1469,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
     sit paused, the other device already stopped. So no play is a toggle while a load of the
     session is in flight (`SpotifyPlayer.localLoadPending`, the load's future), a play from
     another controller meanwhile included. That future ends it: it completes when the pick
-    shows here, when the start failed, was dropped or cancelled, or 15 s after the load went
+    shows here, when the start failed, was dropped or canceled, or 15 s after the load went
     through, and a newer load replaces it; the toggle then applies again.
   * Pending commands: while a handler's future is pending Media3 publishes a placeholder, the
     current state with the command's likely outcome (`SimpleBasePlayer`; `invalidateState` is
@@ -1471,7 +1525,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   * Known limitation, SystemUI's media timeout (API 30+, checked in the Android 13, 14 and 15
     sources): `MediaTimeoutListener` marks a player inactive once its session has read not
     playing for 10 minutes (`PAUSED_MEDIA_TIMEOUT`; armed when the state turns not playing, not
-    re-armed while it stays so, cancelled only by a state `NotificationMediaManager.isPlayingState`
+    re-armed while it stays so, canceled only by a state `NotificationMediaManager.isPlayingState`
     counts as playing), and an inactive player is hidden from the lock screen
     (`KeyguardMediaController`: `showsOnlyActiveMedia`) and the first pull-down (QQS); the fully
     expanded quick settings still list it, as inactive. Notification updates keep it inactive.
@@ -1502,7 +1556,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   4x2: large artwork beside the text, the controls with like and shuffle (three-state, as the
   notification's); 4x3 and up: 3x2's arrangement with like and shuffle. Episodes have −15 s / +15 s
   instead of previous / next. The notification's icons (Media3's) and strings; the system corner
-  radius and dynamic colours from Android 12, the app's light and dark palette below. Picker:
+  radius and dynamic colors from Android 12, the app's light and dark palette below. Picker:
   `previewLayout` (the 4x2 layout, its defaults a sample), a drawn `previewImage` below 12, a
   description. No generated preview on Android 15: a static one only repeats previewLayout, a
   personal one would cost pushes while no widget is placed.
@@ -1580,7 +1634,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   (`player.setSpeed`, §6.2), also when it changes by itself, so positions never extrapolate at a
   speed the audio does not play. `PodcastSpeed.inEffect` is that speed (the chosen one stays,
   and is tried again). Now Playing has a speed menu next to the episode controls (hidden
-  while another device plays) labelled with the speed in effect; when the output refused the
+  while another device plays) labeled with the speed in effect; when the output refused the
   chosen one it says so and disables the steps known to be refused. The session player
   advertises `COMMAND_SET_SPEED_AND_PITCH` for local episodes (Auto, Wear and other controllers
   may change it) and reports the speed in effect in its playback parameters. The notification has no speed button (Media3's default provider has
@@ -1643,7 +1697,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   entries: the media session (Assistant, Auto: a set item with a search query) and the activity
   (`MEDIA_PLAY_FROM_SEARCH` through `LinkActivity`, `ShellViewModel.playFromSearch`, §9.9). It matches the user's own
   collections by name first (case, accents and punctuation aside; "my", "the", "playlist", ...
-  dropped), honouring `EXTRA_MEDIA_FOCUS` and the `EXTRA_MEDIA_*` names: Liked Songs and the
+  dropped), honoring `EXTRA_MEDIA_FOCUS` and the `EXTRA_MEDIA_*` names: Liked Songs and the
   downloaded collections, then online Library's playlists, albums, artists and podcasts. The
   same or loosely the same name wins over the catalog's search (the user's own, maybe private,
   playlist over a stranger's); a name that only starts so is used when the search has nothing.
@@ -1755,7 +1809,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   (t = now + (end − now) / 1.75), Android 12+ delivers at the window end unless woken earlier, and
   an early delivery arms the next stage until < 10 s remain (a handful of stages, within the
   allow-while-idle quota). A timer ending within 10 min while a remote device plays also holds the
-  wake lock from the start (honoured outside Doze). "End of track" arms the snapshot's track end (the media time left
+  wake lock from the start (honored outside Doze). "End of track" arms the snapshot's track end (the media time left
   divided by the snapshot's speed: an episode at a podcast speed ends sooner or later in wall
   time) and re-arms on every snapshot (a speed change publishes one). The item it waits for is
   its uri (`SleepSchedule.sameItem`): the engine re-makes the uid of the same item while it plays
@@ -1833,7 +1887,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   "Retry" schedule the queue again; nothing is scheduled while the chosen card is missing (the
   Downloads screen and one notification say why). An account Spotify refuses (not Premium) stops
   the run too instead of logging in again at every retry. Removing the item being downloaded stops it for good: the run waits for the removal to
-  delete its row before it picks the next item (the cancelled item puts its row back into the queue
+  delete its row before it picks the next item (the canceled item puts its row back into the queue
   first), and an item whose row is gone when it starts is skipped. Progress is persisted on a state change and every
   5 s (resume / crash recovery); live bytes reach the Downloads screens through the runner's
   activity, so long-lived observers (the playback service observes `downloadedImages`, which
@@ -1860,7 +1914,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   job finishes without its backoff (`jobFinished(false)`), the worker succeeds, and
   `DownloadManager.scheduleResume` enqueues one delayed WorkManager request (tag
   `downloads-resume`, the same constraints, `setInitialDelay` to the runner's resume time; appended
-  after the worker that asks, so its own success starts the delay instead of a replace cancelling
+  after the worker that asks, so its own success starts the delay instead of a replace canceling
   it; a user-initiated job can neither be delayed nor scheduled from the background). One wake, at
   that time; a fresh request, so pauses never count against the worker's 8 retries (only
   `RESCHEDULE`, a failure to make progress, takes the system backoff). A user action, coming back
@@ -2070,7 +2124,7 @@ Manual DI: `App` creates `AppGraph` (lazy singletons). ViewModels get dependenci
   remaining row has it as its `path` (in the same location) and no unfinished download writes it
   (`fileId`). Unfinished rows record the file their download
   writes (`download.fileId`, stored in `fileId`); garbage collection (when the queue is idle)
-  keeps a `.part` while an unfinished row (pending, failed, cancelled) names it, so "Retry
+  keeps a `.part` while an unfinished row (pending, failed, canceled) names it, so "Retry
   failed" resumes it, and deletes files and `.part`s no row names.
 * Explicit filter: downloads are the user's content, so a filter applies when they are shown and
   played (the Downloads screens dim explicit entries, the Player refuses them, offline and during
@@ -2254,7 +2308,7 @@ account change drop it. It counts only while playback is still that load: the cu
 in it and, unless shuffled, the context's next track comes after it in the order sent and the
 previous one before it (within 20 skipped rows, for up-next rows removed in the Queue screen;
 past the end only with repeat-all). A user-queued song or a suggestion is an interlude of the
-same load, judged by the context's neighbours around it; the record is dropped once playback
+same load, judged by the context's neighbors around it; the record is dropped once playback
 moved to anything else. A context-less play of one of its songs from elsewhere (Downloads, a
 single track, another client) is not it. The default order keeps the context load (Connect shows the
 playlist), and Shuffle always loads the context, its order doesn't matter. Offline, the
@@ -2295,7 +2349,7 @@ don't reload it, pull-to-refresh starts it over, and a list not fully loaded yet
     Playing takes them from p 0.95, the mini player at 0); drags catch it.
   * Back and state. The chevron, Back, "Go to …" and navigation collapse; the notification, deep
     links and the mini player expand. Predictive back (Android 14+) takes p down to 0.65 with the
-    gesture, then collapses, or springs back when cancelled. The target is the navigator's saved
+    gesture, then collapses, or springs back when canceled. The target is the navigator's saved
     Now Playing flag (`onSettle` reports a gesture's choice), so the state survives rotation and
     process death. Queue and Lyrics stay full-screen overlays above it. Back goes to the top
     layer: the newest enabled handler wins, so Now Playing's (`PlayerBackHandler`) is composed
@@ -2309,7 +2363,7 @@ don't reload it, pull-to-refresh starts it over, and a list not fully loaded yet
     the bottom stack, at the mini player's measured height. The player is drawn above everything
     as a full-window layer whose clip outline is the card interpolated toward the window (rounded
     8 dp → 0, shadow 4 dp → 0), so touches outside it reach the page.
-  * What p does. The background goes from the art-toned card colour to Now Playing's art
+  * What p does. The background goes from the art-toned card color to Now Playing's art
     gradient (over the surface's bounds). The mini player's content moves with the art's top edge
     and fades out over [0, 0.3], its text pushed aside by the growing art. Now Playing's title,
     seek bar, controls and actions fade in over [0.4, 1], riding just below the moving art (in
@@ -2329,7 +2383,7 @@ don't reload it, pull-to-refresh starts it over, and a list not fully loaded yet
     with, not its placeholder. Coil starts a fade at the painter's first draw, so a copy fades in
     only a cover that arrives while it is on screen (one taken from another copy too); one that
     arrives while it is hidden (the moving art is not even placed at rest) shows at once, never
-    as a grey square fading into the cover as the art starts to move. The thumbnail's rect
+    as a gray square fading into the cover as the art starts to move. The thumbnail's rect
     is derived from the card (`miniArtworkBounds`), the slot's measured. With large fonts Now
     Playing switches to its compact (scrolling) layout sooner, so the details never squeeze the
     slot to nothing.
@@ -2402,7 +2456,7 @@ don't reload it, pull-to-refresh starts it over, and a list not fully loaded yet
   the loading. Near the
   loaded end, the next page continues them. Further down, the pages holding those rows load by
   offset (`PageWindows`, 100 rows a page). A page loads once the rows on screen have stayed put
-  150 ms (a fast drag loads nothing on the way). A load for a page scrolled away is cancelled.
+  150 ms (a fast drag loads nothing on the way). A load for a page scrolled away is canceled.
   At most 8 pages are kept (the farthest go). A failed page loads again while it is on screen
   and the session is ONLINE: after 3 s, then twice as long after each failure, at most every
   60 s. A page with placeholder rows (`partial`) shows them and loads again twice while on
@@ -2427,7 +2481,7 @@ don't reload it, pull-to-refresh starts it over, and a list not fully loaded yet
     to the new total, and one that didn't loads the rest as for the sort, §9.8) and replaces the
     rows in place: no loading state, row keys come from the items' uids
     so the rows that stay keep theirs and the list keeps its place; the windows of the old
-    revision are dropped (`PageWindows.clear`, their loads cancelled) and the rows on screen load
+    revision are dropped (`PageWindows.clear`, their loads canceled) and the rows on screen load
     again; the cached page is marked stale. Not while edits are queued or a row is dragged (the
     edits' end refreshes the rows), nor for the download. The app's own edits produce a revision
     the page already shows (it takes the one each edit returns), and their pushes are dropped
@@ -2462,7 +2516,7 @@ don't reload it, pull-to-refresh starts it over, and a list not fully loaded yet
   viewport's bottom, or its top the viewport's top when it alone is taller; never past the last
   line's bottom. Lines not laid out yet are measured ahead (same style, width and rows), so a
   scroll knows where it ends. A move of one or two lines scrolls like the full screen (650 ms,
-  fast-out-slow-in) and the colours fade (300 ms); longer moves (a seek, a restart, the card
+  fast-out-slow-in) and the colors fade (300 ms); longer moves (a seek, a restart, the card
   back in view) snap, and another song starts in place, settled from its first frame. A new
   width or font size settles the lines again. The position is read only while Now Playing is
   shown (p > 0.4) and the card is on screen (it sits below the first screen), and the list
@@ -2512,7 +2566,7 @@ in local-network ZeroConf speakers and Google Cast devices, the account's device
 output switcher with the device's name on the media chip)
 and receive (phone as Connect device), shuffle, smart shuffle with suggestions, repeat
 all/one, queue (view, add, remove, reorder, clear, jump), autoplay, gapless,
-normalisation, streaming quality, playlists (view, create, edit, reorder, delete,
+normalization, streaming quality, playlists (view, create, edit, reorder, delete,
 follow), Liked Songs, saved albums/artists/podcasts, follow artists, search (all types,
 recent searches), home feed, album/artist/playlist/show/episode pages, podcast resume
 points (this phone's progress, kept on the phone and not synced to other devices; Spotify's

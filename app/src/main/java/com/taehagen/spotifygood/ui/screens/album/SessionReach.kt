@@ -39,7 +39,7 @@ internal suspend fun AppGraph.awaitConnectingSession() {
  * Each time [reach] becomes ONLINE (a change, not the value at start): once what is on screen has
  * settled ([settled] suspends until it is no longer loading; null: nothing to check), [retry]s it
  * when [needsRetry] (it failed, or shows a stale or downloaded copy). Waiting for the settle covers
- * a request that fails just after the session came online. Runs until cancelled.
+ * a request that fails just after the session came online. Runs until canceled.
  */
 internal suspend fun <S : Any> retryWhenOnline(
     reach: Flow<EngineReach>,
